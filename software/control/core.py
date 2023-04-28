@@ -1185,13 +1185,13 @@ class MultiPointWorker(QObject):
                 if coordinate_id > 0:
                     next_coordiante_mm = self.scan_coordinates_mm[coordinate_id-1]
                     print(next_coordiante_mm)
-                    distance_to_next_point = np.sqrt((coordiante_mm[0]-next_coordiante_mm[0])*(coordiante_mm[0]-next_coordiante_mm[0]) + (coordiante_mm[1]-next_coordiante_mm[1])*(coordiante_mm[1]-next_coordiante_mm[1]))
+                    distance_to_next_point = np.sqrt((coordiante_mm[0] - next_coordiante_mm[0])*(coordiante_mm[0] - next_coordiante_mm[0]) + (coordiante_mm[1]-next_coordiante_mm[1])*(coordiante_mm[1] - next_coordiante_mm[1]))
                     print('distance to next point: ' + str(distance_to_next_point))
                 else:
-                    distance_to_next_point = 10
+                    distance_to_next_point = 14
                     print('distance to next point: ' + str(distance_to_next_point))
                                 
-                if (distance_to_next_point > 3):
+                if (distance_to_next_point > 13):
                     # move z-position down
                     if coordiante_mm[2] >= self.navigationController.z_pos_mm:
                         self.navigationController.move_z_to(2)
