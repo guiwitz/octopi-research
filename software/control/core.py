@@ -1258,7 +1258,7 @@ class MultiPointWorker(QObject):
 
                         # autofocus
                         if self.do_reflection_af == False:
-                            # perform AF only if when not taking z stack or doing z stack from center
+                            # contrast-based AF; perform AF only if when not taking z stack or doing z stack from center
                             if ( (self.NZ == 1) or Z_STACKING_CONFIG == 'FROM CENTER' ) and (self.do_autofocus) and (self.FOV_counter%Acquisition.NUMBER_OF_FOVS_PER_AF==0):
                             # temporary: replace the above line with the line below to AF every FOV
                             # if (self.NZ == 1) and (self.do_autofocus):
@@ -1267,6 +1267,14 @@ class MultiPointWorker(QObject):
                                 self.signal_current_configuration.emit(config_AF)
                                 self.autofocusController.autofocus()
                                 self.autofocusController.wait_till_autofocus_has_completed()
+                                # upate z location of scan_coordinates_mm after AF
+                                if len(coordiante_mm) == 3:
+                                    self.scan_coordinates_mm[coordinate_id,2] = self.navigationController.z_pos_mm
+                                    # update the coordinate in the widget
+                                    try:
+                                        self.microscope.multiPointWidget2._update_z(coordinate_id,self.navigationController.z_pos_mm)
+                                    except:
+                                        pass
                         else:
                             # initialize laser autofocus
                             if self.reflection_af_initialized==False:
