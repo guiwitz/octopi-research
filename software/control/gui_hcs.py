@@ -326,7 +326,6 @@ class OctopiGUI(QMainWindow):
         if ENABLE_TRACKING:
             self.trackingControlWidget = widgets.TrackingControllerWidget(self.trackingController,self.configurationManager,show_configurations=TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS)
         self.multiPointWidget = widgets.MultiPointWidget(self.multipointController,self.configurationManager)
-        self.multiPointWidget2 = widgets.MultiPointWidget2(self.navigationController,self.navigationViewer,self.multipointController,self.configurationManager)
 
         self.recordTabWidget = QTabWidget()
         if ENABLE_TRACKING:
@@ -335,6 +334,10 @@ class OctopiGUI(QMainWindow):
         self.recordTabWidget.addTab(self.multiPointWidget, "Multipoint (Wellplate)")
         self.wellSelectionWidget = widgets.WellSelectionWidget(WELLPLATE_FORMAT)
         self.scanCoordinates.add_well_selector(self.wellSelectionWidget)
+
+        self.multiPointWidget2 = widgets.MultiPointWidget2(self.navigationController,self.navigationViewer,
+                                                           self.multipointController,self.configurationManager,
+                                                           scanCoordinates=self.scanCoordinates)
 
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.recordTabWidget.addTab(self.multiPointWidget2, "Flexible Multipoint")
