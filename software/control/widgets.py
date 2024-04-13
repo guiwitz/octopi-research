@@ -2096,7 +2096,7 @@ class MultiPointWidget2(QFrame):
         name = 'None'
         if self.scanCoordinates is not None:
             self.scanCoordinates.get_selected_wells()
-            name = self.scanCoordinates.name[0]
+            name = self.create_point_id()
         if not np.any(np.all(self.location_list[:, :2] == [x, y], axis=1)):
             location_str = 'x: ' + str(round(x,3)) + ' mm, y: ' + str(round(y,3)) + ' mm, z: ' + str(round(1000*z,1)) + ' um'
             self.dropdown_location_list.addItem(location_str)
@@ -2114,6 +2114,16 @@ class MultiPointWidget2(QFrame):
         else:
             print("Duplicate values not added based on x and y.")
             #to-do: update z coordinate
+
+    def create_point_id(self):
+        self.scanCoordinates.get_selected_wells()
+        name = self.scanCoordinates.name[0]
+        location_split_names = [int(x.split('-')[1]) for x in self.location_ids if x.split('-')[0] == name]
+        if len(location_split_names) > 0:
+            new_id = f'{name}-{np.max(location_split_names)+1}'
+        else:
+            new_id = f'{name}-0'
+        return new_id
 
     def remove_location(self):
         index = self.dropdown_location_list.currentIndex()
