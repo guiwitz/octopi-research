@@ -855,6 +855,22 @@ class LiveControlWidget(QFrame):
         self.btn_autolevel = QPushButton('Autolevel')
         self.btn_autolevel.setCheckable(True)
         self.btn_autolevel.setChecked(autolevel)
+
+        # set crop
+        self.spin_crop_x = QSpinBox()
+        self.spin_crop_x.setMinimum(0)
+        self.spin_crop_x.setMaximum(3000)
+        self.spin_crop_x.setValue(1000)
+        self.spin_crop_x.setSingleStep(10)
+        self.spin_crop_x.setSuffix(' px')
+        self.spin_crop_x.setFixedWidth(60)
+        self.spin_crop_y = QSpinBox()
+        self.spin_crop_y.setMinimum(0)
+        self.spin_crop_y.setMaximum(3000)
+        self.spin_crop_y.setValue(1000)
+        self.spin_crop_y.setSingleStep(10)
+        self.spin_crop_y.setSuffix(' px')
+        self.spin_crop_y.setFixedWidth(60)
         
         # connections
         self.entry_triggerFPS.valueChanged.connect(self.liveController.set_trigger_fps)
@@ -901,6 +917,10 @@ class LiveControlWidget(QFrame):
         grid_line3.addWidget(self.slider_resolutionScaling,0,3)
         if show_autolevel:
             grid_line3.addWidget(self.btn_autolevel,0,4)
+        grid_line3.addWidget(QLabel('Crop X'),1,1)
+        grid_line3.addWidget(self.spin_crop_x,1,2)
+        grid_line3.addWidget(QLabel('Crop Y'),1,3)
+        grid_line3.addWidget(self.spin_crop_y,1,4)
 
         self.grid = QVBoxLayout()
         if show_trigger_options:

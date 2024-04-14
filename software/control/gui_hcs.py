@@ -381,6 +381,10 @@ class OctopiGUI(QMainWindow):
         if not USE_NAPARI_FOR_LIVE_VIEW:
             self.liveControlWidget.signal_autoLevelSetting.connect(self.imageDisplayWindow.set_autolevel)
 
+        # adjust cropping
+        self.liveControlWidget.spin_crop_x.valueChanged.connect(self.update_crop)
+        self.liveControlWidget.spin_crop_y.valueChanged.connect(self.update_crop)
+
         # load vs scan position switching
         self.slidePositionController.signal_slide_loading_position_reached.connect(self.navigationWidget.slot_slide_loading_position_reached)
         self.slidePositionController.signal_slide_loading_position_reached.connect(self.multiPointWidget.disable_the_start_aquisition_button)
@@ -479,6 +483,10 @@ class OctopiGUI(QMainWindow):
             self.imageDisplayWindow.image_click_coordinates.connect(self.navigationController.move_from_click)
 
         self.navigationController.move_to_cached_position()
+
+    def update_crop(self):
+        self.streamHandler.set_crop(self.liveControlWidget.spin_crop_x.value(),self.liveControlWidget.spin_crop_y.value())
+        self.multipointController.set_crop(self.liveControlWidget.spin_crop_x.value(),self.liveControlWidget.spin_crop_y.value())
 
     def closeEvent(self, event):
 
