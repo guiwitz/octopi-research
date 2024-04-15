@@ -2265,8 +2265,7 @@ class MultiPointWidget2(QFrame):
             self.location_ids[row] = val_edit
         
         self.navigationViewer.register_fov_to_image(self.location_list[row,0], self.location_list[row,1])
-        location_str = 'x: ' + str(round(self.location_list[row,0],3)) + ' mm, y: ' + str(round(self.location_list[row,1],3)) + ' mm, z: ' + str(1000*round(self.location_list[row,2],3)) + ' um'
-        self.dropdown_location_list.setItemText(row, location_str)
+        self.update_dropdown_location_list(row)
         self.go_to(row)
 
     def keyPressEvent(self, event):
@@ -2278,6 +2277,10 @@ class MultiPointWidget2(QFrame):
     def _update_z(self,index,z_mm):
         self.location_list[index,2] = z_mm
         location_str = 'x: ' + str(round(self.location_list[index,0],3)) + ' mm, y: ' + str(round(self.location_list[index,1],3)) + ' mm, z: ' + str(round(1000*z_mm,1)) + ' um'
+        self.dropdown_location_list.setItemText(index, location_str)
+
+    def update_dropdown_location_list(self, index):
+        location_str = 'x: ' + str(round(self.location_list[index,0],3)) + ' mm, y: ' + str(round(self.location_list[index,1],3)) + ' mm, z: ' + str(round(1000*self.location_list[index,2],1)) + ' um'
         self.dropdown_location_list.setItemText(index, location_str)
 
     def export_location_list(self):
@@ -2347,6 +2350,7 @@ class MultiPointWidget2(QFrame):
             self.table_location_list.setItem(index,2, QTableWidgetItem(str(round(1000*self.location_list[index,2],1))))
             self.navigationViewer.register_fov_to_image(
                 self.location_list[index,0],self.location_list[index,1])
+            self.update_dropdown_location_list(index)
         self.table_location_list.cellChanged.connect(self.cell_was_changed)
         index = self.dropdown_location_list.currentIndex()
         self.go_to(index)
