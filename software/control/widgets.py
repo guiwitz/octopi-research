@@ -1855,6 +1855,31 @@ class MultiPointWidget2(QFrame):
         self.entry_Nt.setValue(1)
         self.entry_Nt.setKeyboardTracking(False)
 
+        # correct all positions
+        self.correct_deltaX = QDoubleSpinBox()
+        self.correct_deltaX.setMinimum(-100)
+        self.correct_deltaX.setMaximum(100)
+        self.correct_deltaX.setSingleStep(0.1)
+        self.correct_deltaX.setValue(0)
+        self.correct_deltaX.setDecimals(3)
+        self.correct_deltaX.setKeyboardTracking(False)
+
+        self.correct_deltaY = QDoubleSpinBox()
+        self.correct_deltaY.setMinimum(-100)
+        self.correct_deltaY.setMaximum(100)
+        self.correct_deltaY.setSingleStep(0.1)
+        self.correct_deltaY.setValue(0)
+        self.correct_deltaY.setDecimals(3)
+        self.correct_deltaY.setKeyboardTracking(False)
+
+        self.correct_deltaZ = QDoubleSpinBox()
+        self.correct_deltaZ.setMinimum(-2000)
+        self.correct_deltaZ.setMaximum(200)
+        self.correct_deltaZ.setSingleStep(0.1)
+        self.correct_deltaZ.setValue(0)
+        self.correct_deltaZ.setDecimals(3)
+        self.correct_deltaZ.setKeyboardTracking(False)
+
         self.list_configurations = QListWidget()
         for microscope_configuration in self.configurationManager.configurations:
             self.list_configurations.addItems([microscope_configuration.name])
@@ -1914,6 +1939,16 @@ class MultiPointWidget2(QFrame):
         grid_line2.addWidget(QLabel('Nt'), 1,6)
         grid_line2.addWidget(self.entry_Nt, 1,7)
 
+        grid_line2.addWidget(QLabel('Shift positions by'), 2,0)
+        grid_line2.addWidget(QLabel('x (mm):'), 2,1)
+        grid_line2.addWidget(self.correct_deltaX, 2,2)
+        grid_line2.addWidget(QLabel('y (mm):'), 2,3)
+        grid_line2.addWidget(self.correct_deltaY, 2,4)
+        grid_line2.addWidget(QLabel('z (um):'), 2,5)
+        grid_line2.addWidget(self.correct_deltaZ, 2,6)
+        self.correct_button = QPushButton('Shift')
+        grid_line2.addWidget(self.correct_button, 2,7)
+
         grid_af = QVBoxLayout()
         grid_af.addWidget(self.checkbox_withAutofocus)
         if SUPPORT_LASER_AUTOFOCUS:
@@ -1963,6 +1998,7 @@ class MultiPointWidget2(QFrame):
         self.btn_load_last_executed.clicked.connect(self.load_last_used_locations)
         self.btn_export_locations.clicked.connect(self.export_location_list)
         self.btn_import_locations.clicked.connect(self.import_location_list)
+        self.correct_button.clicked.connect(self.correct_location)
 
         self.table_location_list.cellClicked.connect(self.cell_was_clicked)
         self.table_location_list.cellChanged.connect(self.cell_was_changed)
@@ -2285,6 +2321,20 @@ class MultiPointWidget2(QFrame):
                 else:
                     print("Duplicate values not added based on x and y.")
             print(self.location_list)
+
+    def correct_location(self):
+        x = self.correct_deltaX.value()
+        y = self.correct_deltaY.value()
+        z = self.correct_deltaZ.value()
+        
+        self.location_list[:,0] += x
+        self.location_list[:,1] += y
+        self.location_list[:,2] += z / 1000
+        for index in range(self.location_list.shape[0]):
+            self.table_location_list.setItem(index,0, QTableWidgetItem(str(round(self.location_list[index,0],3))))
+            self.table_location_list.setItem(index,1, QTableWidgetItem(str(round(self.location_list[index,1],3))))
+            self.table_location_list.setItem(index,2, QTableWidgetItem(str(round(1000*self.location_list[index,2],1))))
+
 
 
 class StitcherWidget(QFrame):
