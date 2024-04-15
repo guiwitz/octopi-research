@@ -2336,6 +2336,8 @@ class MultiPointWidget2(QFrame):
         self.location_list[:,0] += x
         self.location_list[:,1] += y
         self.location_list[:,2] += z / 1000
+
+        self.table_location_list.cellChanged.disconnect(self.cell_was_changed)
         for index in range(self.location_list.shape[0]):
             self.navigationViewer.deregister_fov_to_image(
                 old_location[index,0],old_location[index,1])
@@ -2345,6 +2347,9 @@ class MultiPointWidget2(QFrame):
             self.table_location_list.setItem(index,2, QTableWidgetItem(str(round(1000*self.location_list[index,2],1))))
             self.navigationViewer.register_fov_to_image(
                 self.location_list[index,0],self.location_list[index,1])
+        self.table_location_list.cellChanged.connect(self.cell_was_changed)
+        index = self.dropdown_location_list.currentIndex()
+        self.go_to(index)
 
 
 class StitcherWidget(QFrame):
