@@ -2332,14 +2332,19 @@ class MultiPointWidget2(QFrame):
         y = self.correct_deltaY.value()
         z = self.correct_deltaZ.value()
         
+        old_location = self.location_list.copy()
         self.location_list[:,0] += x
         self.location_list[:,1] += y
         self.location_list[:,2] += z / 1000
         for index in range(self.location_list.shape[0]):
+            self.navigationViewer.deregister_fov_to_image(
+                old_location[index,0],old_location[index,1])
+            
             self.table_location_list.setItem(index,0, QTableWidgetItem(str(round(self.location_list[index,0],3))))
             self.table_location_list.setItem(index,1, QTableWidgetItem(str(round(self.location_list[index,1],3))))
             self.table_location_list.setItem(index,2, QTableWidgetItem(str(round(1000*self.location_list[index,2],1))))
-
+            self.navigationViewer.register_fov_to_image(
+                self.location_list[index,0],self.location_list[index,1])
 
 
 class StitcherWidget(QFrame):
