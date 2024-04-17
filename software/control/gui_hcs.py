@@ -87,8 +87,9 @@ class OctopiGUI(QMainWindow):
             self.imageDisplayTabs.addTab(self.imageDisplayWindow.widget, "Live View")
        
         if USE_NAPARI_FOR_MULTIPOINT:
-            self.napariMultiChannelWidget = widgets.NapariMultiChannelWidget()
             self.imageArrayDisplayWindow = core.ImageArrayDisplayWindow() # to remove
+            self.napariMultiChannelWidget = widgets.NapariMultiChannelWidget()
+            self.napariMultiChannelWidget.set_pixel_size_um(3.76*2/60) # for 60x, IMX571, 2x2 binning, to change to using objective and camera config
             self.imageDisplayTabs.addTab(self.napariMultiChannelWidget, "Multichannel Acquisition")
         else:
             self.imageArrayDisplayWindow = core.ImageArrayDisplayWindow()
@@ -117,7 +118,7 @@ class OctopiGUI(QMainWindow):
                 if SUPPORT_LASER_AUTOFOCUS:
                     sn_camera_main = camera.get_sn_by_model(MAIN_CAMERA_MODEL)
                     sn_camera_focus = camera_fc.get_sn_by_model(FOCUS_CAMERA_MODEL)
-                    self.camera = camera.Camera(sn=sn_camera_main,resolution=(3104,2084),rotate_image_angle=ROTATE_IMAGE_ANGLE,flip_image=FLIP_IMAGE)
+                    self.camera = camera.Camera(sn=sn_camera_main,rotate_image_angle=ROTATE_IMAGE_ANGLE,flip_image=FLIP_IMAGE)
                     self.camera.open()
                     self.camera_focus = camera_fc.Camera(sn=sn_camera_focus)
                     self.camera_focus.open()
@@ -366,6 +367,10 @@ class OctopiGUI(QMainWindow):
         if USE_NAPARI_FOR_MULTIPOINT:
             self.multiPointWidget.signal_acquisition_channels.connect(self.napariMultiChannelWidget.initChannels)
             self.multiPointWidget.signal_acquisition_shape.connect(self.napariMultiChannelWidget.initLayersShape)
+            self.multiPointWidget.signal_acquisition_dz_um.connect(self.napariMultiChannelWidget.set_dz_um)
+            self.multiPointWidget2.signal_acquisition_channels.connect(self.napariMultiChannelWidget.initChannels)
+            self.multiPointWidget2.signal_acquisition_shape.connect(self.napariMultiChannelWidget.initLayersShape)
+            self.multiPointWidget2.signal_acquisition_dz_um.connect(self.napariMultiChannelWidget.set_dz_um)
             self.multipointController.napari_layers_init.connect(self.napariMultiChannelWidget.initLayers)
             self.multipointController.napari_layers_update.connect(self.napariMultiChannelWidget.updateLayers)
         else:
