@@ -101,6 +101,9 @@ class OctopiGUI(QMainWindow):
         if is_simulation:
             if ENABLE_SPINNING_DISK_CONFOCAL:
                 self.xlight = serial_peripherals.XLight_Simulation()
+            if ENABLE_NL5:
+                import control.NL5 as NL5
+                self.nl5 = NL5.NL5_Simulation()
             if SUPPORT_LASER_AUTOFOCUS:
                 self.camera = camera.Camera_Simulation(rotate_image_angle=ROTATE_IMAGE_ANGLE,flip_image=FLIP_IMAGE)
                 self.camera.set_pixel_format(DEFAULT_PIXEL_FORMAT)
@@ -111,6 +114,9 @@ class OctopiGUI(QMainWindow):
         else:
             if ENABLE_SPINNING_DISK_CONFOCAL:
                 self.xlight = serial_peripherals.XLight(XLIGHT_SERIAL_NUMBER,XLIGHT_SLEEP_TIME_FOR_WHEEL)
+            if ENABLE_NL5:
+                import control.NL5 as NL5
+                self.nl5 = NL5.NL5()
             if USE_LDI_SERIAL_CONTROL:
                 self.ldi = serial_peripherals.LDI()
                 self.ldi.run()
@@ -148,8 +154,8 @@ class OctopiGUI(QMainWindow):
         # configure the actuators
         self.microcontroller.configure_actuators()
 
-        self.configurationManager = core.ConfigurationManager(filename='./channel_configurations123.xml')
-        print('load channel_configurations123.xml')
+        self.configurationManager = core.ConfigurationManager(filename='./channel_configurations.xml')
+        print('load channel_configurations.xml')
 
         self.streamHandler = core.StreamHandler(display_resolution_scaling=DEFAULT_DISPLAY_CROP/100)
         self.liveController = core.LiveController(self.camera,self.microcontroller,self.configurationManager,parent=self)
@@ -179,12 +185,15 @@ class OctopiGUI(QMainWindow):
         # set axis pid control enable
         # only ENABLE_PID_X and HAS_ENCODER_X are both enable, can be enable to PID
         if HAS_ENCODER_X == True:
+            self.navigationController.set_axis_PID_arguments(0, PID_P_X, PID_I_X, PID_D_X)
             self.navigationController.configure_encoder(0, (SCREW_PITCH_X_MM * 1000) / ENCODER_RESOLUTION_UM_X, ENCODER_FLIP_DIR_X)
             self.navigationController.set_pid_control_enable(0, ENABLE_PID_X)
         if HAS_ENCODER_Y == True:
+            self.navigationController.set_axis_PID_arguments(1, PID_P_Y, PID_I_Y, PID_D_Y)
             self.navigationController.configure_encoder(1, (SCREW_PITCH_Y_MM * 1000) / ENCODER_RESOLUTION_UM_Y, ENCODER_FLIP_DIR_Y)
             self.navigationController.set_pid_control_enable(1, ENABLE_PID_Y)
         if HAS_ENCODER_Z == True:
+            self.navigationController.set_axis_PID_arguments(2, PID_P_Z, PID_I_Z, PID_D_Z)
             self.navigationController.configure_encoder(2, (SCREW_PITCH_Z_MM * 1000) / ENCODER_RESOLUTION_UM_Z, ENCODER_FLIP_DIR_Z)
             self.navigationController.set_pid_control_enable(2, ENABLE_PID_Z)
         time.sleep(0.5)
@@ -233,6 +242,13 @@ class OctopiGUI(QMainWindow):
         while self.microcontroller.is_busy():
             time.sleep(0.005)
 
+        # set piezo arguments
+        if ENABLE_OBJECTIVE_PIEZO is True:
+            if OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE == 5:
+                OUTPUT_GAINS.CHANNEL7_GAIN = True
+            else:
+                OUTPUT_GAINS.CHANNEL7_GAIN = False
+
         # set output's gains
         div = 1 if OUTPUT_GAINS.REFDIV is True else 0
         gains  = OUTPUT_GAINS.CHANNEL0_GAIN << 0 
@@ -260,11 +276,14 @@ class OctopiGUI(QMainWindow):
         # load widgets
         if ENABLE_SPINNING_DISK_CONFOCAL:
             self.spinningDiskConfocalWidget = widgets.SpinningDiskConfocalWidget(self.xlight, self.configurationManager)
+        if ENABLE_NL5:
+            import control.NL5Widget as NL5Widget
+            self.nl5Wdiget = NL5Widget.NL5Widget(self.nl5)
 
         if CAMERA_TYPE == "Toupcam":
-            self.cameraSettingWidget = widgets.CameraSettingsWidget(self.camera,include_gain_exposure_time=True, include_camera_temperature_setting = True)
+            self.cameraSettingWidget = widgets.CameraSettingsWidget(self.camera, include_gain_exposure_time=False, include_camera_temperature_setting = True)
         else:
-            self.cameraSettingWidget = widgets.CameraSettingsWidget(self.camera, include_gain_exposure_time=True, include_camera_temperature_setting=False)
+            self.cameraSettingWidget = widgets.CameraSettingsWidget(self.camera, include_gain_exposure_time=False, include_camera_temperature_setting = False)
         self.liveControlWidget = widgets.LiveControlWidget(self.streamHandler,self.liveController,self.configurationManager,show_display_options=True,show_autolevel=True,autolevel=True)
         self.navigationWidget = widgets.NavigationWidget(self.navigationController,self.slidePositionController,widget_configuration='384 well plate')
         self.dacControlWidget = widgets.DACControWidget(self.microcontroller)
@@ -273,28 +292,37 @@ class OctopiGUI(QMainWindow):
         if ENABLE_TRACKING:
             self.trackingControlWidget = widgets.TrackingControllerWidget(self.trackingController,self.configurationManager,show_configurations=TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS)
         self.multiPointWidget = widgets.MultiPointWidget(self.multipointController,self.configurationManager)
-        self.wellSelectionWidget = widgets.WellSelectionWidget(WELLPLATE_FORMAT)
+        if WELLPLATE_FORMAT != 1536:
+            self.wellSelectionWidget = widgets.WellSelectionWidget(WELLPLATE_FORMAT)
+        else:
+            self.wellSelectionWidget = widgets.Well1536SelectionWidget()
         self.scanCoordinates.add_well_selector(self.wellSelectionWidget)
-        self.multiPointWidget2 = widgets.MultiPointWidget2(self.navigationController,self.navigationViewer,self.multipointController,self.configurationManager,scanCoordinates=self.scanCoordinates)
-        
+        self.multiPointWidget2 = widgets.MultiPointWidget2(self.navigationController,self.navigationViewer,self.multipointController,self.configurationManager,scanCoordinates=None)
+        self.piezoWidget = widgets.PiezoWidget(self.navigationController)
+
         self.recordTabWidget = QTabWidget()
         if ENABLE_TRACKING:
             self.recordTabWidget.addTab(self.trackingControlWidget, "Tracking")
         self.recordTabWidget.addTab(self.multiPointWidget, "Multipoint (Wellplate)")
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.recordTabWidget.addTab(self.multiPointWidget2, "Flexible Multipoint")
-        if ENABLE_SPINNING_DISK_CONFOCAL:
-            self.recordTabWidget.addTab(self.spinningDiskConfocalWidget,"Spinning Disk Confocal")
+
         self.recordTabWidget.addTab(self.recordingControlWidget, "Simple Recording")
+
+        self.microscopeControlTabWidget = QTabWidget()
+        self.microscopeControlTabWidget.addTab(self.navigationWidget,"Stages")
+        if ENABLE_OBJECTIVE_PIEZO:
+            self.microscopeControlTabWidget.addTab(self.piezoWidget,"Piezo")
+        self.microscopeControlTabWidget.addTab(self.cameraSettingWidget,'Camera')
+        self.microscopeControlTabWidget.addTab(self.autofocusWidget,"Contrast AF")
 
         # layout widgets
         layout = QVBoxLayout() #layout = QStackedLayout()
         #layout.addWidget(self.cameraSettingWidget)
         layout.addWidget(self.liveControlWidget)
-        layout.addWidget(self.navigationWidget)
+        layout.addWidget(self.microscopeControlTabWidget)
         if SHOW_DAC_CONTROL:
             layout.addWidget(self.dacControlWidget)
-        layout.addWidget(self.autofocusWidget)
         layout.addWidget(self.recordTabWidget)
         layout.addWidget(self.navigationViewer)
         layout.addStretch()
@@ -342,6 +370,7 @@ class OctopiGUI(QMainWindow):
             self.tabbedImageDisplayWindow.setFixedSize(width,height)
             self.tabbedImageDisplayWindow.show()
 
+        '''
         try:
             self.cswWindow = widgets.WrapperWindow(self.cameraSettingWidget)
         except AttributeError:
@@ -351,6 +380,7 @@ class OctopiGUI(QMainWindow):
             self.cswfcWindow = widgets.WrapperWindow(self.cameraSettingWidget_focus_camera)
         except AttributeError:
             pass
+        '''
 
         # make connections
         self.streamHandler.signal_new_frame_received.connect(self.liveController.on_new_frame)
@@ -385,6 +415,7 @@ class OctopiGUI(QMainWindow):
             self.navigationController.signal_joystick_button_pressed.connect(self.autofocusController.autofocus)
 
         self.multipointController.signal_current_configuration.connect(self.liveControlWidget.set_microscope_mode)
+        self.multipointController.signal_z_piezo_um.connect(self.piezoWidget.update_displacement_um_display)
 
         self.liveControlWidget.signal_newExposureTime.connect(self.cameraSettingWidget.set_exposure_time)
         self.liveControlWidget.signal_newAnalogGain.connect(self.cameraSettingWidget.set_analog_gain)
@@ -429,16 +460,21 @@ class OctopiGUI(QMainWindow):
 
             # widgets
             if FOCUS_CAMERA_TYPE == "Toupcam":
-                self.cameraSettingWidget_focus_camera = widgets.CameraSettingsWidget(self.camera_focus,include_gain_exposure_time=True, include_camera_temperature_setting = True)
+                self.cameraSettingWidget_focus_camera = widgets.CameraSettingsWidget(self.camera_focus, include_gain_exposure_time = False, include_camera_temperature_setting = True)
             else:
-                self.cameraSettingWidget_focus_camera = widgets.CameraSettingsWidget(self.camera_focus, include_gain_exposure_time=True, include_camera_temperature_setting=False)
+                self.cameraSettingWidget_focus_camera = widgets.CameraSettingsWidget(self.camera_focus, include_gain_exposure_time = False, include_camera_temperature_setting = False)
 
             self.liveControlWidget_focus_camera = widgets.LiveControlWidget(self.streamHandler_focus_camera,self.liveController_focus_camera,self.configurationManager_focus_camera,show_display_options=True)
             self.waveformDisplay = widgets.WaveformDisplay(N=1000,include_x=True,include_y=False)
             self.displacementMeasurementWidget = widgets.DisplacementMeasurementWidget(self.displacementMeasurementController,self.waveformDisplay)
             self.laserAutofocusControlWidget = widgets.LaserAutofocusControlWidget(self.laserAutofocusController)
 
-            self.recordTabWidget.addTab(self.laserAutofocusControlWidget, "Laser Autofocus Control")
+            self.microscopeControlTabWidget.addTab(self.laserAutofocusControlWidget, "Laser AF")
+
+            if ENABLE_SPINNING_DISK_CONFOCAL:
+                self.microscopeControlTabWidget.addTab(self.spinningDiskConfocalWidget,"Confocal")
+            if ENABLE_NL5:
+                self.microscopeControlTabWidget.addTab(self.nl5Wdiget,"Confocal")
 
             dock_laserfocus_image_display = dock.Dock('Focus Camera Image Display', autoOrientation = False)
             dock_laserfocus_image_display.showTitleBar()

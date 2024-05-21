@@ -558,7 +558,7 @@ class FocusMapWidget(QWidget):
 
 class CameraSettingsWidget(QFrame):
 
-    def __init__(self, camera, include_gain_exposure_time = True, include_camera_temperature_setting = False, main=None, *args, **kwargs):
+    def __init__(self, camera, include_gain_exposure_time = False, include_camera_temperature_setting = False, main=None, *args, **kwargs):
 
         super().__init__(*args, **kwargs)
         self.camera = camera
@@ -687,6 +687,7 @@ class CameraSettingsWidget(QFrame):
         self.grid = QGridLayout()
         self.grid.addLayout(grid_ctrl,0,0)
         self.grid.addLayout(hbox1,1,0)
+        self.grid.setRowStretch(self.grid.rowCount(), 1)
         self.setLayout(self.grid)
 
     def set_exposure_time(self,exposure_time):
@@ -959,6 +960,91 @@ class LiveControlWidget(QFrame):
     def set_trigger_mode(self,trigger_mode):
         self.dropdown_triggerManu.setCurrentText(trigger_mode)
         self.liveController.set_trigger_mode(self.dropdown_triggerManu.currentText())
+
+class PiezoWidget(QFrame):
+    def __init__(self, navigationController, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.add_components()
+        self.navigationController = navigationController
+
+    def add_components(self):
+        # Row 1: Slider and Double Spin Box for direct control
+        self.slider = QSlider(Qt.Horizontal, self)
+        self.slider.setMinimum(0)
+        self.slider.setMaximum(OBJECTIVE_PIEZO_RANGE_UM)  # Assuming maximum position is 300 um
+        self.spinBox = QDoubleSpinBox(self)
+
+        self.spinBox.setRange(0.0, OBJECTIVE_PIEZO_RANGE_UM)  # Range set from 0 to 300 um
+        self.spinBox.setDecimals(0)
+        self.spinBox.setSingleStep(1)  # Small step for fine control
+
+        hbox1 = QHBoxLayout()
+        hbox1.addWidget(self.slider)
+        hbox1.addWidget(self.spinBox)
+
+        # Row 2: Increment Double Spin Box, Move Up and Move Down Buttons
+        self.increment_spinBox = QDoubleSpinBox(self)
+        self.increment_spinBox.setRange(0.0, 100.0)  # Range for increment, adjust as needed
+        self.increment_spinBox.setDecimals(0)
+        self.increment_spinBox.setSingleStep(1)
+        self.increment_spinBox.setValue(1.0)  # Set default increment to 1 um
+        self.move_up_btn = QPushButton("Move Up", self)
+        self.move_down_btn = QPushButton("Move Down", self)
+
+        hbox2 = QHBoxLayout()
+        hbox2.addWidget(self.increment_spinBox)
+        hbox2.addWidget(self.move_up_btn)
+        hbox2.addWidget(self.move_down_btn)
+
+        # Row 3: Home Button
+        self.home_btn = QPushButton("Home to " + str(OBJECTIVE_PIEZO_HOME_UM) + " um", self)
+
+        hbox3 = QHBoxLayout()
+        hbox3.addWidget(self.home_btn)
+
+        # Vertical Layout to include all HBoxes
+        vbox = QVBoxLayout()
+        vbox.addLayout(hbox1)
+        vbox.addLayout(hbox2)
+        vbox.addLayout(hbox3)
+
+        self.setLayout(vbox)
+
+        # Connect signals and slots
+        self.slider.valueChanged.connect(self.update_spinBox_from_slider)
+        self.spinBox.valueChanged.connect(self.update_slider_from_spinBox)
+        self.move_up_btn.clicked.connect(lambda: self.adjust_position(True))
+        self.move_down_btn.clicked.connect(lambda: self.adjust_position(False))
+        self.home_btn.clicked.connect(self.home)
+
+    def update_spinBox_from_slider(self, value):
+        self.spinBox.setValue(float(value))
+        displacement_um = float(self.spinBox.value())
+        dac = int(65535 * (displacement_um / OBJECTIVE_PIEZO_RANGE_UM))
+        self.navigationController.microcontroller.analog_write_onboard_DAC(7, dac)
+
+    def update_slider_from_spinBox(self, value):
+        self.slider.setValue(int(value))
+
+    def adjust_position(self, up):
+        increment = self.increment_spinBox.value()
+        current_position = self.spinBox.value()
+        if up:
+            new_position = current_position + increment
+        else:
+            new_position = current_position - increment
+        self.spinBox.setValue(new_position)
+
+    def home(self):
+        self.spinBox.setValue(OBJECTIVE_PIEZO_HOME_UM)
+
+    def update_displacement_um_display(self, displacement):
+        self.spinBox.blockSignals(True)
+        self.slider.blockSignals(True)
+        self.spinBox.setValue(displacement)
+        self.slider.setValue(int(displacement))
+        self.spinBox.blockSignals(False)
+        self.slider.blockSignals(False)
 
 class RecordingWidget(QFrame):
     def __init__(self, streamHandler, imageSaver, main=None, *args, **kwargs):
@@ -1427,6 +1513,7 @@ class AutoFocusWidget(QFrame):
 
         self.grid = QGridLayout()
         self.grid.addLayout(grid_line0,0,0)
+        self.grid.setRowStretch(self.grid.rowCount(), 1)
         self.setLayout(self.grid)
         
         # connections
@@ -2147,11 +2234,9 @@ class MultiPointWidget2(QFrame):
         x = self.navigationController.x_pos_mm
         y = self.navigationController.y_pos_mm
         z = self.navigationController.z_pos_mm
-        name = 'None'
+        name = ''
         if self.scanCoordinates is not None:
             name = self.create_point_id()
-        if name is None:
-            return
         
         if not np.any(np.all(self.location_list[:, :2] == [x, y], axis=1)):
             location_str = 'x: ' + str(round(x,3)) + ' mm, y: ' + str(round(y,3)) + ' mm, z: ' + str(round(1000*z,1)) + ' um'
@@ -2159,8 +2244,8 @@ class MultiPointWidget2(QFrame):
             index = self.dropdown_location_list.count() - 1
             self.dropdown_location_list.setCurrentIndex(index)
             self.location_list = np.vstack((self.location_list, [[self.navigationController.x_pos_mm,self.navigationController.y_pos_mm,self.navigationController.z_pos_mm]]))
-            self.location_ids = np.append(self.location_ids, name)
             print(self.location_list)
+            self.location_ids = np.append(self.location_ids, name)
             self.table_location_list.insertRow(self.table_location_list.rowCount())
             self.table_location_list.setItem(self.table_location_list.rowCount()-1,0, QTableWidgetItem(str(round(x,3))))
             self.table_location_list.setItem(self.table_location_list.rowCount()-1,1, QTableWidgetItem(str(round(y,3))))
@@ -2788,7 +2873,7 @@ class NapariStitchingWidget(QWidget):
     def initChannels(self, channels):
         self.channels = channels
 
-    def initLayers(self, image_height, image_width, image_dtype):
+    def initLayers(self, image_height, image_width, image_dtype,rgb=False):
         """Initializes the full canvas for each channel based on the acquisition parameters."""
         self.viewer.layers.clear()
         self.image_width = image_width
@@ -2805,8 +2890,11 @@ class NapariStitchingWidget(QWidget):
         colors = ['gray', 'cyan', 'magma', 'green', 'red', 'blue', 'magenta', 'yellow',
                   'bop orange', 'bop blue', 'gray', 'magma', 'viridis', 'inferno']
         for i, channel in enumerate(self.channels):
-            canvas = np.zeros((self.Nz, self.Ny * image_height, self.Nx * image_width), dtype=self.dtype)
-            self.viewer.add_image(canvas, name=channel, visible=True, rgb=False, 
+            if rgb == True:
+                canvas = np.zeros((self.Nz, image_height, image_width, 3), dtype=self.dtype)
+            else:
+                canvas = np.zeros((self.Nz, image_height, image_width), dtype=self.dtype)
+            self.viewer.add_image(canvas, name=channel, visible=True, rgb=rgb,
                                   colormap=colors[i], contrast_limits=contrast_limits, blending='additive')
         
         self.layers_initialized = True
@@ -2904,7 +2992,7 @@ class NapariMultiChannelWidget(QWidget):
     def initChannels(self, channels):
         self.channels = channels
 
-    def initLayers(self, image_height, image_width, image_dtype):
+    def initLayers(self, image_height, image_width, image_dtype, rgb=False):
         """Initializes the full canvas for each channel based on the acquisition parameters."""
         self.viewer.layers.clear()
         self.image_width = image_width
@@ -2921,8 +3009,11 @@ class NapariMultiChannelWidget(QWidget):
         colors = ['gray', 'cyan', 'magma', 'green', 'red', 'blue', 'magenta', 'yellow',
                   'bop orange', 'bop blue', 'gray', 'magma', 'viridis', 'inferno'] #todo : add to config file
         for i, channel in enumerate(self.channels):
-            canvas = np.zeros((self.Nz, image_height, image_width), dtype=self.dtype)
-            self.viewer.add_image(canvas, name=channel, scale=(self.dz_um,self.pixel_size_um, self.pixel_size_um), visible=True, rgb=False,
+            if rgb == True:
+                canvas = np.zeros((self.Nz, image_height, image_width, 3), dtype=self.dtype)
+            else:
+                canvas = np.zeros((self.Nz, image_height, image_width), dtype=self.dtype)
+            self.viewer.add_image(canvas, name=channel, scale=(self.dz_um,self.pixel_size_um, self.pixel_size_um), visible=True, rgb=rgb,
                                   colormap=colors[i], contrast_limits=contrast_limits, blending='additive')
         
         self.layers_initialized = True
@@ -3903,4 +3994,118 @@ class WellSelectionWidget(QTableWidget):
         list_of_selected_cells = []
         for index in self.selectedIndexes():
              list_of_selected_cells.append((index.row(),index.column()))
+        return(list_of_selected_cells)
+
+
+from PyQt5.QtWidgets import QApplication, QWidget, QPushButton, QLineEdit, QLabel, QHBoxLayout, QVBoxLayout, QGridLayout
+from PyQt5.QtGui import QPixmap, QPainter, QColor
+import re
+import sys
+
+class Well1536SelectionWidget(QWidget):
+
+    signal_wellSelectedPos = Signal(float,float)
+
+    def __init__(self):
+        super().__init__()
+        self.selected_cells = {}  # Dictionary to keep track of selected cells and their colors
+        self.current_cell = None  # To track the current (green) cell
+        self.rows = 32
+        self.columns = 48
+        self.spacing_mm = 2.25
+        self.initUI()
+
+    def initUI(self):
+        self.setWindowTitle('1536 Well Plate')
+        self.setGeometry(100, 100, 550, 400)
+
+        self.a = 10
+
+        self.image = QPixmap(48*self.a, 32*self.a)
+        self.image.fill(QColor('white'))
+        self.label = QLabel()
+        self.label.setPixmap(self.image)
+
+        self.cell_input = QLineEdit(self)
+        go_button = QPushButton('Go to well', self)
+        go_button.clicked.connect(self.go_to_cell)
+
+        self.selection_input = QLineEdit(self)
+        select_button = QPushButton('Select wells', self)
+        select_button.clicked.connect(self.select_cells)
+
+        layout = QGridLayout()
+
+        layout.addWidget(self.label,0,0,3,1)
+
+        layout.addWidget(QLabel("Well Navigation"),1,1)
+        layout.addWidget(self.cell_input,1,2)
+        layout.addWidget(go_button,1,3)
+
+        layout.addWidget(QLabel("Well Selection"),2,1)
+        layout.addWidget(self.selection_input,2,2)
+        layout.addWidget(select_button,2,3)
+
+        self.setLayout(layout)
+
+    def redraw_wells(self):
+        self.image.fill(QColor('white'))  # Clear the pixmap first
+        painter = QPainter(self.image)
+        painter.setPen(QColor('white'))
+        # Draw selected cells in red
+        for (row, col), color in self.selected_cells.items():
+            painter.setBrush(QColor(color))
+            painter.drawRect(col * self.a, row * self.a, self.a, self.a)
+        # Draw current cell in green
+        if self.current_cell:
+            painter.setBrush(QColor('#ff7f0e'))
+            row, col = self.current_cell
+            painter.drawRect(col * self.a, row * self.a, self.a, self.a)
+        painter.end()
+        self.label.setPixmap(self.image)
+
+    def go_to_cell(self):
+        cell_desc = self.cell_input.text().strip()
+        match = re.match(r'([A-Za-z]+)(\d+)', cell_desc)
+        if match:
+            row_part, col_part = match.groups()
+            row_index = self.row_to_index(row_part)
+            col_index = int(col_part) - 1
+            self.current_cell = (row_index, col_index)  # Update the current cell
+            self.redraw_wells()  # Redraw with the new current cell
+            x_mm = X_MM_384_WELLPLATE_UPPERLEFT + WELL_SIZE_MM_384_WELLPLATE/2 - (A1_X_MM_384_WELLPLATE+WELL_SPACING_MM_384_WELLPLATE*NUMBER_OF_SKIP_384) + col_index*WELL_SPACING_MM + A1_X_MM + WELLPLATE_OFFSET_X_mm
+            y_mm = Y_MM_384_WELLPLATE_UPPERLEFT + WELL_SIZE_MM_384_WELLPLATE/2 - (A1_Y_MM_384_WELLPLATE+WELL_SPACING_MM_384_WELLPLATE*NUMBER_OF_SKIP_384) + row_index*WELL_SPACING_MM + A1_Y_MM + WELLPLATE_OFFSET_Y_mm
+            self.signal_wellSelectedPos.emit(x_mm,y_mm)
+
+    def select_cells(self):
+        # first clear selection
+        self.selected_cells = {}
+
+        pattern = r'([A-Za-z]+)(\d+):?([A-Za-z]*)(\d*)'
+        cell_descriptions = self.selection_input.text().split(',')
+        for desc in cell_descriptions:
+            match = re.match(pattern, desc.strip())
+            if match:
+                start_row, start_col, end_row, end_col = match.groups()
+                start_row_index = self.row_to_index(start_row)
+                start_col_index = int(start_col) - 1
+
+                if end_row and end_col:  # It's a range
+                    end_row_index = self.row_to_index(end_row)
+                    end_col_index = int(end_col) - 1
+                    for row in range(min(start_row_index, end_row_index), max(start_row_index, end_row_index) + 1):
+                        for col in range(min(start_col_index, end_col_index), max(start_col_index, end_col_index) + 1):
+                            self.selected_cells[(row, col)] = '#1f77b4'
+                else:  # It's a single cell
+                    self.selected_cells[(start_row_index, start_col_index)] = '#1f77b4'
+        self.redraw_wells()
+
+    def row_to_index(self, row):
+        index = 0
+        for char in row:
+            index = index * 26 + (ord(char.upper()) - ord('A') + 1)
+        return index - 1
+
+    def get_selected_cells(self):
+        list_of_selected_cells = list(self.selected_cells.keys())
         return(list_of_selected_cells)
