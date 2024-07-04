@@ -1,11 +1,12 @@
-from qtpy.QtWidgets import (QWidget, QPushButton, QVBoxLayout,
-                            QLineEdit, QCheckBox, QGridLayout, QMessageBox)
+from qtpy.QtWidgets import (QWidget, QPushButton, QVBoxLayout,QSpinBox,
+                            QLineEdit, QCheckBox, QGridLayout, QMessageBox, QLabel)
 
 class TowbinWidget(QWidget):
     def __init__(self, parent=None):
         super(TowbinWidget, self).__init__(parent)
-        
+
         self.parent = parent
+
         self.layout = QVBoxLayout()
         self.setLayout(self.layout)
 
@@ -31,6 +32,33 @@ class TowbinWidget(QWidget):
         self.btn_copy_z_to_same_id = QPushButton("Copy Z to group ID")
         self.btn_copy_z_to_same_id.clicked.connect(self.copy_z_to_same_id)
         grid_shift_points.addWidget(self.btn_copy_z_to_same_id)
+
+        # crop
+        grid_crop = QGridLayout()
+        self.layout.addLayout(grid_crop)
+
+        self.spin_crop_x = QSpinBox()
+        self.spin_crop_x.setMinimum(0)
+        self.spin_crop_x.setMaximum(3000)
+        self.spin_crop_x.setValue(1000)
+        self.spin_crop_x.setSingleStep(10)
+        self.spin_crop_x.setSuffix(' px')
+        self.spin_crop_x.setFixedWidth(100)
+        self.spin_crop_y = QSpinBox()
+        self.spin_crop_y.setMinimum(0)
+        self.spin_crop_y.setMaximum(3000)
+        self.spin_crop_y.setValue(1000)
+        self.spin_crop_y.setSingleStep(10)
+        self.spin_crop_y.setSuffix(' px')
+        self.spin_crop_y.setFixedWidth(100)
+
+        grid_crop.addWidget(QLabel('Crop X'),1,1)
+        grid_crop.addWidget(self.spin_crop_x,1,2)
+        grid_crop.addWidget(QLabel('Crop Y'),1,3)
+        grid_crop.addWidget(self.spin_crop_y,1,4)
+        self.spin_crop_x.valueChanged.connect(self.update_crop)
+        self.spin_crop_y.valueChanged.connect(self.update_crop)
+
 
     
     def edit_id_selected_location(self):
@@ -75,4 +103,14 @@ class TowbinWidget(QWidget):
             if self.parent.table_location_list.item(row, 3).text().split('-')[0] == id:
                 item = self.parent.table_location_list.item(row, 2)
                 item.setText(z_value)
-        
+
+    def update_crop(self):
+        """Update the crop values in the multipoint controller and the stream
+        handler."""
+
+        self.parent.multipointController.crop_height = self.spin_crop_y.value()
+        self.parent.multipointController.crop_width = self.spin_crop_x.value()
+
+        self.parent.multipointController.parent.streamHandler.set_crop(
+            self.spin_crop_x.value(), self.spin_crop_y.value()
+        )
