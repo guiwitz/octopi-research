@@ -1944,7 +1944,7 @@ class MultiPointWorker(QObject):
                                                     image = cv2.cvtColor(image,cv2.COLOR_RGB2GRAY)
                                                 elif MULTIPOINT_BF_SAVING_OPTION == 'Green Channel Only':
                                                     image = image[:,:,1]
-                                        iio.imwrite(saving_path,image)
+                                        #iio.imwrite(saving_path,image)
                                     else:
                                         saving_path = os.path.join(current_path, file_ID + '_' + str(config.name).replace(' ','_') + '.' + Acquisition.IMAGE_FORMAT)
                                         if self.camera.is_color:
@@ -1953,7 +1953,9 @@ class MultiPointWorker(QObject):
                                                     image = cv2.cvtColor(image,cv2.COLOR_RGB2GRAY)
                                                 elif MULTIPOINT_BF_SAVING_OPTION == 'Green Channel Only':
                                                     image = image[:,:,1]
-                                        iio.imwrite(saving_path,image)
+                                        ##iio.imwrite(saving_path,image)
+                                    from .towbin_funs import save_single_plane_tiff
+                                    save_single_plane_tiff(image, saving_path)
 
                                     if USE_NAPARI_FOR_MULTIPOINT or USE_NAPARI_FOR_TILED_DISPLAY:
                                         if not init_napari_layers:
