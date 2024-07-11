@@ -1753,10 +1753,35 @@ class MultiPointWorker(QObject):
                 coordiante_name = self.scan_coordinates_name[coordinate_id]
             
             if self.use_scan_coordinates:
+                # calculate distance to last point
+                if coordinate_id > 0:
+                    next_coordiante_mm = self.scan_coordinates_mm[coordinate_id-1]
+                    print(next_coordiante_mm)
+                    distance_to_next_point = np.sqrt((coordiante_mm[0] - next_coordiante_mm[0])*(coordiante_mm[0] - next_coordiante_mm[0]) + (coordiante_mm[1]-next_coordiante_mm[1])*(coordiante_mm[1] - next_coordiante_mm[1]))
+                    print('distance to next point: ' + str(distance_to_next_point))
+                else:
+                    distance_to_next_point = 14
+                    print('distance to next point: ' + str(distance_to_next_point))
+                                
+                if (distance_to_next_point > 13):
+                    # move z-position down
+                    if coordiante_mm[2] >= self.navigationController.z_pos_mm:
+                        self.navigationController.move_z_to(2)
+                        self.wait_till_operation_is_completed()
+                    else:
+                        self.navigationController.move_z_to(2)
+                        self.wait_till_operation_is_completed()
+                        # remove backlash
+                        _usteps_to_clear_backlash = max(160,20*self.navigationController.z_microstepping)
+                        self.navigationController.move_z_usteps(-_usteps_to_clear_backlash) # to-do: combine this with the above
+                        self.wait_till_operation_is_completed()
+                        self.navigationController.move_z_usteps(_usteps_to_clear_backlash)
+                        self.wait_till_operation_is_completed()
+                
                 # move to the specified coordinate
                 self.navigationController.move_x_to(coordiante_mm[0]-self.deltaX*(self.NX-1)/2)
                 self.navigationController.move_y_to(coordiante_mm[1]-self.deltaY*(self.NY-1)/2)
-                # check if z is included in the coordinate
+                self.wait_till_operation_is_completed()
                 if len(coordiante_mm) == 3:
                     if coordiante_mm[2] >= self.navigationController.z_pos_mm:
                         self.navigationController.move_z_to(coordiante_mm[2])
