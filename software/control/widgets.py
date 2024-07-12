@@ -2339,6 +2339,7 @@ class MultiPointWidget2(QFrame):
             self.table_location_list.setItem(self.table_location_list.rowCount()-1,1, QTableWidgetItem(str(round(y,3))))
             self.table_location_list.setItem(self.table_location_list.rowCount()-1,2, QTableWidgetItem(str(round(1000*z,1))))
             self.table_location_list.setItem(self.table_location_list.rowCount()-1,3, QTableWidgetItem(name))
+            self.table_location_list.selectRow(self.table_location_list.rowCount()-1)
             self.navigationViewer.register_fov_to_image(x,y)
         else:
             print("Duplicate values not added based on x and y.")
