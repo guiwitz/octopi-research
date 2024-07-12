@@ -1,5 +1,6 @@
 from qtpy.QtWidgets import (QWidget, QPushButton, QVBoxLayout,QSpinBox,
-                            QLineEdit, QCheckBox, QGridLayout, QMessageBox, QLabel)
+                            QLineEdit, QCheckBox, QGridLayout, QMessageBox, QLabel, QTableWidgetItem)
+
 from qtpy.QtCore import Qt
 
 class TowbinWidget(QWidget):
@@ -31,6 +32,10 @@ class TowbinWidget(QWidget):
 
         grid_shift_points = QGridLayout()
         self.layout.addLayout(grid_shift_points)
+
+        self.btn_update_position = QPushButton("Update Position")
+        grid_shift_points.addWidget(self.btn_update_position)
+        self.btn_update_position.clicked.connect(self.update_position)
 
         self.btn_copy_z = QPushButton("Copy Z to all")
         grid_shift_points.addWidget(self.btn_copy_z)
@@ -92,6 +97,23 @@ class TowbinWidget(QWidget):
                 item.setText(f'{self.editable_text.text()}-{ind}')
             else:
                 item.setText(self.editable_text.text())
+
+    def update_position(self):
+        """Update the position of the selected location."""
+        
+        x = self.parent.navigationController.x_pos_mm
+        y = self.parent.navigationController.y_pos_mm
+        z = self.parent.navigationController.z_pos_mm
+
+        index = self.parent.dropdown_location_list.currentIndex()
+        location_str = 'x: ' + str(round(x,3)) + ' mm, y: ' + str(round(y,3)) + ' mm, z: ' + str(round(1000*z,1)) + ' um'
+        self.parent.dropdown_location_list.setItemText(index, location_str)
+        
+        
+        self.parent.location_list[index] = [x, y, z]
+        self.parent.table_location_list.setItem(index, 0, QTableWidgetItem(str(round(x,3))))
+        self.parent.table_location_list.setItem(index, 1, QTableWidgetItem(str(round(y,3))))
+        self.parent.table_location_list.setItem(index, 2, QTableWidgetItem(str(round(1000*z,1))))
 
     def copy_z_to_all(self):
         """Copy the Z value of the selected location to all the locations in the
