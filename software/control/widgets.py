@@ -2446,7 +2446,13 @@ class MultiPointWidget2(QFrame):
         self.navigationViewer.register_fov_to_image(self.location_list[row,0], self.location_list[row,1])
         location_str = 'x: ' + str(round(self.location_list[row,0],3)) + ' mm, y: ' + str(round(self.location_list[row,1],3)) + ' mm, z: ' + str(1000*round(self.location_list[row,2],3)) + ' um'
         self.dropdown_location_list.setItemText(row, location_str)
-        self.go_to(row)
+
+        # move to the new location if it is the selected location,
+        # not if the row was updated but not selected
+        indices = self.table_location_list.selectedIndexes()
+        selected_rows = [ind.row() for ind in indices]
+        if row == selected_rows[0]:
+            self.go_to(row)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_A and event.modifiers() == Qt.ControlModifier:
