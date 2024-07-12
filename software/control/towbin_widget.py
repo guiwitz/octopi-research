@@ -101,11 +101,17 @@ class TowbinWidget(QWidget):
     def update_position(self):
         """Update the position of the selected location."""
         
+        index = self.parent.dropdown_location_list.currentIndex()
+
+        x_old = self.parent.location_list[index][0]
+        y_old = self.parent.location_list[index][1]
+        self.parent.navigationViewer.deregister_fov_to_image(x_old,y_old)
+
         x = self.parent.navigationController.x_pos_mm
         y = self.parent.navigationController.y_pos_mm
         z = self.parent.navigationController.z_pos_mm
 
-        index = self.parent.dropdown_location_list.currentIndex()
+        
         location_str = 'x: ' + str(round(x,3)) + ' mm, y: ' + str(round(y,3)) + ' mm, z: ' + str(round(1000*z,1)) + ' um'
         self.parent.dropdown_location_list.setItemText(index, location_str)
         
@@ -114,6 +120,7 @@ class TowbinWidget(QWidget):
         self.parent.table_location_list.setItem(index, 0, QTableWidgetItem(str(round(x,3))))
         self.parent.table_location_list.setItem(index, 1, QTableWidgetItem(str(round(y,3))))
         self.parent.table_location_list.setItem(index, 2, QTableWidgetItem(str(round(1000*z,1))))
+        self.parent.navigationViewer.register_fov_to_image(x,y)
 
     def copy_z_to_all(self):
         """Copy the Z value of the selected location to all the locations in the
