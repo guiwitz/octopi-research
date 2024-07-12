@@ -1,9 +1,15 @@
 from qtpy.QtWidgets import (QWidget, QPushButton, QVBoxLayout,QSpinBox,
                             QLineEdit, QCheckBox, QGridLayout, QMessageBox, QLabel)
+from qtpy.QtCore import Qt
 
 class TowbinWidget(QWidget):
     def __init__(self, parent=None):
         super(TowbinWidget, self).__init__(parent)
+
+        self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
+        self.setWindowTitle('Towbin Widget')
+        self.move(100, 100)
+        self.show()
 
         self.parent = parent
 
@@ -59,7 +65,10 @@ class TowbinWidget(QWidget):
         self.spin_crop_x.valueChanged.connect(self.update_crop)
         self.spin_crop_y.valueChanged.connect(self.update_crop)
 
-
+    def showEvent(self, event):
+        # After showing the window, remove the stay on top hint
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowStaysOnTopHint)
+        self.show()
     
     def edit_id_selected_location(self):
         """Edit the ID of the selected locations in the table. If the checkbox

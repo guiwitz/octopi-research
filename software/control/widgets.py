@@ -2185,9 +2185,6 @@ class MultiPointWidget2(QFrame):
 
         from .towbin_widget import TowbinWidget
         self.towbin_widget = TowbinWidget(self)
-        self.towbin_widget.setWindowFlags(Qt.Window)
-        self.towbin_widget.setWindowTitle('Towbin Widget')
-        self.towbin_widget.show()
 
     def set_deltaX(self,value):
         mm_per_ustep = SCREW_PITCH_X_MM/(self.multipointController.navigationController.x_microstepping*FULLSTEPS_PER_REV_X) # to implement a get_x_microstepping() in multipointController
