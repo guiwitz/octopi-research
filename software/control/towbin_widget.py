@@ -65,6 +65,11 @@ class TowbinWidget(QWidget):
         self.spin_crop_x.valueChanged.connect(self.update_crop)
         self.spin_crop_y.valueChanged.connect(self.update_crop)
 
+        self.parent.destroyed.connect(self.close_widget)
+
+    def close_widget(self):
+        self.close()
+
     def showEvent(self, event):
         # After showing the window, remove the stay on top hint
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowStaysOnTopHint)
