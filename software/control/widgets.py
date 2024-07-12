@@ -2451,8 +2451,9 @@ class MultiPointWidget2(QFrame):
         # not if the row was updated but not selected
         indices = self.table_location_list.selectedIndexes()
         selected_rows = [ind.row() for ind in indices]
-        if row == selected_rows[0]:
-            self.go_to(row)
+        if len(selected_rows) > 0:
+            if row == selected_rows[0]:
+                self.go_to(row)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_A and event.modifiers() == Qt.ControlModifier:
