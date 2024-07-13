@@ -23,11 +23,11 @@ class TowbinWidget(QWidget):
         self.editable_text = QLineEdit()
         grid_edit_points_id.addWidget(self.editable_text)
 
-        self.edit_id_btn = QPushButton("Edit")
+        self.edit_id_btn = QPushButton("Edit ID(s)")
         self.edit_id_btn.clicked.connect(self.edit_id_selected_location)
         grid_edit_points_id.addWidget(self.edit_id_btn)
 
-        self.check_id_sequential = QCheckBox("Check ID Sequential")
+        self.check_id_sequential = QCheckBox("ID Sequential")
         grid_edit_points_id.addWidget(self.check_id_sequential)
 
         grid_shift_points = QGridLayout()
