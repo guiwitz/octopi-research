@@ -3,9 +3,11 @@ from ome_types.model import OME, Image, Pixels
 import tifffile
 from control._def import *
 
-def save_single_plane_tiff(image, saving_path, dtype='uint8',
+def save_single_plane_tiff(image, saving_path,
                            compression='zlib',
                            compress_level=8):
+    
+    dtype = image.dtype.name
     
     physical_size_x = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR]
     physical_size_y = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR]
