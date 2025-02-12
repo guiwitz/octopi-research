@@ -1620,13 +1620,22 @@ class MultiPointWorker(QObject):
             self.total_scans = self.num_fovs * self.NZ * len(self.selected_configurations)
 
             for fov_count, coordinate_mm in enumerate(coordinates):
-
+                self.handle_large_move(coordinate_mm, region_id)
                 self.move_to_coordinate(coordinate_mm)
                 self.acquire_at_position(region_id, current_path, fov_count)
 
                 if self.multiPointController.abort_acqusition_requested:
                     self.handle_acquisition_abort(current_path, region_id)
                     return
+
+    def handle_large_move(self, coordinate_mm, region_id):
+        from ..towbin_funs import distance_moved
+        if region_id == 0:
+            dist = 14
+        else:
+            dist = distance_moved(stage=self.stage, coordinate=coordinate_mm)
+        if (dist > 13):
+            self.stage.move_z_to(2)
 
     def acquire_at_position(self, region_id, current_path, fov):
 
