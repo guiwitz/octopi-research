@@ -2315,6 +2315,9 @@ class FlexibleMultiPointWidget(QFrame):
         self.toggle_z_range_controls(False)
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
 
+        from .towbin_widget import TowbinWidget
+        self.towbin_widget = TowbinWidget(self)
+
     def toggle_z_range_controls(self, state):
         is_visible = bool(state)
 
@@ -2870,7 +2873,14 @@ class FlexibleMultiPointWidget(QFrame):
         # Update UI
         location_str = f"x:{round(self.location_list[row,0],3)} mm  y:{round(self.location_list[row,1],3)} mm  z:{round(1000*self.location_list[row,2],3)} μm"
         self.dropdown_location_list.setItemText(row, location_str)
-        self.go_to(row)
+        #self.go_to(row)
+        # move to the new location if it is the selected location,
+        # not if the row was updated but not selected
+        indices = self.table_location_list.selectedIndexes()
+        selected_rows = [ind.row() for ind in indices]
+        if len(selected_rows) > 0:
+            if row == selected_rows[0]:
+                self.go_to(row)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_A and event.modifiers() == Qt.ControlModifier:
