@@ -25,7 +25,7 @@ class SquidFilterWheelWrapper:
 
     def move_w(self, delta):
         self.microcontroller.move_w_usteps(
-            int(delta / (SCREW_PITCH_W_MM / (MICROSTEPPING_DEFAULT_W * FULLSTEPS_PER_REV_W)))
+            int(STAGE_MOVEMENT_SIGN_W * delta / (SCREW_PITCH_W_MM / (MICROSTEPPING_DEFAULT_W * FULLSTEPS_PER_REV_W)))
         )
 
     def homing(self):

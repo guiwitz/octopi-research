@@ -107,16 +107,6 @@ class LightSource(ABC):
         pass
 
     @abstractmethod
-    def get_intensity_range(self) -> Tuple[float, float]:
-        """
-        Get the valid intensity range.
-
-        Returns:
-            Tuple[float, float]: (minimum intensity, maximum intensity)
-        """
-        pass
-
-    @abstractmethod
     def shut_down(self):
         """Safely shut down the light source."""
         pass

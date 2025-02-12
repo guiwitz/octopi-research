@@ -83,6 +83,7 @@ class CephlaStage(AbstractStage):
             )
 
     def move_z_to(self, abs_mm: float, blocking: bool = True):
+        self._microcontroller.move_z_to_usteps(self._config.Z_AXIS.convert_real_units_to_ustep(abs_mm))
         if blocking:
             self._microcontroller.wait_till_operation_is_completed(
                 self._calc_move_timeout(abs_mm - self.get_pos().z_mm, self.get_config().Z_AXIS.MAX_SPEED)

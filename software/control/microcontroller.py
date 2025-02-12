@@ -1,12 +1,15 @@
+import abc
 import struct
 import threading
 import time
+from abc import abstractmethod
 from typing import Callable
 
 import numpy as np
 import serial
 import serial.tools.list_ports
 from crc import CrcCalculator, Crc8
+from serial.serialutil import SerialException
 
 import squid.logging
 from control._def import *
@@ -17,6 +20,9 @@ from control._def import *
 # done (7/20/2021) - remove the time.sleep in all functions (except for __init__) to
 # make all callable functions nonblocking, instead, user should check use is_busy() to
 # check if the microcontroller has finished executing the more recent command
+
+# We have a few top level functions here, so we have this module level log instance.  Classes should make their own!
+_log = squid.logging.get_logger("microcontroller")
 
 
 # to do (7/28/2021) - add functions for configuring the stepper motors
@@ -34,9 +40,70 @@ class CommandAborted(RuntimeError):
         self.command_id = command_id
 
 
-class SimSerial:
+# NOTE(imo): We'll want to pull this out into a common serial impl shared with serial_peripheral.py at some point, but
+# for now ust auto reconnect down at this level.
+class AbstractCephlaMicroSerial(abc.ABC):
+
+    def __init__(self):
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+
+    @abstractmethod
+    def close(self) -> None:
+        """
+        A noop if already closed.  Can throw an IOError for close related errors or invalid states.
+        """
+        pass
+
+    @abstractmethod
+    def write(self, data: bytearray, reconnect_tries: int = 0) -> int:
+        """
+        This must raise an IOError or OSError on any io issues, or ValueError if data is not sendable.
+
+        If reconnect_tries > 0, this will attempt to reconnect if the device isn't connected (up to the number of tries
+        specified, and with exponential backoff.  This means that if you specific reconnect_tries=5 and it needs to
+        try 5 times, it may hang for a while!)
+        """
+        pass
+
+    @abstractmethod
+    def read(self, count: int = 1, reconnect_tries: int = 0) -> bytes:
+        """
+        Read up to count bytes, and return them as bytes.  Can throw IOError or OSError if the device is in an invalid
+        state, or ValueError if count is not valid.
+
+        If reconnect_tries > 0, this will attempt to reconnect if the device isn't connected (up to the number of tries
+        specified, and with exponential backoff.  This means that if you specific reconnect_tries=5 and it needs to
+        try 5 times, it may hang for a while!)
+        """
+        pass
+
+    @abstractmethod
+    def bytes_available(self) -> int:
+        """
+        Returns the number of bytes in the read buffer ready for immediate reading.
+
+        If the device is no longer connected or is in an invalid state, this might be None or might throw IOError.
+        """
+        pass
+
+    @abstractmethod
+    def is_open(self) -> bool:
+        """
+        Returns true if the device is open and ready for read/writing, false otherwise.
+        """
+        pass
+
+    @abstractmethod
+    def reconnect(self, attempts: int) -> bool:
+        """
+        Attempts to reconnect, if needed, and returns true if successful.  If already connected, this is a noop (and will return True)
+        """
+        pass
+
+
+class SimSerial(AbstractCephlaMicroSerial):
     @staticmethod
-    def response_bytes_for(command_id, execution_status, x, y, z, theta, joystick_button, switch):
+    def response_bytes_for(command_id, execution_status, x, y, z, theta, joystick_button, switch) -> bytes:
         """
         - command ID (1 byte)
         - execution status (1 byte)
@@ -56,10 +123,11 @@ class SimSerial:
             struct.pack(">BBiiiiBi", command_id, execution_status, x, y, z, theta, button_state, reserved_state)
         )
         response.append(crc_calculator.calculate_checksum(response))
-        return response
+        return bytes(response)
 
     def __init__(self):
-        self.in_waiting = 0
+        super().__init__()
+        self._in_waiting = 0
         self.response_buffer = []
 
         self.x = 0
@@ -127,19 +195,22 @@ class SimSerial:
             )
         )
 
-        self.in_waiting = len(self.response_buffer)
+        self._in_waiting = len(self.response_buffer)
 
     def close(self):
         self.closed = True
 
-    def write(self, data):
+    def write(self, data: bytearray, reconnect_tries: int = 0) -> int:
         if self.closed:
-            raise IOError("Closed")
+            if not self.reconnect(reconnect_tries):
+                raise IOError("Closed")
         self.respond_to(data)
+        return len(data)
 
-    def read(self, count=1):
+    def read(self, count=1, reconnect_tries: int = 0) -> bytes:
         if self.closed:
-            raise IOError("Closed")
+            if not self.reconnect(reconnect_tries):
+                raise IOError("Closed")
 
         response = bytearray()
         for i in range(count):
@@ -147,16 +218,181 @@ class SimSerial:
                 break
             response.append(self.response_buffer.pop(0))
 
-        self.in_waiting = len(self.response_buffer)
+        self._in_waiting = len(self.response_buffer)
         return response
+
+    def bytes_available(self) -> int:
+        if not self.is_open():
+            return 0
+        return self._in_waiting
+
+    def is_open(self) -> bool:
+        return not self.closed
+
+    def reconnect(self, attempts: int) -> bool:
+        if not attempts:
+            return self.is_open()
+
+        if not self.is_open():
+            # Clear our response buffer to simulate reopening a device
+            self._log.warning("Reconnect required, succeeded.")
+            self.response_buffer.clear()
+            self.closed = False
+
+        return True
+
+
+class MicrocontrollerSerial(AbstractCephlaMicroSerial):
+    INITIAL_RECONNECT_INTERVAL = 0.5
+
+    @staticmethod
+    def exponential_backoff_time(attempt_index: int, initial_interval: float) -> float:
+        """
+        This is the time to sleep before you attempt the attempt_index attempt, where attempt_index is 0 indexed.
+        EG:
+          time.sleep(exponential_backoff_time(0, 0.5))
+          attempt_0()
+          time.sleep(exponential_backoff_time(1, 0.5))
+          attempt_1()
+
+        will have a 0 sleep before attempt_0(), and 0.5 before attempt_1()
+        """
+        if attempt_index <= 0:
+            return 0.0
+        else:
+            return initial_interval * 2**attempt_index
+
+    def __init__(self, port: str, baudrate: int):
+        super().__init__()
+        self._port = port
+        self._baudrate = baudrate
+        self._serial = serial.Serial(port, baudrate)
+
+    def close(self) -> None:
+        return self._serial.close()
+
+    def write(self, data: bytearray, reconnect_tries: int = 0) -> int:
+        # the is_open attribute is unreliable - if a device just recently dropped out, it may not be up to date.
+        # So we just try to write, and if we get an OS error we try to write again but without retrying
+        try:
+            return self._serial.write(data)
+        except (IOError, OSError, SerialException) as e:
+            if reconnect_tries > 0:
+                if not self.reconnect(reconnect_tries):
+                    raise
+                return self.write(data, reconnect_tries=0)
+            else:
+                raise
+
+    def read(self, count: int = 1, reconnect_tries: int = 0) -> bytes:
+        # the is_open attribute is unreliable - if a device just recently dropped out, it may not be up to date.
+        # So we just try to read, and if we get an OS error we try to read again but without retrying
+        try:
+            return self._serial.read(count)
+        except (IOError, OSError, SerialException) as e:
+            if reconnect_tries > 0:
+                if not self.reconnect(reconnect_tries):
+                    raise
+                self.read(count, reconnect_tries=0)
+            else:
+                raise
+
+    def bytes_available(self) -> int:
+        if not self.is_open():
+            return 0
+
+        return self._serial.in_waiting
+
+    def is_open(self) -> bool:
+        try:
+            if not self._serial.is_open:
+                return False
+            # pyserial is_open is sortof useless - it doesn't force a check to see if the device is still valid.
+            # but the in_waiting does an ioctl to check for the bytes in the read buffer.  This is a system call, so
+            # not the best from a performance perspective, but we are operating with 2 mega baud and a system call
+            # is insignificant on that timescale!
+            bytes_avail = self._serial.in_waiting
+
+            return True
+        except OSError:
+            return False
+
+    def reconnect(self, attempts: int) -> bool:
+        self._log.debug(f"Attempting reconnect to {self._serial.port}.  With max of {attempts} attempts.")
+        for i in range(attempts):
+            this_interval = MicrocontrollerSerial.exponential_backoff_time(
+                i, MicrocontrollerSerial.INITIAL_RECONNECT_INTERVAL
+            )
+            if not self.is_open():
+                time.sleep(this_interval)
+                try:
+                    try:
+                        self._serial.close()
+                    except OSError:
+                        pass
+                    self._serial = serial.Serial(port=self._port, baudrate=self._baudrate)
+                except (IOError, OSError, SerialException) as se:
+                    if i + 1 == attempts:
+                        self._log.error(
+                            f"Reconnect to {self._serial.port} failed after {attempts} attempts. Last reconnect interval was {this_interval} [s]",
+                            exc_info=se,
+                        )
+                        # This is the last time around the loop, so it'll exit and return self.is_open() as false after this.
+                    else:
+                        self._log.warning(
+                            f"Couldn't reconnect serial={self._serial.port} @ baud={self._serial.baudrate}.  Attempt {i + 1}/{attempts}."
+                        )
+            else:
+                break
+
+        # We print warnings/errors in the loop above, so here we can just return the result of our best efforts!
+        return self.is_open()
+
+
+def get_microcontroller_serial_device(
+    version=None, sn=None, baudrate=2000000, simulated=False
+) -> AbstractCephlaMicroSerial:
+    if simulated:
+        return SimSerial()
+    else:
+        _log.info(f"Getting serial device for microcontroller {version=}")
+        if version == "Arduino Due":
+            controller_ports = [
+                p.device for p in serial.tools.list_ports.comports() if "Arduino Due" == p.description
+            ]  # autodetect - based on Deepak's code
+        else:
+            if sn is not None:
+                controller_ports = [p.device for p in serial.tools.list_ports.comports() if sn == p.serial_number]
+            else:
+                if sys.platform == "win32":
+                    controller_ports = [
+                        p.device for p in serial.tools.list_ports.comports() if p.manufacturer == "Microsoft"
+                    ]
+                else:
+                    controller_ports = [
+                        p.device for p in serial.tools.list_ports.comports() if p.manufacturer == "Teensyduino"
+                    ]
+
+        if not controller_ports:
+            raise IOError("no controller found for serial device")
+        if len(controller_ports) > 1:
+            _log.warning("multiple controller found - using the first")
+
+        return MicrocontrollerSerial(controller_ports[0], baudrate)
 
 
 class Microcontroller:
     LAST_COMMAND_ACK_TIMEOUT = 0.5
     MAX_RETRY_COUNT = 5
+    MAX_RECONNECT_COUNT = 3
 
-    def __init__(self, version="Arduino Due", sn=None, existing_serial=None, reset_and_initialize=True):
+    def __init__(self, serial_device: AbstractCephlaMicroSerial, reset_and_initialize=True):
         self.log = squid.logging.get_logger(self.__class__.__name__)
+
+        if not serial_device:
+            raise ValueError("You must pass in an AbstractCephlaSerial device for the microcontroller instance to use.")
+
+        self._serial = serial_device
 
         self.tx_buffer_length = MicrocontrollerDef.CMD_LENGTH
         self.rx_buffer_length = MicrocontrollerDef.MSG_LENGTH
@@ -193,36 +429,6 @@ class Microcontroller:
         self.crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
         self.retry = 0
 
-        self.log.debug("connecting to controller based on " + version)
-
-        if existing_serial:
-            self.serial = existing_serial
-        else:
-            if version == "Arduino Due":
-                controller_ports = [
-                    p.device for p in serial.tools.list_ports.comports() if "Arduino Due" == p.description
-                ]  # autodetect - based on Deepak's code
-            else:
-                if sn is not None:
-                    controller_ports = [p.device for p in serial.tools.list_ports.comports() if sn == p.serial_number]
-                else:
-                    if sys.platform == "win32":
-                        controller_ports = [
-                            p.device for p in serial.tools.list_ports.comports() if p.manufacturer == "Microsoft"
-                        ]
-                    else:
-                        controller_ports = [
-                            p.device for p in serial.tools.list_ports.comports() if p.manufacturer == "Teensyduino"
-                        ]
-
-            if not controller_ports:
-                raise IOError("no controller found")
-            if len(controller_ports) > 1:
-                self.log.warning("multiple controller found - using the first")
-
-            self.serial = serial.Serial(controller_ports[0], 2000000)
-        self.log.debug("controller connected")
-
         self.new_packet_callback_external = None
         self.terminate_reading_received_packet_thread = False
         self.thread_read_received_packet = threading.Thread(target=self.read_received_packet, daemon=True)
@@ -245,7 +451,7 @@ class Microcontroller:
     def close(self):
         self.terminate_reading_received_packet_thread = True
         self.thread_read_received_packet.join()
-        self.serial.close()
+        self._serial.close()
 
     def add_joystick_button_listener(self, listener: Callable[[bool], None]):
         try:
@@ -347,8 +553,8 @@ class Microcontroller:
         cmd[3] = status
         self.send_command(cmd)
 
-    def _move_axis_usteps(self, usteps, axis_command_code, axis_direction_sign):
-        direction = axis_direction_sign * np.sign(usteps)
+    def _move_axis_usteps(self, usteps, axis_command_code):
+        direction = np.sign(usteps)
         n_microsteps_abs = abs(usteps)
         # if n_microsteps_abs exceed the max value that can be sent in one go
         while n_microsteps_abs >= (2**32) / 2:
@@ -376,7 +582,7 @@ class Microcontroller:
         self.send_command(cmd)
 
     def move_x_usteps(self, usteps):
-        self._move_axis_usteps(usteps, CMD_SET.MOVE_X, STAGE_MOVEMENT_SIGN_X)
+        self._move_axis_usteps(usteps, CMD_SET.MOVE_X)
 
     def move_x_to_usteps(self, usteps):
         payload = self._int_to_payload(usteps, 4)
@@ -389,7 +595,7 @@ class Microcontroller:
         self.send_command(cmd)
 
     def move_y_usteps(self, usteps):
-        self._move_axis_usteps(usteps, CMD_SET.MOVE_Y, STAGE_MOVEMENT_SIGN_Y)
+        self._move_axis_usteps(usteps, CMD_SET.MOVE_Y)
 
     def move_y_to_usteps(self, usteps):
         payload = self._int_to_payload(usteps, 4)
@@ -402,7 +608,7 @@ class Microcontroller:
         self.send_command(cmd)
 
     def move_z_usteps(self, usteps):
-        self._move_axis_usteps(usteps, CMD_SET.MOVE_Z, STAGE_MOVEMENT_SIGN_Z)
+        self._move_axis_usteps(usteps, CMD_SET.MOVE_Z)
 
     def move_z_to_usteps(self, usteps):
         payload = self._int_to_payload(usteps, 4)
@@ -415,10 +621,10 @@ class Microcontroller:
         self.send_command(cmd)
 
     def move_theta_usteps(self, usteps):
-        self._move_axis_usteps(usteps, CMD_SET.MOVE_THETA, STAGE_MOVEMENT_SIGN_THETA)
+        self._move_axis_usteps(usteps, CMD_SET.MOVE_THETA)
 
     def move_w_usteps(self, usteps):
-        self._move_axis_usteps(usteps, CMD_SET.MOVE_W, STAGE_MOVEMENT_SIGN_W)
+        self._move_axis_usteps(usteps, CMD_SET.MOVE_W)
 
     def set_off_set_velocity_x(self, off_set_velocity):
         # off_set_velocity is in mm/s
@@ -716,7 +922,7 @@ class Microcontroller:
         self._cmd_id = (self._cmd_id + 1) % 256
         command[0] = self._cmd_id
         command[-1] = self.crc_calculator.calculate_checksum(command[:-1])
-        self.serial.write(command)
+        self._serial.write(command, reconnect_tries=Microcontroller.MAX_RECONNECT_COUNT)
         self.mcu_cmd_execution_in_progress = True
         self.last_command = command
         self.last_command_send_timestamp = time.time()
@@ -741,7 +947,7 @@ class Microcontroller:
 
     def resend_last_command(self):
         if self.last_command is not None:
-            self.serial.write(self.last_command)
+            self._serial.write(self.last_command, reconnect_tries=Microcontroller.MAX_RECONNECT_COUNT)
             self.mcu_cmd_execution_in_progress = True
             # We use the retry count for both checksum errors, and to keep track of
             # timeout re-attempts.
@@ -752,104 +958,114 @@ class Microcontroller:
             self.abort_current_command("Resend last requested with no last command")
 
     def read_received_packet(self):
-        while self.terminate_reading_received_packet_thread == False:
-            # wait to receive data
-            if self.serial.in_waiting == 0 or self.serial.in_waiting % self.rx_buffer_length != 0:
-                # Sleep a negligible amount of time just to give other threads time to run.  Otherwise,
-                # we run the rise of spinning forever here and not letting progress happen elsewhere.
-                time.sleep(0.0001)
-                continue
+        while not self.terminate_reading_received_packet_thread:
+            try:
+                # wait to receive data
+                if self._serial.bytes_available() == 0 or self._serial.bytes_available() % self.rx_buffer_length != 0:
+                    # Sleep a negligible amount of time just to give other threads time to run.  Otherwise,
+                    # we run the rise of spinning forever here and not letting progress happen elsewhere.
+                    time.sleep(0.0001)
 
-            # get rid of old data
-            num_bytes_in_rx_buffer = self.serial.in_waiting
-            if num_bytes_in_rx_buffer > self.rx_buffer_length:
-                for i in range(num_bytes_in_rx_buffer - self.rx_buffer_length):
-                    self.serial.read()
+                    if not self._serial.is_open():
+                        if not self._serial.reconnect(attempts=Microcontroller.MAX_RECONNECT_COUNT):
+                            self.log.error(
+                                "In read loop, serial device failed to reconnect.  Microcontroller is defunct!"
+                            )
 
-            # read the buffer
-            msg = []
-            for i in range(self.rx_buffer_length):
-                msg.append(ord(self.serial.read()))
+                    continue
 
-            # parse the message
-            """
-            - command ID (1 byte)
-            - execution status (1 byte)
-            - X pos (4 bytes)
-            - Y pos (4 bytes)
-            - Z pos (4 bytes)
-            - Theta (4 bytes)
-            - buttons and switches (1 byte)
-            - reserved (4 bytes)
-            - CRC (1 byte)
-            """
-            self._cmd_id_mcu = msg[0]
-            self._cmd_execution_status = msg[1]
-            if (self._cmd_id_mcu == self._cmd_id) and (
-                self._cmd_execution_status == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
-            ):
-                if self.mcu_cmd_execution_in_progress:
-                    self.mcu_cmd_execution_in_progress = False
-                    self.log.debug("mcu command " + str(self._cmd_id) + " complete")
-            elif (
-                self.mcu_cmd_execution_in_progress
-                and self._cmd_id_mcu != self._cmd_id
-                and time.time() - self.last_command_send_timestamp > self.LAST_COMMAND_ACK_TIMEOUT
-                and self.last_command is not None
-            ):
-                if self.retry > self.MAX_RETRY_COUNT:
-                    self.abort_current_command(
-                        reason=f"Command timed out without an ack after {self.LAST_COMMAND_ACK_TIMEOUT} [s], and {self.retry} retries"
-                    )
-                else:
-                    self.log.debug(
-                        f"command timed out without an ack after {self.LAST_COMMAND_ACK_TIMEOUT} [s], resending command"
-                    )
-                    self.resend_last_command()
-            elif (
-                self.mcu_cmd_execution_in_progress
-                and self._cmd_execution_status == CMD_EXECUTION_STATUS.CMD_CHECKSUM_ERROR
-            ):
-                if self.retry > self.MAX_RETRY_COUNT:
-                    self.abort_current_command(reason=f"Checksum error and 10 retries for {self._cmd_id}")
-                else:
-                    self.log.error("cmd checksum error, resending command")
-                    self.resend_last_command()
+                # get rid of old data
+                num_bytes_in_rx_buffer = self._serial.bytes_available()
+                if num_bytes_in_rx_buffer > self.rx_buffer_length:
+                    for i in range(num_bytes_in_rx_buffer - self.rx_buffer_length):
+                        self._serial.read()
 
-            self.x_pos = self._payload_to_int(
-                msg[2:6], MicrocontrollerDef.N_BYTES_POS
-            )  # unit: microstep or encoder resolution
-            self.y_pos = self._payload_to_int(
-                msg[6:10], MicrocontrollerDef.N_BYTES_POS
-            )  # unit: microstep or encoder resolution
-            self.z_pos = self._payload_to_int(
-                msg[10:14], MicrocontrollerDef.N_BYTES_POS
-            )  # unit: microstep or encoder resolution
-            self.theta_pos = self._payload_to_int(
-                msg[14:18], MicrocontrollerDef.N_BYTES_POS
-            )  # unit: microstep or encoder resolution
+                # read the buffer
+                msg = []
+                for i in range(self.rx_buffer_length):
+                    msg.append(ord(self._serial.read()))
 
-            self.button_and_switch_state = msg[18]
-            # joystick button
-            tmp = self.button_and_switch_state & (1 << BIT_POS_JOYSTICK_BUTTON)
-            joystick_button_pressed = tmp > 0
-            if self.joystick_button_pressed != joystick_button_pressed:
-                if self.joystick_listener_events_enabled:
-                    for _, listener_fn in self.joystick_event_listeners:
-                        listener_fn(joystick_button_pressed)
+                # parse the message
+                """
+                - command ID (1 byte)
+                - execution status (1 byte)
+                - X pos (4 bytes)
+                - Y pos (4 bytes)
+                - Z pos (4 bytes)
+                - Theta (4 bytes)
+                - buttons and switches (1 byte)
+                - reserved (4 bytes)
+                - CRC (1 byte)
+                """
+                self._cmd_id_mcu = msg[0]
+                self._cmd_execution_status = msg[1]
+                if (self._cmd_id_mcu == self._cmd_id) and (
+                    self._cmd_execution_status == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+                ):
+                    if self.mcu_cmd_execution_in_progress:
+                        self.mcu_cmd_execution_in_progress = False
+                        self.log.debug("mcu command " + str(self._cmd_id) + " complete")
+                elif (
+                    self.mcu_cmd_execution_in_progress
+                    and self._cmd_id_mcu != self._cmd_id
+                    and time.time() - self.last_command_send_timestamp > self.LAST_COMMAND_ACK_TIMEOUT
+                    and self.last_command is not None
+                ):
+                    if self.retry > self.MAX_RETRY_COUNT:
+                        self.abort_current_command(
+                            reason=f"Command timed out without an ack after {self.LAST_COMMAND_ACK_TIMEOUT} [s], and {self.retry} retries"
+                        )
+                    else:
+                        self.log.debug(
+                            f"command timed out without an ack after {self.LAST_COMMAND_ACK_TIMEOUT} [s], resending command"
+                        )
+                        self.resend_last_command()
+                elif (
+                    self.mcu_cmd_execution_in_progress
+                    and self._cmd_execution_status == CMD_EXECUTION_STATUS.CMD_CHECKSUM_ERROR
+                ):
+                    if self.retry > self.MAX_RETRY_COUNT:
+                        self.abort_current_command(reason=f"Checksum error and 10 retries for {self._cmd_id}")
+                    else:
+                        self.log.error("cmd checksum error, resending command")
+                        self.resend_last_command()
 
-                # The microcontroller wants us to send an ack back only when we see a False -> True
-                # transition. handle that here.
-                if joystick_button_pressed:
-                    self.ack_joystick_button_pressed()
-            self.joystick_button_pressed = joystick_button_pressed
+                self.x_pos = self._payload_to_int(
+                    msg[2:6], MicrocontrollerDef.N_BYTES_POS
+                )  # unit: microstep or encoder resolution
+                self.y_pos = self._payload_to_int(
+                    msg[6:10], MicrocontrollerDef.N_BYTES_POS
+                )  # unit: microstep or encoder resolution
+                self.z_pos = self._payload_to_int(
+                    msg[10:14], MicrocontrollerDef.N_BYTES_POS
+                )  # unit: microstep or encoder resolution
+                self.theta_pos = self._payload_to_int(
+                    msg[14:18], MicrocontrollerDef.N_BYTES_POS
+                )  # unit: microstep or encoder resolution
 
-            # switch
-            tmp = self.button_and_switch_state & (1 << BIT_POS_SWITCH)
-            self.switch_state = tmp > 0
+                self.button_and_switch_state = msg[18]
+                # joystick button
+                tmp = self.button_and_switch_state & (1 << BIT_POS_JOYSTICK_BUTTON)
+                joystick_button_pressed = tmp > 0
+                if self.joystick_button_pressed != joystick_button_pressed:
+                    if self.joystick_listener_events_enabled:
+                        for _, listener_fn in self.joystick_event_listeners:
+                            listener_fn(joystick_button_pressed)
 
-            if self.new_packet_callback_external is not None:
-                self.new_packet_callback_external(self)
+                    # The microcontroller wants us to send an ack back only when we see a False -> True
+                    # transition. handle that here.
+                    if joystick_button_pressed:
+                        self.ack_joystick_button_pressed()
+                self.joystick_button_pressed = joystick_button_pressed
+
+                # switch
+                tmp = self.button_and_switch_state & (1 << BIT_POS_SWITCH)
+                self.switch_state = tmp > 0
+
+                if self.new_packet_callback_external is not None:
+                    self.new_packet_callback_external(self)
+            except Exception as e:
+                self.log.error("Read loop failed, continuing to loop to see if anything can recover.", exc_info=e)
 
     def get_pos(self):
         return self.x_pos, self.y_pos, self.z_pos, self.theta_pos

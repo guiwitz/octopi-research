@@ -4,6 +4,7 @@ import sys
 
 from control.microcontroller import Microcontroller
 from squid.abc import AbstractStage
+import squid.logging
 
 # qt libraries
 os.environ["QT_API"] = "pyqt5"
@@ -33,6 +34,7 @@ try:
 except:
     pass
 
+from typing import List, Tuple, Optional
 from queue import Queue
 from threading import Thread, Lock
 from pathlib import Path
@@ -277,7 +279,7 @@ class ImageSaver(QObject):
                 file_ID = int(self.counter % self.max_num_image_per_folder)
                 # create a new folder
                 if file_ID == 0:
-                    os.mkdir(os.path.join(self.base_path, self.experiment_ID, str(folder_ID)))
+                    utils.ensure_directory_exists(os.path.join(self.base_path, self.experiment_ID, str(folder_ID)))
 
                 if image.dtype == np.uint16:
                     # need to use tiff when saving 16 bit images
@@ -326,7 +328,7 @@ class ImageSaver(QObject):
         self.recording_start_time = time.time()
         # create a new folder
         try:
-            os.mkdir(os.path.join(self.base_path, self.experiment_ID))
+            utils.ensure_directory_exists(os.path.join(self.base_path, self.experiment_ID))
             # to do: save configuration
         except:
             pass
@@ -364,7 +366,7 @@ class ImageSaver_Tracking(QObject):
                 file_ID = int(frame_counter % self.max_num_image_per_folder)
                 # create a new folder
                 if file_ID == 0:
-                    os.mkdir(os.path.join(self.base_path, str(folder_ID)))
+                    utils.ensure_directory_exists(os.path.join(self.base_path, str(folder_ID)))
                 if image.dtype == np.uint16:
                     saving_path = os.path.join(
                         self.base_path,
@@ -519,9 +521,6 @@ class LiveController(QObject):
         self.display_resolution_scaling = DEFAULT_DISPLAY_CROP / 100
 
         self.enable_channel_auto_filter_switching = True
-
-        if USE_LDI_SERIAL_CONTROL:
-            self.ldi = self.microscope.ldi
 
         if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
             # to do: add error handling
@@ -1457,50 +1456,59 @@ class MultiPointWorker(QObject):
 
     def update_use_piezo(self, value):
         self.use_piezo = value
-        self._log.info("MultiPointWorker: updated use_piezo to", value)
+        self._log.info(f"MultiPointWorker: updated use_piezo to {value}")
 
     def run(self):
-        self.start_time = time.perf_counter_ns()
-        if not self.camera.is_streaming:
-            self.camera.start_streaming()
+        try:
+            self.start_time = time.perf_counter_ns()
+            if not self.camera.is_streaming:
+                self.camera.start_streaming()
 
-        while self.time_point < self.Nt:
-            # check if abort acquisition has been requested
-            if self.multiPointController.abort_acqusition_requested:
-                break
+            while self.time_point < self.Nt:
+                # check if abort acquisition has been requested
+                if self.multiPointController.abort_acqusition_requested:
+                    self._log.debug("In run, abort_acquisition_requested=True")
+                    break
 
-            self.run_single_time_point()
+                self.run_single_time_point()
 
-            self.time_point = self.time_point + 1
-            if self.dt == 0:  # continous acquisition
-                pass
-            else:  # timed acquisition
+                self.time_point = self.time_point + 1
+                if self.dt == 0:  # continous acquisition
+                    pass
+                else:  # timed acquisition
 
-                # check if the aquisition has taken longer than dt or integer multiples of dt, if so skip the next time point(s)
-                while time.time() > self.timestamp_acquisition_started + self.time_point * self.dt:
-                    self._log.info("skip time point " + str(self.time_point + 1))
-                    self.time_point = self.time_point + 1
+                    # check if the aquisition has taken longer than dt or integer multiples of dt, if so skip the next time point(s)
+                    while time.time() > self.timestamp_acquisition_started + self.time_point * self.dt:
+                        self._log.info("skip time point " + str(self.time_point + 1))
+                        self.time_point = self.time_point + 1
 
-                # check if it has reached Nt
-                if self.time_point == self.Nt:
-                    break  # no waiting after taking the last time point
+                    # check if it has reached Nt
+                    if self.time_point == self.Nt:
+                        break  # no waiting after taking the last time point
 
-                # wait until it's time to do the next acquisition
-                while time.time() < self.timestamp_acquisition_started + self.time_point * self.dt:
-                    if self.multiPointController.abort_acqusition_requested:
-                        break
-                    time.sleep(0.05)
+                    # wait until it's time to do the next acquisition
+                    while time.time() < self.timestamp_acquisition_started + self.time_point * self.dt:
+                        if self.multiPointController.abort_acqusition_requested:
+                            self._log.debug("In run wait loop, abort_acquisition_requested=True")
+                            break
+                        time.sleep(0.05)
 
-        elapsed_time = time.perf_counter_ns() - self.start_time
-        self._log.info("Time taken for acquisition: " + str(elapsed_time / 10**9))
+            elapsed_time = time.perf_counter_ns() - self.start_time
+            self._log.info("Time taken for acquisition: " + str(elapsed_time / 10**9))
 
-        # End processing using the updated method
-        if DO_FLUORESCENCE_RTP:
-            self.processingHandler.processing_queue.join()
-            self.processingHandler.upload_queue.join()
-            self.processingHandler.end_processing()
+            # End processing using the updated method
+            if DO_FLUORESCENCE_RTP:
+                self.processingHandler.processing_queue.join()
+                self.processingHandler.upload_queue.join()
+                self.processingHandler.end_processing()
 
-        self._log.info(f"Time taken for acquisition/processing: {(time.perf_counter_ns() - self.start_time) / 1e9} [s]")
+            self._log.info(
+                f"Time taken for acquisition/processing: {(time.perf_counter_ns() - self.start_time) / 1e9} [s]"
+            )
+        except TimeoutError as te:
+            self._log.error(f"Operation timed out during acquisition, aborting acquisition!")
+            self._log.error(te)
+            self.multiPointController.request_abort_aquisition()
         self.finished.emit()
 
     def wait_till_operation_is_completed(self):
@@ -1515,7 +1523,7 @@ class MultiPointWorker(QObject):
 
         # for each time point, create a new folder
         current_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point))
-        os.mkdir(current_path)
+        utils.ensure_directory_exists(current_path)
 
         slide_path = os.path.join(self.base_path, self.experiment_ID)
 
@@ -1644,7 +1652,10 @@ class MultiPointWorker(QObject):
             multipoint_custom_script_entry(self, current_path, region_id, fov)
             return
 
-        self.perform_autofocus(region_id, fov)
+        if not self.perform_autofocus(region_id, fov):
+            self._log.error(
+                f"Autofocus failed in acquire_at_position.  Continuing to acquire anyway using the current z position (z={self.stage.get_pos().z_mm} [mm])"
+            )
 
         if self.NZ > 1:
             self.prepare_z_stack()
@@ -1750,7 +1761,7 @@ class MultiPointWorker(QObject):
                 print(repr(e))
 
     def perform_autofocus(self, region_id, fov):
-        if self.do_reflection_af == False:
+        if not self.do_reflection_af:
             # contrast-based AF; perform AF only if when not taking z stack or doing z stack from center
             if (
                 ((self.NZ == 1) or self.z_stacking_config == "FROM CENTER")
@@ -1773,7 +1784,7 @@ class MultiPointWorker(QObject):
                     self.autofocusController.wait_till_autofocus_has_completed()
         else:
             # initialize laser autofocus if it has not been done
-            if self.microscope.laserAutofocusController.is_initialized == False:
+            if not self.microscope.laserAutofocusController.is_initialized:
                 self._log.info("init reflection af")
                 # initialize the reflection AF
                 self.microscope.laserAutofocusController.initialize_auto()
@@ -1800,13 +1811,16 @@ class MultiPointWorker(QObject):
                     self.microscope.laserAutofocusController.move_to_target(
                         0
                     )  # for stepper in open loop mode, repeat the operation to counter backlash.  It's harmless if any other case.
-                except:
+                except Exception as e:
                     file_ID = f"{region_id}_focus_camera.bmp"
                     saving_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point), file_ID)
                     iio.imwrite(saving_path, self.microscope.laserAutofocusController.image)
                     self._log.error(
-                        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! laser AF failed !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+                        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! laser AF failed !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+                        exc_info=e,
                     )
+                    return False
+        return True
 
     def prepare_z_stack(self):
         # move to bottom of the z stack
@@ -2181,7 +2195,7 @@ class MultiPointController(QObject):
         parent=None,
     ):
         QObject.__init__(self)
-
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.camera = camera
         if DO_FLUORESCENCE_RTP:
             self.processingHandler = ProcessingHandler()
@@ -2190,6 +2204,8 @@ class MultiPointController(QObject):
         self.liveController = liveController
         self.autofocusController = autofocusController
         self.configurationManager = configurationManager
+        self.multiPointWorker: Optional[MultiPointWorker] = None
+        self.thread: Optional[QThread] = None
         self.NX = 1
         self.NY = 1
         self.NZ = 1
@@ -2201,6 +2217,7 @@ class MultiPointController(QObject):
         self.deltat = 0
         self.do_autofocus = False
         self.do_reflection_af = False
+        self.use_manual_focus_map = False
         self.gen_focus_map = False
         self.focus_map_storage = []
         self.already_using_fmap = False
@@ -2232,10 +2249,15 @@ class MultiPointController(QObject):
             pass
         self.z_stacking_config = Z_STACKING_CONFIG
 
+    def acquisition_in_progress(self):
+        if self.thread and self.thread.isRunning() and self.multiPointWorker:
+            return True
+        return False
+
     def set_use_piezo(self, checked):
         print("Use Piezo:", checked)
         self.use_piezo = checked
-        if hasattr(self, "multiPointWorker"):
+        if self.multiPointWorker:
             self.multiPointWorker.update_use_piezo(checked)
 
     def set_z_stacking_config(self, z_stacking_config_index):
@@ -2276,6 +2298,9 @@ class MultiPointController(QObject):
     def set_reflection_af_flag(self, flag):
         self.do_reflection_af = flag
 
+    def set_manual_focus_map_flag(self, flag):
+        self.use_manual_focus_map = flag
+
     def set_gen_focus_map_flag(self, flag):
         self.gen_focus_map = flag
         if not flag:
@@ -2305,7 +2330,7 @@ class MultiPointController(QObject):
         self.experiment_ID = experiment_ID.replace(" ", "_") + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
         self.recording_start_time = time.time()
         # create a new folder
-        os.mkdir(os.path.join(self.base_path, self.experiment_ID))
+        utils.ensure_directory_exists(os.path.join(self.base_path, self.experiment_ID))
         # TODO(imo): If the config has changed since boot, is this still the correct config?
         configManagerThrowaway = ConfigurationManager(self.configurationManager.config_filename)
         configManagerThrowaway.write_configuration_selected(
@@ -2323,6 +2348,7 @@ class MultiPointController(QObject):
             "Nt": self.Nt,
             "with AF": self.do_autofocus,
             "with reflection AF": self.do_reflection_af,
+            "with manual focus map": self.use_manual_focus_map,
         }
         try:  # write objective data if it is available
             current_objective = self.parent.objectiveStore.current_objective
@@ -2535,6 +2561,7 @@ class MultiPointController(QObject):
         self.thread.start()
 
     def _on_acquisition_completed(self):
+        self._log.debug("MultiPointController._on_acquisition_completed called")
         # restore the previous selected mode
         if self.gen_focus_map:
             self.autofocusController.clear_focus_map()
@@ -2737,7 +2764,7 @@ class TrackingController(QObject):
         self.recording_start_time = time.time()
         # create a new folder
         try:
-            os.mkdir(os.path.join(self.base_path, self.experiment_ID))
+            utils.ensure_directory_exists(os.path.join(self.base_path, self.experiment_ID))
             self.configurationManager.write_configuration(
                 os.path.join(self.base_path, self.experiment_ID) + "/configurations.xml"
             )  # save the configuration for the experiment
@@ -3220,6 +3247,7 @@ class NavigationViewer(QFrame):
 
     def __init__(self, objectivestore, sample="glass slide", invertX=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.sample = sample
         self.objectiveStore = objectivestore
@@ -3250,7 +3278,7 @@ class NavigationViewer(QFrame):
         print("navigation viewer:", sample)
         self.init_ui(invertX)
 
-        self.load_background_image(self.image_paths.get(sample, "images/slide carrier_828x662.png"))
+        self.load_background_image(self.image_paths.get(sample, "images/4 slide carrier_1509x1010.png"))
         self.create_layers()
         self.update_display_properties(sample)
         # self.update_display()
@@ -3304,8 +3332,8 @@ class NavigationViewer(QFrame):
 
         self.background_item.setZValue(-1)  # Background layer at the bottom
         self.scan_overlay_item.setZValue(0)  # Scan overlay in the middle
-        self.fov_overlay_item.setZValue(1)  # FOV overlay next
-        self.focus_point_overlay_item.setZValue(2)  # # Focus points on top
+        self.focus_point_overlay_item.setZValue(1)  # # Focus points next
+        self.fov_overlay_item.setZValue(2)  # FOV overlay on top
 
     def update_display_properties(self, sample):
         if sample == "glass slide":
@@ -3495,6 +3523,7 @@ class NavigationViewer(QFrame):
             x_mm = (mouse_point.x() - self.origin_x_pixel) * self.mm_per_pixel
             y_mm = (mouse_point.y() - self.origin_y_pixel) * self.mm_per_pixel
 
+            self._log.debug(f"Got double click at (x_mm, y_mm) = {x_mm, y_mm}")
             self.signal_coordinates_clicked.emit(x_mm, y_mm)
 
         except Exception as e:
@@ -3703,6 +3732,7 @@ class ScanCoordinates(QObject):
 
     def __init__(self, objectiveStore, navigationViewer, stage: AbstractStage):
         QObject.__init__(self)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         # Wellplate settings
         self.objectiveStore = objectiveStore
         self.navigationViewer = navigationViewer
@@ -3723,6 +3753,7 @@ class ScanCoordinates(QObject):
 
         # Centralized region management
         self.region_centers = {}  # {region_id: [x, y, z]}
+        self.region_shapes = {}  # {region_id: "Square"}
         self.region_fov_coordinates = {}  # {region_id: [(x,y,z), ...]}
 
     def add_well_selector(self, well_selector):
@@ -3818,6 +3849,7 @@ class ScanCoordinates(QObject):
                         region_name = f"manual{i}"
                     center = np.mean(shape_coords, axis=0)
                     self.region_centers[region_name] = [center[0], center[1]]
+                    self.region_shapes[region_name] = "Manual"
                     self.region_fov_coordinates[region_name] = scan_coordinates
                     manual_region_added = True
                     print(f"Added Manual Region: {region_name}")
@@ -3831,53 +3863,85 @@ class ScanCoordinates(QObject):
         pixel_size_um = self.objectiveStore.get_pixel_size()
         fov_size_mm = (pixel_size_um / 1000) * Acquisition.CROP_WIDTH
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
-
-        steps = math.floor(scan_size_mm / step_size_mm)
-        if shape == "Circle":
-            tile_diagonal = math.sqrt(2) * fov_size_mm
-            if steps % 2 == 1:  # for odd steps
-                actual_scan_size_mm = (steps - 1) * step_size_mm + tile_diagonal
-            else:  # for even steps
-                actual_scan_size_mm = math.sqrt(
-                    ((steps - 1) * step_size_mm + fov_size_mm) ** 2 + (step_size_mm + fov_size_mm) ** 2
-                )
-
-            if actual_scan_size_mm > scan_size_mm:
-                actual_scan_size_mm -= step_size_mm
-                steps -= 1
-        else:
-            actual_scan_size_mm = (steps - 1) * step_size_mm + fov_size_mm
-
-        steps = max(1, steps)  # Ensure at least one step
-        # print("steps:", steps)
-        # print("scan size mm:", scan_size_mm)
-        # print("actual scan size mm:", actual_scan_size_mm)
         scan_coordinates = []
-        half_steps = (steps - 1) / 2
-        radius_squared = (scan_size_mm / 2) ** 2
-        fov_size_mm_half = fov_size_mm / 2
 
-        for i in range(steps):
-            row = []
-            y = center_y + (i - half_steps) * step_size_mm
-            for j in range(steps):
-                x = center_x + (j - half_steps) * step_size_mm
-                if shape == "Square" or (
-                    shape == "Circle" and self._is_in_circle(x, y, center_x, center_y, radius_squared, fov_size_mm_half)
-                ):
+        if shape == "Rectangle":
+            # Use scan_size_mm as height, width is 0.6 * height
+            height_mm = scan_size_mm
+            width_mm = scan_size_mm * 0.6
+            
+            # Calculate steps for height and width separately
+            steps_height = math.floor(height_mm / step_size_mm)
+            steps_width = math.floor(width_mm / step_size_mm)
+            
+            # Calculate actual dimensions
+            actual_scan_height_mm = (steps_height - 1) * step_size_mm + fov_size_mm
+            actual_scan_width_mm = (steps_width - 1) * step_size_mm + fov_size_mm
+            
+            steps_height = max(1, steps_height)
+            steps_width = max(1, steps_width)
+
+            half_steps_height = (steps_height - 1) / 2
+            half_steps_width = (steps_width - 1) / 2
+            
+            for i in range(steps_height):
+                row = []
+                y = center_y + (i - half_steps_height) * step_size_mm
+                for j in range(steps_width):
+                    x = center_x + (j - half_steps_width) * step_size_mm
                     if self.validate_coordinates(x, y):
                         row.append((x, y))
                         self.navigationViewer.register_fov_to_image(x, y)
+                if self.fov_pattern == "S-Pattern" and i % 2 == 1:
+                    row.reverse()
+                scan_coordinates.extend(row)
+        else:
+            steps = math.floor(scan_size_mm / step_size_mm)
+            if shape == "Circle":
+                tile_diagonal = math.sqrt(2) * fov_size_mm
+                if steps % 2 == 1:  # for odd steps
+                    actual_scan_size_mm = (steps - 1) * step_size_mm + tile_diagonal
+                else:  # for even steps
+                    actual_scan_size_mm = math.sqrt(
+                        ((steps - 1) * step_size_mm + fov_size_mm) ** 2 + (step_size_mm + fov_size_mm) ** 2
+                    )
 
-            if self.fov_pattern == "S-Pattern" and i % 2 == 1:
-                row.reverse()
-            scan_coordinates.extend(row)
+                if actual_scan_size_mm > scan_size_mm:
+                    actual_scan_size_mm -= step_size_mm
+                    steps -= 1
+            else:
+                actual_scan_size_mm = (steps - 1) * step_size_mm + fov_size_mm
+
+            steps = max(1, steps)  # Ensure at least one step
+            # print("steps:", steps)
+            # print("scan size mm:", scan_size_mm)
+            # print("actual scan size mm:", actual_scan_size_mm)
+            half_steps = (steps - 1) / 2
+            radius_squared = (scan_size_mm / 2) ** 2
+            fov_size_mm_half = fov_size_mm / 2
+
+            for i in range(steps):
+                row = []
+                y = center_y + (i - half_steps) * step_size_mm
+                for j in range(steps):
+                    x = center_x + (j - half_steps) * step_size_mm
+                    if shape == "Square" or shape == "Rectangle" or (
+                        shape == "Circle" and self._is_in_circle(x, y, center_x, center_y, radius_squared, fov_size_mm_half)
+                    ):
+                        if self.validate_coordinates(x, y):
+                            row.append((x, y))
+                            self.navigationViewer.register_fov_to_image(x, y)
+
+                if self.fov_pattern == "S-Pattern" and i % 2 == 1:
+                    row.reverse()
+                scan_coordinates.extend(row)
 
         if not scan_coordinates and shape == "Circle":
             if self.validate_coordinates(center_x, center_y):
                 scan_coordinates.append((center_x, center_y))
                 self.navigationViewer.register_fov_to_image(center_x, center_y)
 
+        self.region_shapes[well_id] = shape
         self.region_centers[well_id] = [float(center_x), float(center_y), float(self.stage.get_pos().z_mm)]
         self.region_fov_coordinates[well_id] = scan_coordinates
         self.signal_scan_coordinates_updated.emit()
@@ -3886,6 +3950,9 @@ class ScanCoordinates(QObject):
     def remove_region(self, well_id):
         if well_id in self.region_centers:
             del self.region_centers[well_id]
+
+            if well_id in self.region_shapes:
+                del self.region_shapes[well_id]
 
             if well_id in self.region_fov_coordinates:
                 region_scan_coordinates = self.region_fov_coordinates.pop(well_id)
@@ -3897,6 +3964,7 @@ class ScanCoordinates(QObject):
 
     def clear_regions(self):
         self.region_centers.clear()
+        self.region_shapes.clear()
         self.region_fov_coordinates.clear()
         self.navigationViewer.clear_overlay()
         self.signal_scan_coordinates_updated.emit()
@@ -3999,10 +4067,24 @@ class ScanCoordinates(QObject):
         # # Filter points inside the polygon
         # valid_points = grid_points[mask]
 
+        def corners(x_mm, y_mm, fov):
+            center_to_corner = fov/2
+            return (
+                (x_mm + center_to_corner, y_mm + center_to_corner),
+                (x_mm - center_to_corner, y_mm + center_to_corner),
+                (x_mm - center_to_corner, y_mm - center_to_corner),
+                (x_mm + center_to_corner, y_mm - center_to_corner)
+            )
         valid_points = []
-        for x, y in grid_points:
-            if self.validate_coordinates(x, y) and self._is_in_polygon(x, y, shape_coords):
-                valid_points.append((x, y))
+        for x_center, y_center in grid_points:
+            if not self.validate_coordinates(x_center, y_center):
+                self._log.debug(f"Manual coords: ignoring {x_center=},{y_center=} because it is outside our movement range.")
+                continue
+            if not self._is_in_polygon(x_center, y_center, shape_coords) and not any([self._is_in_polygon(x_corner, y_corner, shape_coords) for (x_corner, y_corner) in corners(x_center, y_center, fov_size_mm)]):
+                self._log.debug(f"Manual coords: ignoring {x_center=},{y_center=} because no corners or center are in poly. (corners={corners(x_center, y_center, fov_size_mm)}")
+                continue
+
+            valid_points.append((x_center, y_center))
         if not valid_points:
             return []
         valid_points = np.array(valid_points)
@@ -4023,6 +4105,28 @@ class ScanCoordinates(QObject):
             self.navigationViewer.register_fov_to_image(x, y)
 
         return sorted_points.tolist()
+
+    def region_contains_coordinate(self, region_id: str, x: float, y: float) -> bool:
+        # TODO: check for manual region
+        if not self.validate_region(region_id):
+            return False
+
+        bounds = self.get_region_bounds(region_id)
+        shape = self.get_region_shape(region_id)
+
+        # For square regions
+        if not (bounds["min_x"] <= x <= bounds["max_x"] and bounds["min_y"] <= y <= bounds["max_y"]):
+            return False
+
+        # For circle regions
+        if shape == "Circle":
+            center_x = (bounds["max_x"] + bounds["min_x"]) / 2
+            center_y = (bounds["max_y"] + bounds["min_y"]) / 2
+            radius = (bounds["max_x"] - bounds["min_x"]) / 2
+            if (x - center_x) ** 2 + (y - center_y) ** 2 > radius**2:
+                return False
+
+        return True
 
     def _is_in_polygon(self, x, y, poly):
         n = len(poly)
@@ -4107,6 +4211,11 @@ class ScanCoordinates(QObject):
             "max_y": np.max(fovs[:, 1]),
         }
 
+    def get_region_shape(self, region_id):
+        if not self.validate_region(region_id):
+            return None
+        return self.region_shapes[region_id]
+
     def get_scan_bounds(self):
         """Get bounds of all scan regions with margin"""
         if not self.has_regions():
@@ -4170,7 +4279,65 @@ class FocusMap:
         self.surface_fit = None
         self.method = "spline"  # can be 'spline' or 'rbf'
         self.is_fitted = False
-        self.points = None
+        self.points_xyz = None
+
+    def generate_grid_coordinates(
+        self, scanCoordinates: ScanCoordinates, rows: int = 4, cols: int = 4, add_margin: bool = False
+    ) -> List[Tuple[float, float]]:
+        """
+        Generate focus point grid coordinates for each scan region
+
+        Args:
+            scanCoordinates: ScanCoordinates instance containing regions
+            rows: Number of rows in focus grid
+            cols: Number of columns in focus grid
+            add_margin: If True, adds margin to avoid points at region borders
+
+        Returns:
+            list of (x,y) coordinate tuples for focus points
+        """
+        if rows <= 0 or cols <= 0:
+            raise ValueError("Number of rows and columns must be greater than 0")
+
+        focus_points = []
+
+        # Generate focus points for each region
+        for region_id, region_coords in scanCoordinates.region_fov_coordinates.items():
+            # Get region bounds
+            bounds = scanCoordinates.get_region_bounds(region_id)
+            if not bounds:
+                continue
+
+            x_min, x_max = bounds["min_x"], bounds["max_x"]
+            y_min, y_max = bounds["min_y"], bounds["max_y"]
+
+            # For add_margin we are using one more row and col, taking the middle points on the grid so that the
+            # focus points are not located at the edges of the scaning grid.
+            # TODO: set a value for margin from user input
+            if add_margin:
+                x_step = (x_max - x_min) / cols if cols > 1 else 0
+                y_step = (y_max - y_min) / rows if rows > 1 else 0
+            else:
+                x_step = (x_max - x_min) / (cols - 1) if cols > 1 else 0
+                y_step = (y_max - y_min) / (rows - 1) if rows > 1 else 0
+
+            # Generate grid points
+            for i in range(rows):
+                for j in range(cols):
+                    if add_margin:
+                        x = x_min + x_step / 2 + j * x_step
+                        y = y_min + y_step / 2 + i * y_step
+                    else:
+                        x = x_min + j * x_step
+                        y = y_min + i * y_step
+
+                    # Check if point is within region bounds
+                    if scanCoordinates.validate_coordinates(x, y) and scanCoordinates.region_contains_coordinate(
+                        region_id, x, y
+                    ):
+                        focus_points.append((x, y))
+
+        return focus_points
 
     def set_method(self, method):
         """Set interpolation method

@@ -5,6 +5,7 @@ from typing import Optional
 import squid.logging
 from control.core.core import TrackingController
 from control.microcontroller import Microcontroller
+import control.utils as utils
 from squid.abc import AbstractStage
 
 # set QT_API environment variable
@@ -526,9 +527,10 @@ class SpinningDiskConfocalWidget(QWidget):
 class ObjectivesWidget(QWidget):
     signal_objective_changed = Signal()
 
-    def __init__(self, objective_store):
+    def __init__(self, objective_store, objective_changer=None):
         super(ObjectivesWidget, self).__init__()
         self.objectiveStore = objective_store
+        self.objective_changer = objective_changer
         self.init_ui()
         self.dropdown.setCurrentText(self.objectiveStore.current_objective)
 
@@ -545,7 +547,13 @@ class ObjectivesWidget(QWidget):
 
     def on_objective_changed(self, objective_name):
         self.objectiveStore.set_current_objective(objective_name)
+        if USE_XERYON:
+            if objective_name in XERYON_OBJECTIVE_SWITCHER_POS_1 and self.objective_changer.currentPosition() != 1:
+                self.objective_changer.moveToPosition1()
+            elif objective_name in XERYON_OBJECTIVE_SWITCHER_POS_2 and self.objective_changer.currentPosition() != 2:
+                self.objective_changer.moveToPosition2()
         self.signal_objective_changed.emit()
+
 
 class CameraSettingsWidget(QFrame):
 
@@ -1874,6 +1882,7 @@ class FlexibleMultiPointWidget(QFrame):
     ):
         super().__init__(*args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
+        self.acquisition_start_time = None
         self.last_used_locations = None
         self.last_used_location_ids = None
         self.stage = stage
@@ -2205,7 +2214,7 @@ class FlexibleMultiPointWidget(QFrame):
         grid_af.addWidget(self.checkbox_withAutofocus)
         if SUPPORT_LASER_AUTOFOCUS:
             grid_af.addWidget(self.checkbox_withReflectionAutofocus)
-        grid_af.addWidget(self.checkbox_genAFMap)
+        #grid_af.addWidget(self.checkbox_genAFMap)  # we are not using auto-focus map for now
         grid_af.addWidget(self.checkbox_useFocusMap)
         if ENABLE_OBJECTIVE_PIEZO:
             grid_af.addWidget(self.checkbox_usePiezo)
@@ -2399,6 +2408,7 @@ class FlexibleMultiPointWidget(QFrame):
         self.entry_NZ.setValue(nz)
 
     def update_region_progress(self, current_fov, num_fovs):
+        self._log.debug(f"Updating region progress for {current_fov=}, {num_fovs=}")
         self.progress_bar.setMaximum(num_fovs)
         self.progress_bar.setValue(current_fov)
 
@@ -2427,6 +2437,9 @@ class FlexibleMultiPointWidget(QFrame):
             self.eta_timer.start(1000)  # Update every 1000 ms (1 second)
 
     def update_acquisition_progress(self, current_region, num_regions, current_time_point):
+        self._log.debug(
+            f"updating acquisition progress for {current_region=}, {num_regions=}, {current_time_point=}..."
+        )
         self.current_region = current_region
         self.current_time_point = current_time_point
 
@@ -2526,6 +2539,7 @@ class FlexibleMultiPointWidget(QFrame):
         self.signal_stitcher_widget.emit(checked)
 
     def toggle_acquisition(self, pressed):
+        self._log.debug(f"FlexibleMultiPointWidget.toggle_acquisition, {pressed=}")
         if self.base_path_is_set == False:
             self.btn_startAcquisition.setChecked(False)
             msg = QMessageBox()
@@ -2539,6 +2553,11 @@ class FlexibleMultiPointWidget(QFrame):
             msg.exec_()
             return
         if pressed:
+            if self.multipointController.acquisition_in_progress():
+                self._log.warning("Acquisition in progress or aborting, cannot start another yet.")
+                self.btn_startAcquisition.setChecked(False)
+                return
+
             # @@@ to do: add a widgetManger to enable and disable widget
             # @@@ to do: emit signal to widgetManager to disable other widgets
             self.is_current_acquisition_widget = True  # keep track of what widget started the acquisition
@@ -2587,9 +2606,8 @@ class FlexibleMultiPointWidget(QFrame):
             # Start coordinate-based acquisition
             self.multipointController.run_acquisition()
         else:
+            # This must eventually propagate through and call out acquisition_finished.
             self.multipointController.request_abort_aquisition()
-            self.is_current_acquisition_widget = False
-            self.setEnabled_all(True)
 
     def load_last_used_locations(self):
         if self.last_used_locations is None or len(self.last_used_locations) == 0:
@@ -2993,6 +3011,10 @@ class FlexibleMultiPointWidget(QFrame):
             self._log.debug(self.location_list)
 
     def acquisition_is_finished(self):
+        self._log.debug(
+            f"In FlexibleMultiPointWidget, got acquisition_is_finished with {self.is_current_acquisition_widget=}"
+        )
+
         if not self.is_current_acquisition_widget:
             return  # Skip if this wasn't the widget that started acquisition
 
@@ -3058,12 +3080,13 @@ class WellplateMultiPointWidget(QFrame):
         objectiveStore,
         configurationManager,
         scanCoordinates,
-        focusMapWidget,
+        focusMapWidget=None,
         napariMosaicWidget=None,
         *args,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.stage = stage
         self.navigationViewer = navigationViewer
         self.multipointController = multipointController
@@ -3191,10 +3214,10 @@ class WellplateMultiPointWidget(QFrame):
         # Add a combo box for shape selection
         self.combobox_shape = QComboBox()
         if self.performance_mode:
-            self.combobox_shape.addItems(["Square", "Circle"])
+            self.combobox_shape.addItems(["Square", "Circle", "Rectangle"])
         else:
-            self.combobox_shape.addItems(["Square", "Circle", "Manual"])
-            self.combobox_shape.model().item(2).setEnabled(False)
+            self.combobox_shape.addItems(["Square", "Circle", "Rectangle", "Manual"])
+            self.combobox_shape.model().item(3).setEnabled(False)
         self.combobox_shape.setFixedWidth(btn_width)
         # self.combobox_shape.currentTextChanged.connect(self.on_shape_changed)
 
@@ -3314,7 +3337,7 @@ class WellplateMultiPointWidget(QFrame):
         options_layout.addWidget(self.checkbox_withAutofocus)
         if SUPPORT_LASER_AUTOFOCUS:
             options_layout.addWidget(self.checkbox_withReflectionAutofocus)
-        options_layout.addWidget(self.checkbox_genAFMap)
+        #options_layout.addWidget(self.checkbox_genAFMap)  # We are not using AF map now
         options_layout.addWidget(self.checkbox_useFocusMap)
         if ENABLE_OBJECTIVE_PIEZO:
             options_layout.addWidget(self.checkbox_usePiezo)
@@ -3362,6 +3385,7 @@ class WellplateMultiPointWidget(QFrame):
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
         self.checkbox_genAFMap.toggled.connect(self.multipointController.set_gen_focus_map_flag)
         self.checkbox_useFocusMap.toggled.connect(self.focusMapWidget.setEnabled)
+        self.checkbox_useFocusMap.toggled.connect(self.multipointController.set_manual_focus_map_flag)
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
         self.checkbox_stitchOutput.toggled.connect(self.display_stitcher_widget)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
@@ -3376,7 +3400,7 @@ class WellplateMultiPointWidget(QFrame):
         # self.combobox_z_stack.currentIndexChanged.connect(self.signal_z_stacking.emit)
 
     def enable_manual_ROI(self, enable):
-        self.combobox_shape.model().item(2).setEnabled(enable)
+        self.combobox_shape.model().item(3).setEnabled(enable)
         if not enable:
             self.set_default_shape()
 
@@ -3519,6 +3543,8 @@ class WellplateMultiPointWidget(QFrame):
     def set_default_shape(self):
         if self.scanCoordinates.format in ["384 well plate", "1536 well plate"]:
             self.combobox_shape.setCurrentText("Square")
+        # elif self.scanCoordinates.format in ["4 slide"]:
+        #     self.combobox_shape.setCurrentText("Rectangle")
         elif self.scanCoordinates.format != 0:
             self.combobox_shape.setCurrentText("Circle")
 
@@ -3655,6 +3681,10 @@ class WellplateMultiPointWidget(QFrame):
     def update_live_coordinates(self, pos: squid.abc.Pos):
         if hasattr(self.parent, "recordTabWidget") and self.parent.recordTabWidget.currentWidget() != self:
             return
+        # Don't update scan coordinates if we're navigating focus points. A temporary fix for focus map with glass slide.
+        # This disables updating scanning grid when focus map is checked
+        if not self.focusMapWidget and self.focusMapWidget.enabled:
+            return
         x_mm = pos.x_mm
         y_mm = pos.y_mm
         # Check if x_mm or y_mm has changed
@@ -3670,6 +3700,7 @@ class WellplateMultiPointWidget(QFrame):
         self._last_y_mm = y_mm
 
     def toggle_acquisition(self, pressed):
+        self._log.debug(f"WellplateMultiPointWidget.toggle_acquisition, {pressed=}")
         if not self.base_path_is_set:
             self.btn_startAcquisition.setChecked(False)
             QMessageBox.warning(self, "Warning", "Please choose base saving directory first")
@@ -3681,6 +3712,10 @@ class WellplateMultiPointWidget(QFrame):
             return
 
         if pressed:
+            if self.multipointController.acquisition_in_progress():
+                self._log.warning("Acquisition in progress or aborting, cannot start another yet.")
+                self.btn_startAcquisition.setChecked(False)
+                return
             self.setEnabled_all(False)
             self.is_current_acquisition_widget = True
 
@@ -3749,11 +3784,14 @@ class WellplateMultiPointWidget(QFrame):
             self.multipointController.run_acquisition()
 
         else:
+            # This must eventually propagate through and call our aquisition_is_finished, or else we'll be left
+            # in an odd state.
             self.multipointController.request_abort_aquisition()
-            self.is_current_acquisition_widget = False
-            self.setEnabled_all(True)
 
     def acquisition_is_finished(self):
+        self._log.debug(
+            f"In WellMultiPointWidget, got acquisition_is_finished with {self.is_current_acquisition_widget=}"
+        )
         if not self.is_current_acquisition_widget:
             return  # Skip if this wasn't the widget that started acquisition
 
@@ -3823,7 +3861,7 @@ class FocusMapWidget(QFrame):
         self.setup_ui()
         self.make_connections()
         self.setEnabled(False)
-        self.add_margin = False  # margin for focus grid makes it smaller, but will avoid points at the borders
+        self.add_margin = True  # margin for focus grid makes it smaller, but will avoid points at the borders
 
     def setup_ui(self):
         """Create and arrange UI components"""
@@ -3976,37 +4014,21 @@ class FocusMapWidget(QFrame):
     def generate_grid(self, rows=4, cols=4):
         """Generate focus point grid that spans scan bounds"""
         if self.enabled:
-
             self.point_combo.blockSignals(True)
             self.focus_points.clear()
             self.navigationViewer.clear_focus_points()
             self.status_label.hide()
             current_z = self.stage.get_pos().z_mm
-            bounds = self.scanCoordinates.get_scan_bounds()
-            if not bounds:
-                return
 
-            x_min, x_max = bounds["x"]
-            y_min, y_max = bounds["y"]
-            if self.add_margin:
-                x_step = (x_max - x_min) / (cols) if cols > 1 else 0
-                y_step = (y_max - y_min) / (rows) if rows > 1 else 0
-            else:
-                x_step = (x_max - x_min) / (cols - 1) if cols > 1 else 0
-                y_step = (y_max - y_min) / (rows - 1) if rows > 1 else 0
+            # Use FocusMap to generate coordinates
+            coordinates = self.focusMap.generate_grid_coordinates(
+                self.scanCoordinates, rows=rows, cols=cols, add_margin=self.add_margin
+            )
 
-            for i in range(rows):
-                for j in range(cols):
-                    if self.add_margin:
-                        x = x_min + x_step / 2 + j * x_step
-                        y = y_min + y_step / 2 + i * y_step
-                    else:
-                        x = x_min + j * x_step
-                        y = y_min + i * y_step
-
-                    if self.scanCoordinates.validate_coordinates(x, y):
-                        self.focus_points.append((x, y, current_z))
-                        self.navigationViewer.register_focus_point(x, y)
+            # Add points with current z coordinate
+            for x, y in coordinates:
+                self.focus_points.append((x, y, current_z))
+                self.navigationViewer.register_focus_point(x, y)
 
             self.update_point_list()
             self.point_combo.blockSignals(False)
@@ -5077,7 +5099,6 @@ class NapariMosaicDisplayWidget(QWidget):
         super().__init__(parent)
         self.objectiveStore = objectiveStore
         self.contrastManager = contrastManager
-        self.downsample_factor = PRVIEW_DOWNSAMPLE_FACTOR
         self.viewer = napari.Viewer(show=False)
         self.layout = QVBoxLayout()
         self.layout.addWidget(self.viewer.window._qt_window)
@@ -5220,15 +5241,16 @@ class NapariMosaicDisplayWidget(QWidget):
 
     def updateMosaic(self, image, x_mm, y_mm, k, channel_name):
         # calculate pixel size
-        image_pixel_size_um = self.objectiveStore.get_pixel_size() * self.downsample_factor
+        downsample_factor = max(1,int(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / self.objectiveStore.get_pixel_size()))
+        image_pixel_size_um = self.objectiveStore.get_pixel_size() * downsample_factor
         image_pixel_size_mm = image_pixel_size_um / 1000
         image_dtype = image.dtype
 
         # downsample image
-        if self.downsample_factor != 1:
+        if downsample_factor != 1:
             image = cv2.resize(
                 image,
-                (image.shape[1] // self.downsample_factor, image.shape[0] // self.downsample_factor),
+                (image.shape[1] // downsample_factor, image.shape[0] // downsample_factor),
                 interpolation=cv2.INTER_AREA,
             )
 
@@ -6083,7 +6105,7 @@ class MultiCameraRecordingWidget(QFrame):
             self.btn_setSavingDir.setEnabled(False)
             experiment_ID = self.lineEdit_experimentID.text()
             experiment_ID = experiment_ID + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
-            os.mkdir(os.path.join(self.save_dir_base, experiment_ID))
+            utils.ensure_directory_exists(os.path.join(self.save_dir_base, experiment_ID))
             for channel in self.channels:
                 self.imageSaver[channel].start_new_experiment(os.path.join(experiment_ID, channel), add_timestamp=False)
                 self.streamHandler[channel].start_recording()
@@ -6443,7 +6465,7 @@ class WellplateFormatWidget(QWidget):
         return settings
 
     def add_custom_format(self, name, settings):
-        self.WELLPLATE_FORMAT_SETTINGS[name] = settings
+        WELLPLATE_FORMAT_SETTINGS[name] = settings
         self.populate_combo_box()
         index = self.comboBox.findData(name)
         if index >= 0:
