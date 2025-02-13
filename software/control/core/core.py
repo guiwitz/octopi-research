@@ -1987,7 +1987,9 @@ class MultiPointWorker(QObject):
         if Acquisition.MERGE_CHANNELS:
             self._save_merged_image(image, file_ID, current_path)
 
-        iio.imwrite(saving_path, image)
+        #iio.imwrite(saving_path, image)
+        from ..towbin_funs import save_single_plane_tiff
+        save_single_plane_tiff(image, saving_path)
 
     def _save_merged_image(self, image, file_ID, current_path):
         self.image_count += 1
