@@ -1,5 +1,6 @@
-from qtpy.QtWidgets import (QWidget, QPushButton, QVBoxLayout,QSpinBox,
-                            QLineEdit, QCheckBox, QGridLayout, QMessageBox, QLabel, QTableWidgetItem)
+from qtpy.QtWidgets import (QWidget, QPushButton, QVBoxLayout, QHBoxLayout, QSpinBox,
+                            QLineEdit, QCheckBox, QGridLayout, QMessageBox, QGroupBox,
+                            QLabel, QTableWidgetItem)
 
 from qtpy.QtCore import Qt
 
@@ -33,14 +34,33 @@ class TowbinWidget(QWidget):
         grid_shift_points = QGridLayout()
         self.layout.addLayout(grid_shift_points)
 
-        self.btn_update_position = QPushButton("Update Position")
+        self.btn_update_position = QPushButton("Shift current position")
         grid_shift_points.addWidget(self.btn_update_position)
         self.btn_update_position.clicked.connect(self.update_position)
 
-        self.btn_copy_z = QPushButton("Copy Z to all")
+        self.btn_shift_all_positions = QPushButton("Shift all positions")
+        grid_shift_points.addWidget(self.btn_shift_all_positions)
+        self.btn_shift_all_positions.clicked.connect(self.shift_all_positions)
+
+        '''
+        # not really needed as users should only move relevant dimensions
+        self.check_update_z = QCheckBox("Shift Z")
+        self.check_update_z.setChecked(True)
+        self.check_update_x = QCheckBox("Shift X")
+        self.check_update_x.setChecked(True)
+        self.check_update_y = QCheckBox("Shift Y")
+        self.check_update_y.setChecked(True)
+        self.hbox_check_update = QGroupBox()
+        self.hbox_check_update.setLayout(QHBoxLayout())
+        grid_shift_points.addWidget(self.hbox_check_update)
+        self.hbox_check_update.layout().addWidget(self.check_update_z)
+        self.hbox_check_update.layout().addWidget(self.check_update_x)
+        self.hbox_check_update.layout().addWidget(self.check_update_y)'''
+
+        self.btn_copy_z = QPushButton("Copy Z position to all")
         grid_shift_points.addWidget(self.btn_copy_z)
         self.btn_copy_z.clicked.connect(self.copy_z_to_all)
-        self.btn_copy_z_to_same_id = QPushButton("Copy Z to group ID")
+        self.btn_copy_z_to_same_id = QPushButton("Copy Z position to group ID")
         self.btn_copy_z_to_same_id.clicked.connect(self.copy_z_to_same_id)
         grid_shift_points.addWidget(self.btn_copy_z_to_same_id)
 
@@ -107,10 +127,9 @@ class TowbinWidget(QWidget):
         y_old = self.parent.location_list[index][1]
         self.parent.navigationViewer.deregister_fov_to_image(x_old,y_old)
 
-        x = self.parent.navigationController.x_pos_mm
-        y = self.parent.navigationController.y_pos_mm
-        z = self.parent.navigationController.z_pos_mm
-
+        x = self.parent.stage.get_pos().x_mm
+        y = self.parent.stage.get_pos().y_mm
+        z = self.parent.stage.get_pos().z_mm
         
         location_str = 'x: ' + str(round(x,3)) + ' mm, y: ' + str(round(y,3)) + ' mm, z: ' + str(round(1000*z,1)) + ' um'
         self.parent.dropdown_location_list.setItemText(index, location_str)
@@ -121,6 +140,50 @@ class TowbinWidget(QWidget):
         self.parent.table_location_list.setItem(index, 1, QTableWidgetItem(str(round(y,3))))
         self.parent.table_location_list.setItem(index, 2, QTableWidgetItem(str(round(1000*z,1))))
         self.parent.navigationViewer.register_fov_to_image(x,y)
+
+    def shift_all_positions(self):
+
+        index = self.parent.dropdown_location_list.currentIndex()
+        x_old = self.parent.location_list[index][0]
+        y_old = self.parent.location_list[index][1]
+        z_old = self.parent.location_list[index][2]
+
+        x = self.parent.stage.get_pos().x_mm
+        y = self.parent.stage.get_pos().y_mm
+        z = self.parent.stage.get_pos().z_mm
+
+        x_shift = x - x_old
+        y_shift = y - y_old
+        z_shift = z - z_old
+
+        for i in range(self.parent.table_location_list.rowCount()):
+
+            x_old = self.parent.location_list[i][0]
+            y_old = self.parent.location_list[i][1]
+            self.parent.navigationViewer.deregister_fov_to_image(x_old, y_old)
+
+            x = float(self.parent.table_location_list.item(i, 0).text())
+            y = float(self.parent.table_location_list.item(i, 1).text())
+            z = float(self.parent.table_location_list.item(i, 2).text()) / 1000
+
+            x += x_shift
+            y += y_shift
+            z += z_shift
+
+            self.parent.table_location_list.setItem(i, 0, QTableWidgetItem(str(round(x,3))))
+            self.parent.table_location_list.setItem(i, 1, QTableWidgetItem(str(round(y,3))))
+            self.parent.table_location_list.setItem(i, 2, QTableWidgetItem(str(round(1000*z,1))))
+
+            location_str = 'x: ' + str(round(x,3)) + ' mm, y: ' + str(round(y,3)) + ' mm, z: ' + str(round(1000*z,1)) + ' um'
+            self.parent.dropdown_location_list.setItemText(index, location_str)
+        
+        
+            self.parent.location_list[i] = [x, y, z]
+            self.parent.table_location_list.setItem(i, 0, QTableWidgetItem(str(round(x,3))))
+            self.parent.table_location_list.setItem(i, 1, QTableWidgetItem(str(round(y,3))))
+            self.parent.table_location_list.setItem(i, 2, QTableWidgetItem(str(round(1000*z,1))))
+            self.parent.navigationViewer.register_fov_to_image(x,y)
+
 
     def copy_z_to_all(self):
         """Copy the Z value of the selected location to all the locations in the
