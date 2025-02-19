@@ -2887,6 +2887,8 @@ class FlexibleMultiPointWidget(QFrame):
                 self.scanCoordinates.region_fov_coordinates[new_id] = self.scanCoordinates.region_fov_coordinates.pop(
                     region_id
                 )
+                for coord in self.scanCoordinates.region_fov_coordinates[new_id]:
+                    self.navigationViewer.register_fov_to_image(coord[0], coord[1])
 
         # Update UI
         location_str = f"x:{round(self.location_list[row,0],3)} mm  y:{round(self.location_list[row,1],3)} mm  z:{round(1000*self.location_list[row,2],3)} μm"
