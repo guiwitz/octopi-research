@@ -5,8 +5,9 @@ from pathlib import Path
 from configparser import ConfigParser
 import json
 import csv
-
+from control.utils import SpotDetectionMode
 import squid.logging
+from enum import Enum, auto
 
 log = squid.logging.get_logger(__name__)
 
@@ -239,6 +240,23 @@ class CAMERA_CONFIG:
     ROI_OFFSET_Y_DEFAULT = 0
     ROI_WIDTH_DEFAULT = 3104
     ROI_HEIGHT_DEFAULT = 2084
+
+
+class ZStageConfig(Enum):
+    STEPPER_ONLY = auto()
+    PIEZO_ONLY = auto()
+    STEPPER_AND_PIEZO = auto()
+
+    @classmethod
+    def from_string(cls, mode_str: str) -> "ZStageConfig":
+        mapping = {
+            "stepper_only": cls.STEPPER_ONLY,
+            "piezo_only": cls.PIEZO_ONLY,
+            "stepper_and_piezo": cls.STEPPER_AND_PIEZO,
+        }
+        if mode_str.lower() not in mapping:
+            raise ValueError(f"Invalid z_stage_mode. Must be one of: {', '.join(mapping.keys())}")
+        return mapping[mode_str.lower()]
 
 
 PRINT_CAMERA_FPS = True
@@ -525,13 +543,12 @@ MAIN_CAMERA_MODEL = "MER2-1220-32U3M"
 FOCUS_CAMERA_MODEL = "MER2-630-60U3M"
 FOCUS_CAMERA_EXPOSURE_TIME_MS = 2
 FOCUS_CAMERA_ANALOG_GAIN = 0
-LASER_AF_AVERAGING_N = 5
+LASER_AF_AVERAGING_N = 3
 LASER_AF_DISPLAY_SPOT_IMAGE = True
 LASER_AF_CROP_WIDTH = 1536
 LASER_AF_CROP_HEIGHT = 256
-HAS_TWO_INTERFACES = True
+LASER_AF_SPOT_DETECTION_MODE = SpotDetectionMode.DUAL_LEFT
 LASER_AF_RANGE = 200
-USE_GLASS_TOP = True
 SHOW_LEGACY_DISPLACEMENT_MEASUREMENT_WINDOWS = False
 
 MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT = False
@@ -731,10 +748,10 @@ if ENABLE_TRACKING:
     DEFAULT_DISPLAY_CROP = Tracking.DEFAULT_DISPLAY_CROP
 
 USE_XERYON = False
-XERYON_SERIAL_NUMBER = '95130303033351E02050'
+XERYON_SERIAL_NUMBER = "95130303033351E02050"
 XERYON_SPEED = 80
-XERYON_OBJECTIVE_SWITCHER_POS_1 = ['4x', '10x']
-XERYON_OBJECTIVE_SWITCHER_POS_2 = ['20x', '40x', '60x']
+XERYON_OBJECTIVE_SWITCHER_POS_1 = ["4x", "10x"]
+XERYON_OBJECTIVE_SWITCHER_POS_2 = ["20x", "40x", "60x"]
 XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM = 2
 
 ##########################################################
@@ -744,7 +761,7 @@ CACHED_CONFIG_FILE_PATH = None
 
 # Piezo configuration items
 Z_MOTOR_CONFIG = "STEPPER"  # "STEPPER", "STEPPER + PIEZO", "PIEZO", "LINEAR"
-ENABLE_OBJECTIVE_PIEZO = "PIEZO" in Z_MOTOR_CONFIG
+HAS_OBJECTIVE_PIEZO = "PIEZO" in Z_MOTOR_CONFIG
 
 # the value of OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE is 2.5 or 5
 OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE = 5
@@ -752,7 +769,7 @@ OBJECTIVE_PIEZO_RANGE_UM = 300
 OBJECTIVE_PIEZO_HOME_UM = 20
 OBJECTIVE_PIEZO_FLIP_DIR = False
 
-MULTIPOINT_USE_PIEZO_FOR_ZSTACKS = ENABLE_OBJECTIVE_PIEZO
+MULTIPOINT_USE_PIEZO_FOR_ZSTACKS = HAS_OBJECTIVE_PIEZO
 MULTIPOINT_PIEZO_DELAY_MS = 20
 MULTIPOINT_PIEZO_UPDATE_DISPLAY = True
 
@@ -852,7 +869,7 @@ A1_Y_PIXEL = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["a1_y_pixel"]  # coordi
 ##########################################################
 
 # objective piezo
-if ENABLE_OBJECTIVE_PIEZO == False:
+if HAS_OBJECTIVE_PIEZO == False:
     MULTIPOINT_USE_PIEZO_FOR_ZSTACKS = False
 
 # saving path

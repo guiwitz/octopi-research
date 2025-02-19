@@ -130,7 +130,7 @@ class CELESTA(LightSource):
 
     def get_intensity(self, laser_id):
         self.message = lumencor_httpcommand(command="GET CHINT " + str(laser_id), ip=self.ip)
-        log.debug(command = 'GET CHINT '+str(laser_id), ip=self.ip)
+        log.debug(command="GET CHINT " + str(laser_id), ip=self.ip)
         response = self.message["message"]
         power = float(response.split(" ")[-1])
         intensity = power / self.pmax * 100

@@ -466,10 +466,10 @@ class LDI(LightSource):
     def get_intensity(self, channel):
         try:
             response = self.serial_connection.write_and_read("set?\r")
-            pairs = response.replace('SET:', '').split(',')
+            pairs = response.replace("SET:", "").split(",")
             intensities = {}
             for pair in pairs:
-                channel, value = pair.split('=')
+                channel, value = pair.split("=")
                 intensities[int(channel)] = int(value)
             return intensity[channel]
         except:
@@ -487,8 +487,8 @@ class LDI(LightSource):
     def get_shutter_state(self, channel):
         try:
             response = self.serial_connection.write_and_read("shutter?" + channel + "\r")
-            state = response.split('=')[1]
-            return 1 if state == 'OPEN' else 0
+            state = response.split("=")[1]
+            return 1 if state == "OPEN" else 0
         except:
             return None
 

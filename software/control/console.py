@@ -218,9 +218,11 @@ Use 'microscope' to access the microscope
 
 
 from IPython.core.completer import IPCompleter
+
+
 class NoFileCompleter(IPCompleter):
     """Custom completer that filters out file completions"""
-    
+
     def file_matches(self, text):
         """Override file_matches to return empty list"""
         return []
@@ -228,58 +230,59 @@ class NoFileCompleter(IPCompleter):
 
 class JupyterWidget(QWidget):
     """Widget that embeds a Jupyter console with PyQt5 integration"""
+
     kernel_ready = Signal()  # Signal emitted when kernel is ready
 
     def __init__(self, namespace=None, parent=None):
         super().__init__(parent)
-        
+
         if namespace is None:
             namespace = {}
-            
+
         # Create kernel manager and kernel
         self.kernel_manager = QtInProcessKernelManager()
         self.kernel_manager.start_kernel()
-        
+
         # Get the kernel
         kernel = self.kernel_manager.kernel
-        kernel.gui = 'qt'
+        kernel.gui = "qt"
 
         # Replace the default completer with our custom one
         kernel.shell.Completer = NoFileCompleter(
             shell=kernel.shell,
             namespace=kernel.shell.user_ns,
             global_namespace=kernel.shell.user_global_ns,
-            use_jedi=True
+            use_jedi=True,
         )
-        
+
         # Update namespace
         kernel.shell.user_ns.update(namespace)
-        
+
         # Create kernel client
         self.kernel_client = self.kernel_manager.client()
         self.kernel_client.start_channels()
-        
+
         # Create Jupyter widget
         self.jupyter_widget = RichJupyterWidget()
         self.jupyter_widget.kernel_manager = self.kernel_manager
         self.jupyter_widget.kernel_client = self.kernel_client
-        
+
         # Layout
         layout = QVBoxLayout()
         layout.addWidget(self.jupyter_widget)
         self.setLayout(layout)
-        
+
         # Emit signal when kernel is ready
         self.kernel_ready.emit()
-    
+
     def execute_command(self, command):
         """Execute a command in the Jupyter kernel"""
         self.jupyter_widget.execute(command)
-    
+
     def clear_console(self):
         """Clear the Jupyter console"""
         self.jupyter_widget.clear()
-    
+
     def closeEvent(self, event):
         """Handle cleanup when widget is closed"""
         self.kernel_client.stop_channels()

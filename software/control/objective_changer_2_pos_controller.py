@@ -4,9 +4,10 @@ import time
 import serial
 
 from control.Xeryon import Xeryon, Stage
-from control._def import * # to remove once we create ObjectiveChangerConfig
+from control._def import *  # to remove once we create ObjectiveChangerConfig
 import squid.abc
 from typing import Optional
+
 
 class ObjectiveChanger2PosController:
     def __init__(self, sn: str, stage: Optional[squid.abc.AbstractStage] = None):
@@ -23,7 +24,7 @@ class ObjectiveChanger2PosController:
         self.position2 = 19
 
         self.current_position = None
-        self.retracted = False # moved down by self.position2_offset for position 2
+        self.retracted = False  # moved down by self.position2_offset for position 2
 
         self.position2_offset = XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM
 
@@ -63,7 +64,7 @@ class ObjectiveChanger2PosController_Simulation:
         self.position2 = 19
 
         self.current_position = None
-        self.retracted = False # moved down by self.position2_offset for position 2
+        self.retracted = False  # moved down by self.position2_offset for position 2
 
         self.position2_offset = XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM
 

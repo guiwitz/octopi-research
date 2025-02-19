@@ -601,6 +601,12 @@ class Camera_Simulation(object):
 
     def read_frame(self):
         return self.current_frame
+        """
+        # read from disk for laser af debugging
+        image = cv2.imread("control/tests/data/laser_af_camera.png")[:, :, 0]
+        height, width = image.shape
+        return image + np.random.randint(0, 10, size=(height, width), dtype=np.uint8)
+        """
 
     def _on_frame_callback(self, user_param, raw_image):
         pass

@@ -33,6 +33,8 @@ if USE_PRIOR_STAGE:
     import squid.stage.prior
 else:
     import squid.stage.cephla
+from control.piezo import PiezoStage
+from control._def import ZStageConfig
 
 if CAMERA_TYPE == "Toupcam":
     try:
@@ -83,7 +85,10 @@ else:
     import control.camera as camera_fc
 
 if USE_XERYON:
-    from control.objective_changer_2_pos_controller import ObjectiveChanger2PosController, ObjectiveChanger2PosController_Simulation
+    from control.objective_changer_2_pos_controller import (
+        ObjectiveChanger2PosController,
+        ObjectiveChanger2PosController_Simulation,
+    )
 
 import control.core.core as core
 import control.microcontroller as microcontroller
@@ -190,9 +195,9 @@ class HighContentScreeningGui(QMainWindow):
         if USE_JUPYTER_CONSOLE:
             # Create namespace to expose to Jupyter
             self.namespace = {
-                'microscope': self.microscope,
+                "microscope": self.microscope,
             }
-            
+
             # Create Jupyter widget as a dock widget
             self.jupyter_dock = QDockWidget("Jupyter Console", self)
             self.jupyter_widget = JupyterWidget(namespace=self.namespace)
@@ -210,11 +215,26 @@ class HighContentScreeningGui(QMainWindow):
                 self.log.error("---- !! ERROR CONNECTING TO HARDWARE !! ----", stack_info=True, exc_info=True)
                 raise
 
+        if HAS_OBJECTIVE_PIEZO:
+            self.piezo = PiezoStage(
+                self.microcontroller,
+                {
+                    "OBJECTIVE_PIEZO_HOME_UM": OBJECTIVE_PIEZO_HOME_UM,
+                    "OBJECTIVE_PIEZO_RANGE_UM": OBJECTIVE_PIEZO_RANGE_UM,
+                    "OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE": OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE,
+                    "OBJECTIVE_PIEZO_FLIP_DIR": OBJECTIVE_PIEZO_FLIP_DIR,
+                },
+            )
+            self.piezo.home()
+        else:
+            self.piezo = None
+
         # Common object initialization
         self.objectiveStore = core.ObjectiveStore(parent=self)
         self.configurationManager = core.ConfigurationManager(filename="./channel_configurations.xml")
         self.contrastManager = core.ContrastManager()
         self.streamHandler = core.StreamHandler(display_resolution_scaling=DEFAULT_DISPLAY_CROP / 100)
+
         self.liveController = core.LiveController(
             self.camera, self.microcontroller, self.configurationManager, self.illuminationController, parent=self
         )
@@ -253,6 +273,7 @@ class HighContentScreeningGui(QMainWindow):
         self.multipointController = core.MultiPointController(
             self.camera,
             self.stage,
+            self.piezo,
             self.microcontroller,
             self.liveController,
             self.autofocusController,
@@ -274,16 +295,6 @@ class HighContentScreeningGui(QMainWindow):
                 control_illumination=False,
                 for_displacement_measurement=True,
             )
-            self.multipointController = core.MultiPointController(
-                self.camera,
-                self.stage,
-                self.microcontroller,
-                self.liveController,
-                self.autofocusController,
-                self.configurationManager,
-                scanCoordinates=self.scanCoordinates,
-                parent=self,
-            )
             self.imageDisplayWindow_focus = core.ImageDisplayWindow(
                 draw_crosshairs=True, show_LUT=False, autoLevels=False
             )
@@ -293,8 +304,7 @@ class HighContentScreeningGui(QMainWindow):
                 self.camera_focus,
                 self.liveController_focus_camera,
                 self.stage,
-                has_two_interfaces=HAS_TWO_INTERFACES,
-                use_glass_top=USE_GLASS_TOP,
+                self.piezo,
                 look_for_cache=False,
             )
 
@@ -307,7 +317,9 @@ class HighContentScreeningGui(QMainWindow):
             serial_device=microcontroller.get_microcontroller_serial_device(simulated=True)
         )
         if USE_PRIOR_STAGE:
-            self.stage: squid.abc.AbstractStage = squid.stage.prior.PriorStage(sn=PRIOR_STAGE_SN, stage_config=squid.config.get_stage_config())
+            self.stage: squid.abc.AbstractStage = squid.stage.prior.PriorStage(
+                sn=PRIOR_STAGE_SN, stage_config=squid.config.get_stage_config()
+            )
 
         else:
             self.stage: squid.abc.AbstractStage = squid.stage.cephla.CephlaStage(
@@ -340,8 +352,9 @@ class HighContentScreeningGui(QMainWindow):
         if USE_SQUID_FILTERWHEEL:
             self.squid_filter_wheel = filterwheel.SquidFilterWheelWrapper_Simulation(None)
         if USE_XERYON:
-            self.objective_changer = ObjectiveChanger2PosController_Simulation(sn=XERYON_SERIAL_NUMBER,stage=self.stage)
-
+            self.objective_changer = ObjectiveChanger2PosController_Simulation(
+                sn=XERYON_SERIAL_NUMBER, stage=self.stage
+            )
 
     def loadHardwareObjects(self):
         # Initialize hardware objects
@@ -356,7 +369,9 @@ class HighContentScreeningGui(QMainWindow):
             raise
 
         if USE_PRIOR_STAGE:
-            self.stage: squid.abc.AbstractStage = squid.stage.prior.PriorStage(sn=PRIOR_STAGE_SN, stage_config=squid.config.get_stage_config())
+            self.stage: squid.abc.AbstractStage = squid.stage.prior.PriorStage(
+                sn=PRIOR_STAGE_SN, stage_config=squid.config.get_stage_config()
+            )
 
         else:
             self.stage: squid.abc.AbstractStage = squid.stage.cephla.CephlaStage(
@@ -452,7 +467,7 @@ class HighContentScreeningGui(QMainWindow):
 
         if USE_XERYON:
             try:
-                self.objective_changer = ObjectiveChanger2PosController(sn=XERYON_SERIAL_NUMBER,stage=self.stage)
+                self.objective_changer = ObjectiveChanger2PosController(sn=XERYON_SERIAL_NUMBER, stage=self.stage)
             except Exception:
                 self.log.error("Error initializing Xeryon objective switcher")
                 raise
@@ -481,7 +496,7 @@ class HighContentScreeningGui(QMainWindow):
                 self.stage.move_x(20)
                 self.stage.move_y(20)
 
-            if ENABLE_OBJECTIVE_PIEZO:
+            if HAS_OBJECTIVE_PIEZO:
                 OUTPUT_GAINS.CHANNEL7_GAIN = OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE == 5
             div = 1 if OUTPUT_GAINS.REFDIV else 0
             gains = sum(getattr(OUTPUT_GAINS, f"CHANNEL{i}_GAIN") << i for i in range(8))
@@ -758,7 +773,7 @@ class HighContentScreeningGui(QMainWindow):
     def setupCameraTabWidget(self):
         if not USE_NAPARI_FOR_LIVE_CONTROL or self.live_only_mode:
             self.cameraTabWidget.addTab(self.navigationWidget, "Stages")
-        if ENABLE_OBJECTIVE_PIEZO:
+        if HAS_OBJECTIVE_PIEZO:
             self.cameraTabWidget.addTab(self.piezoWidget, "Piezo")
         if ENABLE_NL5:
             self.cameraTabWidget.addTab(self.nl5Wdiget, "NL5")

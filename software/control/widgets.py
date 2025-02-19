@@ -183,7 +183,10 @@ class ConfigEditorForAcquisitions(QDialog):
             self, "Save Acquisition Config File", "", "XML Files (*.xml);;All Files (*)"
         )
         if file_path:
-            self.config.write_configuration(file_path)
+            if not self.config.write_configuration(file_path):
+                QMessageBox.warning(
+                    self, "Warning", f"Failed to write config to file '{file_path}'.  Check permissions!"
+                )
 
     def load_config_from_file(self, only_z_offset=None):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -205,7 +208,7 @@ class ConfigEditorForAcquisitions(QDialog):
 class ConfigEditor(QDialog):
     def __init__(self, config):
         super().__init__()
-
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.config = config
 
         self.scroll_area = QScrollArea()
@@ -287,12 +290,23 @@ class ConfigEditor(QDialog):
                 if old_val != self.config.get(section, option):
                     print(self.config.get(section, option))
 
+    def save_to_filename(self, filename: str):
+        try:
+            with open(filename, "w") as configfile:
+                self.config.write(configfile)
+                return True
+        except IOError:
+            self._log.exception(f"Failed to write config file to '{filename}'")
+            return False
+
     def save_to_file(self):
         self.save_config()
         file_path, _ = QFileDialog.getSaveFileName(self, "Save Config File", "", "INI Files (*.ini);;All Files (*)")
         if file_path:
-            with open(file_path, "w") as configfile:
-                self.config.write(configfile)
+            if not self.save_to_filename(file_path):
+                QMessageBox.warning(
+                    self, "Warning", f"Failed to write config file to '{file_path}'.  Check permissions!"
+                )
 
     def load_config_from_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Load Config File", "", "INI Files (*.ini);;All Files (*)")
@@ -1136,12 +1150,15 @@ class PiezoWidget(QFrame):
         self.slider = QSlider(Qt.Horizontal, self)
         self.slider.setMinimum(0)
         self.slider.setMaximum(int(OBJECTIVE_PIEZO_RANGE_UM * 100))  # Multiplied by 100 for 0.01 precision
+        self.slider.setValue(int(OBJECTIVE_PIEZO_HOME_UM * 100))
 
         self.spinBox = QDoubleSpinBox(self)
         self.spinBox.setRange(0.0, OBJECTIVE_PIEZO_RANGE_UM)
         self.spinBox.setDecimals(2)
-        self.spinBox.setSingleStep(0.01)
+        self.spinBox.setSingleStep(1)
         self.spinBox.setSuffix(" μm")
+        self.spinBox.setKeyboardTracking(False)
+        self.spinBox.setValue(OBJECTIVE_PIEZO_HOME_UM)
 
         # Row 3: Home Button
         self.home_btn = QPushButton(f" Set to {OBJECTIVE_PIEZO_HOME_UM} μm ", self)
@@ -1207,9 +1224,9 @@ class PiezoWidget(QFrame):
     def adjust_position(self, up):
         increment = self.increment_spinBox.value()
         if up:
-            self.slider_value = min(OBJECTIVE_PIEZO_RANGE_UM, self.slider_value + increment)
+            self.slider_value = min(OBJECTIVE_PIEZO_RANGE_UM, self.spinBox.value() + increment)
         else:
-            self.slider_value = max(0, self.slider_value - increment)
+            self.slider_value = max(0, self.spinBox.value() - increment)
         self.update_spinBox()
         self.update_slider()
         self.update_piezo_position()
@@ -1987,7 +2004,7 @@ class FlexibleMultiPointWidget(QFrame):
         self.entry_deltaZ = QDoubleSpinBox()
         self.entry_deltaZ.setMinimum(0)
         self.entry_deltaZ.setMaximum(1000)
-        self.entry_deltaZ.setSingleStep(0.2)
+        self.entry_deltaZ.setSingleStep(0.1)
         self.entry_deltaZ.setValue(Acquisition.DZ)
         self.entry_deltaZ.setDecimals(3)
         self.entry_deltaZ.setSuffix(" μm")
@@ -2214,9 +2231,9 @@ class FlexibleMultiPointWidget(QFrame):
         grid_af.addWidget(self.checkbox_withAutofocus)
         if SUPPORT_LASER_AUTOFOCUS:
             grid_af.addWidget(self.checkbox_withReflectionAutofocus)
-        #grid_af.addWidget(self.checkbox_genAFMap)  # we are not using auto-focus map for now
+        # grid_af.addWidget(self.checkbox_genAFMap)  # we are not using auto-focus map for now
         grid_af.addWidget(self.checkbox_useFocusMap)
-        if ENABLE_OBJECTIVE_PIEZO:
+        if HAS_OBJECTIVE_PIEZO:
             grid_af.addWidget(self.checkbox_usePiezo)
         grid_af.addWidget(self.checkbox_set_z_range)
         if ENABLE_STITCHER:
@@ -2519,8 +2536,11 @@ class FlexibleMultiPointWidget(QFrame):
                 )
 
     def set_deltaZ(self, value):
-        mm_per_ustep = 1.0 / self.stage.get_config().Z_AXIS.convert_real_units_to_ustep(1.0)
-        deltaZ = round(value / 1000 / mm_per_ustep) * mm_per_ustep * 1000
+        if self.checkbox_usePiezo.isChecked():
+            deltaZ = value
+        else:
+            mm_per_ustep = 1.0 / self.stage.get_config().Z_AXIS.convert_real_units_to_ustep(1.0)
+            deltaZ = round(value / 1000 / mm_per_ustep) * mm_per_ustep * 1000
         self.entry_deltaZ.setValue(deltaZ)
         self.multipointController.set_deltaZ(deltaZ)
 
@@ -3176,7 +3196,7 @@ class WellplateMultiPointWidget(QFrame):
         self.entry_deltaZ = QDoubleSpinBox()
         self.entry_deltaZ.setMinimum(0)
         self.entry_deltaZ.setMaximum(1000)
-        self.entry_deltaZ.setSingleStep(0.2)
+        self.entry_deltaZ.setSingleStep(0.1)
         self.entry_deltaZ.setValue(Acquisition.DZ)
         self.entry_deltaZ.setDecimals(3)
         # self.entry_deltaZ.setEnabled(False)
@@ -3339,9 +3359,9 @@ class WellplateMultiPointWidget(QFrame):
         options_layout.addWidget(self.checkbox_withAutofocus)
         if SUPPORT_LASER_AUTOFOCUS:
             options_layout.addWidget(self.checkbox_withReflectionAutofocus)
-        #options_layout.addWidget(self.checkbox_genAFMap)  # We are not using AF map now
+        # options_layout.addWidget(self.checkbox_genAFMap)  # We are not using AF map now
         options_layout.addWidget(self.checkbox_useFocusMap)
-        if ENABLE_OBJECTIVE_PIEZO:
+        if HAS_OBJECTIVE_PIEZO:
             options_layout.addWidget(self.checkbox_usePiezo)
         options_layout.addWidget(self.checkbox_set_z_range)
         if ENABLE_STITCHER:
@@ -3830,8 +3850,11 @@ class WellplateMultiPointWidget(QFrame):
         self.base_path_is_set = True
 
     def set_deltaZ(self, value):
-        mm_per_ustep = 1.0 / self.stage.get_config().Z_AXIS.convert_real_units_to_ustep(1.0)
-        deltaZ = round(value / 1000 / mm_per_ustep) * mm_per_ustep * 1000
+        if self.checkbox_usePiezo.isChecked():
+            deltaZ = value
+        else:
+            mm_per_ustep = 1.0 / self.stage.get_config().Z_AXIS.convert_real_units_to_ustep(1.0)
+            deltaZ = round(value / 1000 / mm_per_ustep) * mm_per_ustep * 1000
         self.entry_deltaZ.setValue(deltaZ)
         self.multipointController.set_deltaZ(deltaZ)
 
@@ -5243,7 +5266,7 @@ class NapariMosaicDisplayWidget(QWidget):
 
     def updateMosaic(self, image, x_mm, y_mm, k, channel_name):
         # calculate pixel size
-        downsample_factor = max(1,int(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / self.objectiveStore.get_pixel_size()))
+        downsample_factor = max(1, int(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / self.objectiveStore.get_pixel_size()))
         image_pixel_size_um = self.objectiveStore.get_pixel_size() * downsample_factor
         image_pixel_size_mm = image_pixel_size_um / 1000
         image_dtype = image.dtype

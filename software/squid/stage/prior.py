@@ -7,8 +7,10 @@ import re
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig
 
+
 class PriorStage(AbstractStage):
     POS_POLLING_PERIOD = 0.25
+
     def __init__(self, sn: str, baudrate: int = 115200, stage_config: StageConfig = None):
         # We are not using StageConfig for Prior stage now. Waiting for further update/clarification of this part
         super().__init__(stage_config)
@@ -68,7 +70,9 @@ class PriorStage(AbstractStage):
         if self._pos_polling_thread and self._pos_polling_thread.is_alive():
             return
         self._log.info("Starting position polling thread.")
-        self._pos_polling_thread = threading.Thread(target=self._pos_polling_thread_fn, daemon=True, name="prior-pos-polling")
+        self._pos_polling_thread = threading.Thread(
+            target=self._pos_polling_thread_fn, daemon=True, name="prior-pos-polling"
+        )
         self._pos_polling_thread.start()
 
     def set_baudrate(self, baud: int):

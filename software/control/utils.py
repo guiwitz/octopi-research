@@ -1,11 +1,18 @@
+import inspect
+import os
 import pathlib
+import sys
+from typing import Optional
 
 import cv2
+import git
 from numpy import std, square, mean
 import numpy as np
 from scipy.ndimage import label
+from scipy import signal
 import os
-
+from typing import Optional, Tuple
+from enum import Enum, auto
 import squid.logging
 
 _log = squid.logging.get_logger("control.utils")
@@ -165,3 +172,227 @@ def ensure_directory_exists(raw_string_path: str):
     path: pathlib.Path = pathlib.Path(raw_string_path)
     _log.debug(f"Making sure directory '{path}' exists.")
     path.mkdir(parents=True, exist_ok=True)
+
+
+class SpotDetectionMode(Enum):
+    """Specifies which spot to detect when multiple spots are present.
+
+    SINGLE: Expect and detect single spot
+    DUAL_RIGHT: In dual-spot case, use rightmost spot
+    DUAL_LEFT: In dual-spot case, use leftmost spot
+    MULTI_RIGHT: In multi-spot case, use rightmost spot
+    MULTI_SECOND_RIGHT: In multi-spot case, use spot immediately left of rightmost spot
+    """
+
+    SINGLE = auto()
+    DUAL_RIGHT = auto()
+    DUAL_LEFT = auto()
+    MULTI_RIGHT = auto()
+    MULTI_SECOND_RIGHT = auto()
+
+
+def find_spot_location(
+    image: np.ndarray,
+    mode: SpotDetectionMode = SpotDetectionMode.SINGLE,
+    params: Optional[dict] = None,
+    debug_plot: bool = False,
+) -> Optional[Tuple[float, float]]:
+    """Find the location of a spot in an image.
+
+    Args:
+        image: Input grayscale image as numpy array
+        mode: Which spot to detect when multiple spots are present
+        params: Dictionary of parameters for spot detection. If None, default parameters will be used.
+            Supported parameters:
+            - y_window (int): Half-height of y-axis crop (default: 96)
+            - x_window (int): Half-width of centroid window (default: 20)
+            - peak_width (int): Minimum width of peaks (default: 10)
+            - peak_distance (int): Minimum distance between peaks (default: 10)
+            - peak_prominence (float): Minimum peak prominence (default: 100)
+            - intensity_threshold (float): Threshold for intensity filtering (default: 0.1)
+            - spot_spacing (int): Expected spacing between spots for multi-spot modes (default: 100)
+
+    Returns:
+        Optional[Tuple[float, float]]: (x,y) coordinates of selected spot, or None if detection fails
+
+    Raises:
+        ValueError: If image is invalid or mode is incompatible with detected spots
+    """
+    # Input validation
+    if image is None or not isinstance(image, np.ndarray):
+        raise ValueError("Invalid input image")
+
+    # Default parameters
+    default_params = {
+        "y_window": 96,  # Half-height of y-axis crop
+        "x_window": 20,  # Half-width of centroid window
+        "min_peak_width": 10,  # Minimum width of peaks
+        "min_peak_distance": 10,  # Minimum distance between peaks
+        "min_peak_prominence": 0.25,  # Minimum peak prominence
+        "intensity_threshold": 0.1,  # Threshold for intensity filtering
+        "spot_spacing": 100,  # Expected spacing between spots
+    }
+
+    if params is not None:
+        default_params.update(params)
+    p = default_params
+
+    try:
+        # Get the y position of the spots
+        y_intensity_profile = np.sum(image, axis=1)
+        if np.all(y_intensity_profile == 0):
+            raise ValueError("No spots detected in image")
+
+        peak_y = np.argmax(y_intensity_profile)
+
+        # Validate peak_y location
+        if peak_y < p["y_window"] or peak_y > image.shape[0] - p["y_window"]:
+            raise ValueError("Spot too close to image edge")
+
+        # Crop along the y axis
+        cropped_image = image[peak_y - p["y_window"] : peak_y + p["y_window"], :]
+
+        # Get signal along x
+        x_intensity_profile = np.sum(cropped_image, axis=0)
+
+        # Normalize intensity profile
+        x_intensity_profile = x_intensity_profile - np.min(x_intensity_profile)
+        x_intensity_profile = x_intensity_profile / np.max(x_intensity_profile)
+
+        # Find all peaks
+        peaks = signal.find_peaks(
+            x_intensity_profile,
+            width=p["min_peak_width"],
+            distance=p["min_peak_distance"],
+            prominence=p["min_peak_prominence"],
+        )
+        peak_locations = peaks[0]
+        peak_properties = peaks[1]
+
+        if len(peak_locations) == 0:
+            raise ValueError("No peaks detected")
+
+        # Handle different spot detection modes
+        if mode == SpotDetectionMode.SINGLE:
+            if len(peak_locations) > 1:
+                raise ValueError(f"Found {len(peak_locations)} peaks but expected single peak")
+            peak_x = peak_locations[0]
+        elif mode == SpotDetectionMode.DUAL_RIGHT:
+            peak_x = peak_locations[-1]
+        elif mode == SpotDetectionMode.DUAL_LEFT:
+            peak_x = peak_locations[0]
+        elif mode == SpotDetectionMode.MULTI_RIGHT:
+            peak_x = peak_locations[-1]
+        elif mode == SpotDetectionMode.MULTI_SECOND_RIGHT:
+            raise NotImplementedError("MULTI_SECOND_RIGHT is not supported")
+            # if len(peak_locations) < 2:
+            #     raise ValueError("Not enough peaks for MULTI_SECOND_RIGHT mode")
+            # peak_x = peak_locations[-2]
+            # (peak_x, _) = _calculate_spot_centroid(cropped_image, peak_x, peak_y, p)
+            # peak_x = peak_x - p["spot_spacing"]
+        else:
+            raise ValueError(f"Unknown spot detection mode: {mode}")
+
+        if debug_plot:
+            import matplotlib.pyplot as plt
+
+            fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 8))
+
+            # Plot original image
+            ax1.imshow(image, cmap="gray")
+            ax1.axhline(y=peak_y, color="r", linestyle="--", label="Peak Y")
+            ax1.axhline(y=peak_y - p["y_window"], color="g", linestyle="--", label="Crop Window")
+            ax1.axhline(y=peak_y + p["y_window"], color="g", linestyle="--")
+            ax1.legend()
+            ax1.set_title("Original Image with Y-crop Lines")
+
+            # Plot Y intensity profile
+            ax2.plot(y_intensity_profile)
+            ax2.axvline(x=peak_y, color="r", linestyle="--", label="Peak Y")
+            ax2.axvline(x=peak_y - p["y_window"], color="g", linestyle="--", label="Crop Window")
+            ax2.axvline(x=peak_y + p["y_window"], color="g", linestyle="--")
+            ax2.legend()
+            ax2.set_title("Y Intensity Profile")
+
+            # Plot X intensity profile and detected peaks
+            ax3.plot(x_intensity_profile, label="Intensity Profile")
+            ax3.plot(peak_locations, x_intensity_profile[peak_locations], "x", color="r", label="All Peaks")
+
+            # Plot prominence for all peaks
+            for peak_idx, prominence in zip(peak_locations, peak_properties["prominences"]):
+                ax3.vlines(
+                    x=peak_idx,
+                    ymin=x_intensity_profile[peak_idx] - prominence,
+                    ymax=x_intensity_profile[peak_idx],
+                    color="g",
+                )
+
+            # Highlight selected peak
+            ax3.plot(peak_x, x_intensity_profile[peak_x], "o", color="yellow", markersize=10, label="Selected Peak")
+            ax3.axvline(x=peak_x, color="yellow", linestyle="--", alpha=0.5)
+
+            ax3.legend()
+            ax3.set_title(f"X Intensity Profile (Mode: {mode.name})")
+
+            plt.tight_layout()
+            plt.show()
+
+        # Calculate centroid in window around selected peak
+        return _calculate_spot_centroid(cropped_image, peak_x, peak_y, p)
+
+    except (ValueError, NotImplementedError) as e:
+        raise e
+    except Exception:
+        # TODO: this should not be a blank Exception catch, we should jsut return None above if we have a valid "no spots"
+        # case, and let exceptions raise otherwise.
+        _log.exception(f"Error in spot detection")
+        return None
+
+
+def _calculate_spot_centroid(cropped_image: np.ndarray, peak_x: int, peak_y: int, params: dict) -> Tuple[float, float]:
+    """Calculate precise centroid location in window around peak."""
+    h, w = cropped_image.shape
+    x, y = np.meshgrid(range(w), range(h))
+
+    # Crop region around the peak
+    intensity_window = cropped_image[:, peak_x - params["x_window"] : peak_x + params["x_window"]]
+    x_coords = x[:, peak_x - params["x_window"] : peak_x + params["x_window"]]
+    y_coords = y[:, peak_x - params["x_window"] : peak_x + params["x_window"]]
+
+    # Process intensity values
+    intensity_window = intensity_window.astype(float)
+    intensity_window = intensity_window - np.amin(intensity_window)
+    if np.amax(intensity_window) > 0:  # Avoid division by zero
+        intensity_window[intensity_window / np.amax(intensity_window) < params["intensity_threshold"]] = 0
+
+    # Calculate centroid
+    sum_intensity = np.sum(intensity_window)
+    if sum_intensity == 0:
+        raise ValueError("No significant intensity in centroid window")
+
+    centroid_x = np.sum(x_coords * intensity_window) / sum_intensity
+    centroid_y = np.sum(y_coords * intensity_window) / sum_intensity
+
+    # Convert back to original image coordinates
+    centroid_y = peak_y - params["y_window"] + centroid_y
+
+    return (centroid_x, centroid_y)
+
+
+def get_squid_repo_state_description() -> Optional[str]:
+    # From here: https://stackoverflow.com/a/22881871
+    def get_script_dir(follow_symlinks=True):
+        if getattr(sys, "frozen", False):  # py2exe, PyInstaller, cx_Freeze
+            path = os.path.abspath(sys.executable)
+        else:
+            path = inspect.getabsfile(get_script_dir)
+        if follow_symlinks:
+            path = os.path.realpath(path)
+        return os.path.dirname(path)
+
+    try:
+        repo = git.Repo(get_script_dir(), search_parent_directories=True)
+        return f"{repo.head.object.hexsha} (dirty={repo.is_dirty()})"
+    except git.GitError as e:
+        _log.warning(f"Failed to get script git repo info: {e}")
+        return None
