@@ -1,254 +1,348 @@
-from lxml import etree as ET
+from pydantic import BaseModel, field_validator
+from pydantic_xml import BaseXmlModel, element, attr
+from typing import List, Optional
+from pathlib import Path
+import base64
+import numpy as np
 
-top = ET.Element("modes")
+import control.utils_channel as utils_channel
+from control._def import (
+    FOCUS_CAMERA_EXPOSURE_TIME_MS,
+    FOCUS_CAMERA_ANALOG_GAIN,
+    LASER_AF_RANGE,
+    LASER_AF_AVERAGING_N,
+    LASER_AF_CROP_WIDTH,
+    LASER_AF_CROP_HEIGHT,
+    LASER_AF_SPOT_DETECTION_MODE,
+    DISPLACEMENT_SUCCESS_WINDOW_UM,
+    SPOT_CROP_SIZE,
+    CORRELATION_THRESHOLD,
+    PIXEL_TO_UM_CALIBRATION_DISTANCE,
+    LASER_AF_Y_WINDOW,
+    LASER_AF_X_WINDOW,
+    LASER_AF_MIN_PEAK_WIDTH,
+    LASER_AF_MIN_PEAK_DISTANCE,
+    LASER_AF_MIN_PEAK_PROMINENCE,
+    LASER_AF_SPOT_SPACING,
+)
+from control.utils import SpotDetectionMode
 
 
-def generate_default_configuration(filename):
+class LaserAFConfig(BaseModel):
+    """Pydantic model for laser autofocus configuration"""
 
-    mode_1 = ET.SubElement(top, "mode")
-    mode_1.set("ID", "1")
-    mode_1.set("Name", "BF LED matrix full")
-    mode_1.set("ExposureTime", "12")
-    mode_1.set("AnalogGain", "0")
-    mode_1.set("IlluminationSource", "0")
-    mode_1.set("IlluminationIntensity", "5")
-    mode_1.set("CameraSN", "")
-    mode_1.set("ZOffset", "0.0")
-    mode_1.set("PixelFormat", "default")
-    mode_1.set("_PixelFormat_options", "[default,MONO8,MONO12,MONO14,MONO16,BAYER_RG8,BAYER_RG12]")
-    mode_1.set("EmissionFilterPosition", "1")
+    x_offset: float = 0.0
+    y_offset: float = 0.0
+    width: int = LASER_AF_CROP_WIDTH
+    height: int = LASER_AF_CROP_HEIGHT
+    pixel_to_um: float = 1
+    has_reference: bool = False  # Track if reference has been set
+    laser_af_averaging_n: int = LASER_AF_AVERAGING_N
+    displacement_success_window_um: float = (
+        DISPLACEMENT_SUCCESS_WINDOW_UM  # if the displacement is within this window, we consider the move successful
+    )
+    spot_crop_size: int = SPOT_CROP_SIZE  # Size of region to crop around spot for correlation
+    correlation_threshold: float = CORRELATION_THRESHOLD  # Minimum correlation coefficient for valid alignment
+    pixel_to_um_calibration_distance: float = (
+        PIXEL_TO_UM_CALIBRATION_DISTANCE  # Distance moved in um during calibration
+    )
+    calibration_timestamp: str = ""  # Timestamp of calibration performed
+    laser_af_range: float = LASER_AF_RANGE  # Maximum reasonable displacement in um
+    focus_camera_exposure_time_ms: float = FOCUS_CAMERA_EXPOSURE_TIME_MS
+    focus_camera_analog_gain: float = FOCUS_CAMERA_ANALOG_GAIN
+    spot_detection_mode: SpotDetectionMode = LASER_AF_SPOT_DETECTION_MODE
+    y_window: int = LASER_AF_Y_WINDOW  # Half-height of y-axis crop
+    x_window: int = LASER_AF_X_WINDOW  # Half-width of centroid window
+    min_peak_width: float = LASER_AF_MIN_PEAK_WIDTH  # Minimum width of peaks
+    min_peak_distance: float = LASER_AF_MIN_PEAK_DISTANCE  # Minimum distance between peaks
+    min_peak_prominence: float = LASER_AF_MIN_PEAK_PROMINENCE  # Minimum peak prominence
+    spot_spacing: float = LASER_AF_SPOT_SPACING  # Expected spacing between spots
+    x_reference: Optional[float] = 0  # Reference position in um
+    reference_image: Optional[str] = None  # Stores base64 encoded reference image for cross-correlation check
+    reference_image_shape: Optional[tuple] = None
+    reference_image_dtype: Optional[str] = None
 
-    mode_4 = ET.SubElement(top, "mode")
-    mode_4.set("ID", "4")
-    mode_4.set("Name", "DF LED matrix")
-    mode_4.set("ExposureTime", "22")
-    mode_4.set("AnalogGain", "0")
-    mode_4.set("IlluminationSource", "3")
-    mode_4.set("IlluminationIntensity", "5")
-    mode_4.set("CameraSN", "")
-    mode_4.set("ZOffset", "0.0")
-    mode_4.set("PixelFormat", "default")
-    mode_4.set("_PixelFormat_options", "[default,MONO8,MONO12,MONO14,MONO16,BAYER_RG8,BAYER_RG12]")
-    mode_4.set("EmissionFilterPosition", "1")
+    @property
+    def reference_image_cropped(self) -> Optional[np.ndarray]:
+        """Convert stored base64 data back to numpy array"""
+        if self.reference_image is None:
+            return None
+        data = base64.b64decode(self.reference_image.encode("utf-8"))
+        return np.frombuffer(data, dtype=np.dtype(self.reference_image_dtype)).reshape(self.reference_image_shape)
 
-    mode_5 = ET.SubElement(top, "mode")
-    mode_5.set("ID", "5")
-    mode_5.set("Name", "Fluorescence 405 nm Ex")
-    mode_5.set("ExposureTime", "100")
-    mode_5.set("AnalogGain", "10")
-    mode_5.set("IlluminationSource", "11")
-    mode_5.set("IlluminationIntensity", "100")
-    mode_5.set("CameraSN", "")
-    mode_5.set("ZOffset", "0.0")
-    mode_5.set("PixelFormat", "default")
-    mode_5.set("_PixelFormat_options", "[default,MONO8,MONO12,MONO14,MONO16,BAYER_RG8,BAYER_RG12]")
-    mode_5.set("EmissionFilterPosition", "1")
+    @field_validator("spot_detection_mode", mode="before")
+    @classmethod
+    def validate_spot_detection_mode(cls, v):
+        """Convert string to SpotDetectionMode enum if needed"""
+        if isinstance(v, str):
+            return SpotDetectionMode(v)
+        return v
 
-    mode_6 = ET.SubElement(top, "mode")
-    mode_6.set("ID", "6")
-    mode_6.set("Name", "Fluorescence 488 nm Ex")
-    mode_6.set("ExposureTime", "100")
-    mode_6.set("AnalogGain", "10")
-    mode_6.set("IlluminationSource", "12")
-    mode_6.set("IlluminationIntensity", "100")
-    mode_6.set("CameraSN", "")
-    mode_6.set("ZOffset", "0.0")
-    mode_6.set("PixelFormat", "default")
-    mode_6.set("_PixelFormat_options", "[default,MONO8,MONO12,MONO14,MONO16,BAYER_RG8,BAYER_RG12]")
-    mode_6.set("EmissionFilterPosition", "1")
+    def set_reference_image(self, image: Optional[np.ndarray]) -> None:
+        """Convert numpy array to base64 encoded string or clear reference if None"""
+        if image is None:
+            self.reference_image = None
+            self.reference_image_shape = None
+            self.reference_image_dtype = None
+            return
+        self.reference_image = base64.b64encode(image.tobytes()).decode("utf-8")
+        self.reference_image_shape = image.shape
+        self.reference_image_dtype = str(image.dtype)
 
-    mode_7 = ET.SubElement(top, "mode")
-    mode_7.set("ID", "7")
-    mode_7.set("Name", "Fluorescence 638 nm Ex")
-    mode_7.set("ExposureTime", "100")
-    mode_7.set("AnalogGain", "10")
-    mode_7.set("IlluminationSource", "13")
-    mode_7.set("IlluminationIntensity", "100")
-    mode_7.set("CameraSN", "")
-    mode_7.set("ZOffset", "0.0")
-    mode_7.set("PixelFormat", "default")
-    mode_7.set("_PixelFormat_options", "[default,MONO8,MONO12,MONO14,MONO16,BAYER_RG8,BAYER_RG12]")
-    mode_7.set("EmissionFilterPosition", "1")
+    def model_dump(self, serialize=False, **kwargs):
+        """Ensure proper serialization of enums to strings"""
+        data = super().model_dump(**kwargs)
+        if serialize:
+            if "spot_detection_mode" in data and isinstance(data["spot_detection_mode"], SpotDetectionMode):
+                data["spot_detection_mode"] = data["spot_detection_mode"].value
+        return data
 
-    mode_8 = ET.SubElement(top, "mode")
-    mode_8.set("ID", "8")
-    mode_8.set("Name", "Fluorescence 561 nm Ex")
-    mode_8.set("ExposureTime", "100")
-    mode_8.set("AnalogGain", "10")
-    mode_8.set("IlluminationSource", "14")
-    mode_8.set("IlluminationIntensity", "100")
-    mode_8.set("CameraSN", "")
-    mode_8.set("ZOffset", "0.0")
-    mode_8.set("PixelFormat", "default")
-    mode_8.set("_PixelFormat_options", "[default,MONO8,MONO12,MONO14,MONO16,BAYER_RG8,BAYER_RG12]")
-    mode_8.set("EmissionFilterPosition", "1")
 
-    mode_12 = ET.SubElement(top, "mode")
-    mode_12.set("ID", "12")
-    mode_12.set("Name", "Fluorescence 730 nm Ex")
-    mode_12.set("ExposureTime", "50")
-    mode_12.set("AnalogGain", "10")
-    mode_12.set("IlluminationSource", "15")
-    mode_12.set("IlluminationIntensity", "100")
-    mode_12.set("CameraSN", "")
-    mode_12.set("ZOffset", "0.0")
-    mode_12.set("PixelFormat", "default")
-    mode_12.set("_PixelFormat_options", "[default,MONO8,MONO12,MONO14,MONO16,BAYER_RG8,BAYER_RG12]")
-    mode_12.set("EmissionFilterPosition", "1")
+class ChannelMode(BaseXmlModel, tag="mode"):
+    """Channel configuration model"""
 
-    mode_9 = ET.SubElement(top, "mode")
-    mode_9.set("ID", "9")
-    mode_9.set("Name", "BF LED matrix low NA")
-    mode_9.set("ExposureTime", "20")
-    mode_9.set("AnalogGain", "0")
-    mode_9.set("IlluminationSource", "4")
-    mode_9.set("IlluminationIntensity", "20")
-    mode_9.set("CameraSN", "")
-    mode_9.set("ZOffset", "0.0")
-    mode_9.set("PixelFormat", "default")
-    mode_9.set("_PixelFormat_options", "[default,MONO8,MONO12,MONO14,MONO16,BAYER_RG8,BAYER_RG12]")
-    mode_9.set("EmissionFilterPosition", "1")
+    id: str = attr(name="ID")
+    name: str = attr(name="Name")
+    exposure_time: float = attr(name="ExposureTime")
+    analog_gain: float = attr(name="AnalogGain")
+    illumination_source: int = attr(name="IlluminationSource")
+    illumination_intensity: float = attr(name="IlluminationIntensity")
+    camera_sn: Optional[str] = attr(name="CameraSN", default=None)
+    z_offset: float = attr(name="ZOffset")
+    emission_filter_position: int = attr(name="EmissionFilterPosition", default=1)
+    selected: bool = attr(name="Selected", default=False)
+    color: Optional[str] = None  # Not stored in XML but computed from name
 
-    # mode_10 = ET.SubElement(top,'mode')
-    # mode_10.set('ID','10')
-    # mode_10.set('Name','BF LED matrix left dot')
-    # mode_10.set('ExposureTime','20')
-    # mode_10.set('AnalogGain','0')
-    # mode_10.set('IlluminationSource','5')
-    # mode_10.set('IlluminationIntensity','20')
-    # mode_10.set('CameraSN','')
-    # mode_10.set('ZOffset','0.0')
-    # mode_10.set('PixelFormat','default')
-    # mode_10.set('_PixelFormat_options','[default,MONO8,MONO12,MONO14,MONO16,BAYER_RG8,BAYER_RG12]')
+    def __init__(self, **data):
+        super().__init__(**data)
+        self.color = utils_channel.get_channel_color(self.name)
 
-    # mode_11 = ET.SubElement(top,'mode')
-    # mode_11.set('ID','11')
-    # mode_11.set('Name','BF LED matrix right dot')
-    # mode_11.set('ExposureTime','20')
-    # mode_11.set('AnalogGain','0')
-    # mode_11.set('IlluminationSource','6')
-    # mode_11.set('IlluminationIntensity','20')
-    # mode_11.set('CameraSN','')
-    # mode_11.set('ZOffset','0.0')
-    # mode_11.set('PixelFormat','default')
-    # mode_11.set('_PixelFormat_options','[default,MONO8,MONO12,MONO14,MONO16,BAYER_RG8,BAYER_RG12]')
 
-    mode_2 = ET.SubElement(top, "mode")
-    mode_2.set("ID", "2")
-    mode_2.set("Name", "BF LED matrix left half")
-    mode_2.set("ExposureTime", "16")
-    mode_2.set("AnalogGain", "0")
-    mode_2.set("IlluminationSource", "1")
-    mode_2.set("IlluminationIntensity", "5")
-    mode_2.set("CameraSN", "")
-    mode_2.set("ZOffset", "0.0")
-    mode_2.set("PixelFormat", "default")
-    mode_2.set("_PixelFormat_options", "[default,MONO8,MONO12,MONO14,MONO16,BAYER_RG8,BAYER_RG12]")
-    mode_2.set("EmissionFilterPosition", "1")
+class ChannelConfig(BaseXmlModel, tag="modes"):
+    """Root configuration file model"""
 
-    mode_3 = ET.SubElement(top, "mode")
-    mode_3.set("ID", "3")
-    mode_3.set("Name", "BF LED matrix right half")
-    mode_3.set("ExposureTime", "16")
-    mode_3.set("AnalogGain", "0")
-    mode_3.set("IlluminationSource", "2")
-    mode_3.set("IlluminationIntensity", "5")
-    mode_3.set("CameraSN", "")
-    mode_3.set("ZOffset", "0.0")
-    mode_3.set("PixelFormat", "default")
-    mode_3.set("_PixelFormat_options", "[default,MONO8,MONO12,MONO14,MONO16,BAYER_RG8,BAYER_RG12]")
-    mode_3.set("EmissionFilterPosition", "1")
+    modes: List[ChannelMode] = element(tag="mode")
 
-    mode_12 = ET.SubElement(top, "mode")
-    mode_12.set("ID", "12")
-    mode_12.set("Name", "BF LED matrix top half")
-    mode_12.set("ExposureTime", "20")
-    mode_12.set("AnalogGain", "0")
-    mode_12.set("IlluminationSource", "7")
-    mode_12.set("IlluminationIntensity", "20")
-    mode_12.set("CameraSN", "")
-    mode_12.set("ZOffset", "0.0")
-    mode_12.set("PixelFormat", "default")
-    mode_12.set("_PixelFormat_options", "[default,MONO8,MONO12,MONO14,MONO16,BAYER_RG8,BAYER_RG12]")
-    mode_12.set("EmissionFilterPosition", "1")
 
-    mode_13 = ET.SubElement(top, "mode")
-    mode_13.set("ID", "13")
-    mode_13.set("Name", "BF LED matrix bottom half")
-    mode_13.set("ExposureTime", "20")
-    mode_13.set("AnalogGain", "0")
-    mode_13.set("IlluminationSource", "8")
-    mode_13.set("IlluminationIntensity", "20")
-    mode_13.set("CameraSN", "")
-    mode_13.set("ZOffset", "0.0")
-    mode_13.set("PixelFormat", "default")
-    mode_13.set("_PixelFormat_options", "[default,MONO8,MONO12,MONO14,MONO16,BAYER_RG8,BAYER_RG12]")
-    mode_13.set("EmissionFilterPosition", "1")
+def get_attr_name(attr_name: str) -> str:
+    """Get the attribute name for a given configuration attribute"""
+    attr_map = {
+        "ID": "id",
+        "Name": "name",
+        "ExposureTime": "exposure_time",
+        "AnalogGain": "analog_gain",
+        "IlluminationSource": "illumination_source",
+        "IlluminationIntensity": "illumination_intensity",
+        "CameraSN": "camera_sn",
+        "ZOffset": "z_offset",
+        "EmissionFilterPosition": "emission_filter_position",
+        "Selected": "selected",
+        "Color": "color",
+    }
+    return attr_map[attr_name]
 
-    mode_14 = ET.SubElement(top, "mode")
-    mode_14.set("ID", "1")
-    mode_14.set("Name", "BF LED matrix full_R")
-    mode_14.set("ExposureTime", "12")
-    mode_14.set("AnalogGain", "0")
-    mode_14.set("IlluminationSource", "0")
-    mode_14.set("IlluminationIntensity", "5")
-    mode_14.set("CameraSN", "")
-    mode_14.set("ZOffset", "0.0")
-    mode_14.set("PixelFormat", "default")
-    mode_14.set("_PixelFormat_options", "[default,MONO8,MONO12,MONO14,MONO16,BAYER_RG8,BAYER_RG12]")
-    mode_14.set("EmissionFilterPosition", "1")
 
-    mode_15 = ET.SubElement(top, "mode")
-    mode_15.set("ID", "1")
-    mode_15.set("Name", "BF LED matrix full_G")
-    mode_15.set("ExposureTime", "12")
-    mode_15.set("AnalogGain", "0")
-    mode_15.set("IlluminationSource", "0")
-    mode_15.set("IlluminationIntensity", "5")
-    mode_15.set("CameraSN", "")
-    mode_15.set("ZOffset", "0.0")
-    mode_15.set("PixelFormat", "default")
-    mode_15.set("_PixelFormat_options", "[default,MONO8,MONO12,MONO14,MONO16,BAYER_RG8,BAYER_RG12]")
-    mode_15.set("EmissionFilterPosition", "1")
+def generate_default_configuration(filename: str) -> None:
+    """Generate default configuration using Pydantic models"""
+    default_modes = [
+        ChannelMode(
+            id="1",
+            name="BF LED matrix full",
+            exposure_time=12,
+            analog_gain=0,
+            illumination_source=0,
+            illumination_intensity=5,
+            camera_sn="",
+            z_offset=0.0,
+        ),
+        ChannelMode(
+            id="4",
+            name="DF LED matrix",
+            exposure_time=22,
+            analog_gain=0,
+            illumination_source=3,
+            illumination_intensity=5,
+            camera_sn="",
+            z_offset=0.0,
+        ),
+        ChannelMode(
+            id="5",
+            name="Fluorescence 405 nm Ex",
+            exposure_time=100,
+            analog_gain=10,
+            illumination_source=11,
+            illumination_intensity=100,
+            camera_sn="",
+            z_offset=0.0,
+        ),
+        ChannelMode(
+            id="6",
+            name="Fluorescence 488 nm Ex",
+            exposure_time=100,
+            analog_gain=10,
+            illumination_source=12,
+            illumination_intensity=100,
+            camera_sn="",
+            z_offset=0.0,
+        ),
+        ChannelMode(
+            id="7",
+            name="Fluorescence 638 nm Ex",
+            exposure_time=100,
+            analog_gain=10,
+            illumination_source=13,
+            illumination_intensity=100,
+            camera_sn="",
+            z_offset=0.0,
+        ),
+        ChannelMode(
+            id="8",
+            name="Fluorescence 561 nm Ex",
+            exposure_time=100,
+            analog_gain=10,
+            illumination_source=14,
+            illumination_intensity=100,
+            camera_sn="",
+            z_offset=0.0,
+        ),
+        ChannelMode(
+            id="12",
+            name="Fluorescence 730 nm Ex",
+            exposure_time=50,
+            analog_gain=10,
+            illumination_source=15,
+            illumination_intensity=100,
+            camera_sn="",
+            z_offset=0.0,
+        ),
+        ChannelMode(
+            id="9",
+            name="BF LED matrix low NA",
+            exposure_time=20,
+            analog_gain=0,
+            illumination_source=4,
+            illumination_intensity=20,
+            camera_sn="",
+            z_offset=0.0,
+        ),
+        # Commented out modes for reference
+        # ChannelMode(
+        #     id="10",
+        #     name="BF LED matrix left dot",
+        #     exposure_time=20,
+        #     analog_gain=0,
+        #     illumination_source=5,
+        #     illumination_intensity=20,
+        #     camera_sn="",
+        #     z_offset=0.0
+        # ),
+        # ChannelMode(
+        #     id="11",
+        #     name="BF LED matrix right dot",
+        #     exposure_time=20,
+        #     analog_gain=0,
+        #     illumination_source=6,
+        #     illumination_intensity=20,
+        #     camera_sn="",
+        #     z_offset=0.0
+        # ),
+        ChannelMode(
+            id="2",
+            name="BF LED matrix left half",
+            exposure_time=16,
+            analog_gain=0,
+            illumination_source=1,
+            illumination_intensity=5,
+            camera_sn="",
+            z_offset=0.0,
+        ),
+        ChannelMode(
+            id="3",
+            name="BF LED matrix right half",
+            exposure_time=16,
+            analog_gain=0,
+            illumination_source=2,
+            illumination_intensity=5,
+            camera_sn="",
+            z_offset=0.0,
+        ),
+        ChannelMode(
+            id="12",
+            name="BF LED matrix top half",
+            exposure_time=20,
+            analog_gain=0,
+            illumination_source=7,
+            illumination_intensity=20,
+            camera_sn="",
+            z_offset=0.0,
+        ),
+        ChannelMode(
+            id="13",
+            name="BF LED matrix bottom half",
+            exposure_time=20,
+            analog_gain=0,
+            illumination_source=8,
+            illumination_intensity=20,
+            camera_sn="",
+            z_offset=0.0,
+        ),
+        ChannelMode(
+            id="14",
+            name="BF LED matrix full_R",
+            exposure_time=12,
+            analog_gain=0,
+            illumination_source=0,
+            illumination_intensity=5,
+            camera_sn="",
+            z_offset=0.0,
+        ),
+        ChannelMode(
+            id="15",
+            name="BF LED matrix full_G",
+            exposure_time=12,
+            analog_gain=0,
+            illumination_source=0,
+            illumination_intensity=5,
+            camera_sn="",
+            z_offset=0.0,
+        ),
+        ChannelMode(
+            id="16",
+            name="BF LED matrix full_B",
+            exposure_time=12,
+            analog_gain=0,
+            illumination_source=0,
+            illumination_intensity=5,
+            camera_sn="",
+            z_offset=0.0,
+        ),
+        ChannelMode(
+            id="21",
+            name="BF LED matrix full_RGB",
+            exposure_time=12,
+            analog_gain=0,
+            illumination_source=0,
+            illumination_intensity=5,
+            camera_sn="",
+            z_offset=0.0,
+        ),
+        ChannelMode(
+            id="20",
+            name="USB Spectrometer",
+            exposure_time=20,
+            analog_gain=0,
+            illumination_source=6,
+            illumination_intensity=0,
+            camera_sn="",
+            z_offset=0.0,
+        ),
+    ]
 
-    mode_16 = ET.SubElement(top, "mode")
-    mode_16.set("ID", "1")
-    mode_16.set("Name", "BF LED matrix full_B")
-    mode_16.set("ExposureTime", "12")
-    mode_16.set("AnalogGain", "0")
-    mode_16.set("IlluminationSource", "0")
-    mode_16.set("IlluminationIntensity", "5")
-    mode_16.set("CameraSN", "")
-    mode_16.set("ZOffset", "0.0")
-    mode_16.set("PixelFormat", "default")
-    mode_16.set("_PixelFormat_options", "[default,MONO8,MONO12,MONO14,MONO16,BAYER_RG8,BAYER_RG12]")
-    mode_16.set("EmissionFilterPosition", "1")
+    config = ChannelConfig(modes=default_modes)
+    xml_str = config.to_xml(pretty_print=True, encoding="utf-8")
 
-    mode_21 = ET.SubElement(top, "mode")
-    mode_21.set("ID", "21")
-    mode_21.set("Name", "BF LED matrix full_RGB")
-    mode_21.set("ExposureTime", "12")
-    mode_21.set("AnalogGain", "0")
-    mode_21.set("IlluminationSource", "0")
-    mode_21.set("IlluminationIntensity", "5")
-    mode_21.set("CameraSN", "")
-    mode_21.set("ZOffset", "0.0")
-    mode_21.set("PixelFormat", "default")
-    mode_21.set("_PixelFormat_options", "[default,MONO8,MONO12,MONO14,MONO16,BAYER_RG8,BAYER_RG12]")
-    mode_21.set("EmissionFilterPosition", "1")
-
-    mode_20 = ET.SubElement(top, "mode")
-    mode_20.set("ID", "20")
-    mode_20.set("Name", "USB Spectrometer")
-    mode_20.set("ExposureTime", "20")
-    mode_20.set("AnalogGain", "0")
-    mode_20.set("IlluminationSource", "6")
-    mode_20.set("IlluminationIntensity", "0")
-    mode_20.set("CameraSN", "")
-    mode_20.set("ZOffset", "0.0")
-    mode_20.set("PixelFormat", "default")
-    mode_20.set("_PixelFormat_options", "[default,MONO8,MONO12,MONO14,MONO16,BAYER_RG8,BAYER_RG12]")
-    mode_20.set("EmissionFilterPosition", "1")
-
-    tree = ET.ElementTree(top)
-    tree.write(filename, encoding="utf-8", xml_declaration=True, pretty_print=True)
+    # Write to file
+    path = Path(filename)
+    if not path.parent.exists():
+        path.parent.mkdir(parents=True)
+    path.write_bytes(xml_str)

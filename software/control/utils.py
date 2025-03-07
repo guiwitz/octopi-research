@@ -12,7 +12,16 @@ from scipy.ndimage import label
 from scipy import signal
 import os
 from typing import Optional, Tuple
-from enum import Enum, auto
+
+from control._def import (
+    LASER_AF_Y_WINDOW,
+    LASER_AF_X_WINDOW,
+    LASER_AF_MIN_PEAK_WIDTH,
+    LASER_AF_MIN_PEAK_DISTANCE,
+    LASER_AF_MIN_PEAK_PROMINENCE,
+    LASER_AF_SPOT_SPACING,
+    SpotDetectionMode,
+)
 import squid.logging
 
 _log = squid.logging.get_logger("control.utils")
@@ -174,23 +183,6 @@ def ensure_directory_exists(raw_string_path: str):
     path.mkdir(parents=True, exist_ok=True)
 
 
-class SpotDetectionMode(Enum):
-    """Specifies which spot to detect when multiple spots are present.
-
-    SINGLE: Expect and detect single spot
-    DUAL_RIGHT: In dual-spot case, use rightmost spot
-    DUAL_LEFT: In dual-spot case, use leftmost spot
-    MULTI_RIGHT: In multi-spot case, use rightmost spot
-    MULTI_SECOND_RIGHT: In multi-spot case, use spot immediately left of rightmost spot
-    """
-
-    SINGLE = auto()
-    DUAL_RIGHT = auto()
-    DUAL_LEFT = auto()
-    MULTI_RIGHT = auto()
-    MULTI_SECOND_RIGHT = auto()
-
-
 def find_spot_location(
     image: np.ndarray,
     mode: SpotDetectionMode = SpotDetectionMode.SINGLE,
@@ -224,13 +216,13 @@ def find_spot_location(
 
     # Default parameters
     default_params = {
-        "y_window": 96,  # Half-height of y-axis crop
-        "x_window": 20,  # Half-width of centroid window
-        "min_peak_width": 10,  # Minimum width of peaks
-        "min_peak_distance": 10,  # Minimum distance between peaks
-        "min_peak_prominence": 0.25,  # Minimum peak prominence
+        "y_window": LASER_AF_Y_WINDOW,  # Half-height of y-axis crop
+        "x_window": LASER_AF_X_WINDOW,  # Half-width of centroid window
+        "min_peak_width": LASER_AF_MIN_PEAK_WIDTH,  # Minimum width of peaks
+        "min_peak_distance": LASER_AF_MIN_PEAK_DISTANCE,  # Minimum distance between peaks
+        "min_peak_prominence": LASER_AF_MIN_PEAK_PROMINENCE,  # Minimum peak prominence
         "intensity_threshold": 0.1,  # Threshold for intensity filtering
-        "spot_spacing": 100,  # Expected spacing between spots
+        "spot_spacing": LASER_AF_SPOT_SPACING,  # Expected spacing between spots
     }
 
     if params is not None:

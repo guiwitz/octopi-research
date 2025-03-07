@@ -5,7 +5,6 @@ from pathlib import Path
 from configparser import ConfigParser
 import json
 import csv
-from control.utils import SpotDetectionMode
 import squid.logging
 from enum import Enum, auto
 
@@ -75,15 +74,6 @@ class Acquisition:
     NUMBER_OF_FOVS_PER_AF = 3
     IMAGE_FORMAT = "bmp"
     IMAGE_DISPLAY_SCALING_FACTOR = 0.3
-    PSEUDO_COLOR = False
-    MERGE_CHANNELS = False
-    PSEUDO_COLOR_MAP = {
-        "405": {"hex": 0x0000FF},  # blue
-        "488": {"hex": 0x00FF00},  # green
-        "561": {"hex": 0xFFCF00},  # yellow
-        "638": {"hex": 0xFF0000},  # red
-        "730": {"hex": 0x770000},  # dark red
-    }
     DX = 0.9
     DY = 0.9
     DZ = 1.5
@@ -259,6 +249,23 @@ class ZStageConfig(Enum):
         return mapping[mode_str.lower()]
 
 
+class SpotDetectionMode(Enum):
+    """Specifies which spot to detect when multiple spots are present.
+
+    SINGLE: Expect and detect single spot
+    DUAL_RIGHT: In dual-spot case, use rightmost spot
+    DUAL_LEFT: In dual-spot case, use leftmost spot
+    MULTI_RIGHT: In multi-spot case, use rightmost spot
+    MULTI_SECOND_RIGHT: In multi-spot case, use spot immediately left of rightmost spot
+    """
+
+    SINGLE = "single"
+    DUAL_RIGHT = "dual_right"
+    DUAL_LEFT = "dual_left"
+    MULTI_RIGHT = "multi_right"
+    MULTI_SECOND_RIGHT = "multi_second_right"
+
+
 PRINT_CAMERA_FPS = True
 
 ###########################################################
@@ -414,8 +421,6 @@ class PLATE_READER:
     OFFSET_ROW_A_MM = 20
 
 
-DEFAULT_DISPLAY_CROP = 100  # value ranges from 1 to 100 - image display crop size
-
 CAMERA_PIXEL_SIZE_UM = {
     "IMX290": 2.9,
     "IMX178": 2.4,
@@ -436,8 +441,6 @@ DEFAULT_TRACKER = "csrt"
 
 ENABLE_TRACKING = False
 TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS = False  # set to true when doing multimodal acquisition
-if ENABLE_TRACKING:
-    DEFAULT_DISPLAY_CROP = 100
 
 
 class AF:
@@ -548,7 +551,17 @@ LASER_AF_DISPLAY_SPOT_IMAGE = True
 LASER_AF_CROP_WIDTH = 1536
 LASER_AF_CROP_HEIGHT = 256
 LASER_AF_SPOT_DETECTION_MODE = SpotDetectionMode.DUAL_LEFT
-LASER_AF_RANGE = 200
+LASER_AF_RANGE = 100
+DISPLACEMENT_SUCCESS_WINDOW_UM = 1.0
+SPOT_CROP_SIZE = 100
+CORRELATION_THRESHOLD = 0.9
+PIXEL_TO_UM_CALIBRATION_DISTANCE = 6.0
+LASER_AF_Y_WINDOW = 96
+LASER_AF_X_WINDOW = 20
+LASER_AF_MIN_PEAK_WIDTH = 10
+LASER_AF_MIN_PEAK_DISTANCE = 10
+LASER_AF_MIN_PEAK_PROMINENCE = 0.25
+LASER_AF_SPOT_SPACING = 100
 SHOW_LEGACY_DISPLACEMENT_MEASUREMENT_WINDOWS = False
 
 MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT = False
@@ -635,8 +648,10 @@ ENABLE_STITCHER = False
 IS_HCS = False
 DYNAMIC_REGISTRATION = False
 STITCH_COMPLETE_ACQUISITION = False
+
+# Pseudo color settings
 CHANNEL_COLORS_MAP = {
-    "405": {"hex": 0x3300FF, "name": "blue"},
+    "405": {"hex": 0x20ADF8, "name": "bop blue"},
     "488": {"hex": 0x1FFF00, "name": "green"},
     "561": {"hex": 0xFFCF00, "name": "yellow"},
     "638": {"hex": 0xFF0000, "name": "red"},
@@ -645,6 +660,8 @@ CHANNEL_COLORS_MAP = {
     "G": {"hex": 0x1FFF00, "name": "green"},
     "B": {"hex": 0x3300FF, "name": "blue"},
 }
+SAVE_IN_PSEUDO_COLOR = False
+MERGE_CHANNELS = False
 
 # Emission filter wheel
 USE_ZABER_EMISSION_FILTER_WHEEL = False
@@ -744,15 +761,19 @@ X_HOME_SAFETY_MARGIN_UM = 50
 Y_HOME_SAFETY_MARGIN_UM = 50
 Z_HOME_SAFETY_MARGIN_UM = 600
 
-if ENABLE_TRACKING:
-    DEFAULT_DISPLAY_CROP = Tracking.DEFAULT_DISPLAY_CROP
-
 USE_XERYON = False
 XERYON_SERIAL_NUMBER = "95130303033351E02050"
 XERYON_SPEED = 80
 XERYON_OBJECTIVE_SWITCHER_POS_1 = ["4x", "10x"]
 XERYON_OBJECTIVE_SWITCHER_POS_2 = ["20x", "40x", "60x"]
 XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM = 2
+
+# fluidics
+RUN_FLUIDICS = False
+FLUIDICS_CONFIG_PATH = "./merfish_config/MERFISH_config.json"
+FLUIDICS_SEQUENCE_PATH = "./merfish_config/merfish-imaging.csv"
+BEFORE_IMAGING_SEQUENCES = [0, 4]
+AFTER_IMAGING_SEQUENCES = [4, 6]
 
 ##########################################################
 #### start of loading machine specific configurations ####
