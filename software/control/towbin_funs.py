@@ -63,3 +63,18 @@ def distance_moved(stage, coordinate):
 
     distance = np.sqrt(np.sum((np.array([pos.x_mm, pos.y_mm]) - np.array(coordinate[0:2]))**2))
     return distance
+
+import importlib.util
+
+def load_function_from_file(file_path, function_name):
+    # Load the module from the given file path
+    spec = importlib.util.spec_from_file_location("loaded_module", file_path)
+    module = importlib.util.module_from_spec(spec)
+
+    if spec.loader is None:
+        raise ImportError(f"Cannot load module from {file_path}")
+
+    spec.loader.exec_module(module)  # Execute the module
+    
+    # Get the function by name
+    return getattr(module, function_name, None)

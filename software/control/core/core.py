@@ -29,12 +29,12 @@ import control.utils_config as utils_config
 import control.tracking as tracking
 import control.serial_peripherals as serial_peripherals
 
-try:
-    from control.multipoint_custom_script_entry_v2 import *
+'''try:
+    from control.multipoint_custom_script_entry_v2_towbin import *
 
     print("custom multipoint script found")
 except:
-    pass
+    pass'''
 
 from typing import List, Tuple, Optional, Dict, Any
 from queue import Queue
@@ -1580,6 +1580,7 @@ class MultiPointWorker(QObject):
 
         for region_index, (region_id, coordinates) in enumerate(self.scan_region_fov_coords_mm.items()):
 
+            self.region_index = region_index
             self.signal_acquisition_progress.emit(region_index + 1, n_regions, self.time_point)
 
             self.num_fovs = len(coordinates)
@@ -1604,6 +1605,11 @@ class MultiPointWorker(QObject):
             self.stage.move_z_to(2)
 
     def acquire_at_position(self, region_id, current_path, fov):
+
+        from ..towbin_funs import load_function_from_file
+        custom_file = self.multiPointController.parent.flexibleMultiPointWidget.towbin_widget.custom_file_path
+        if Path(custom_file).exists():
+            multipoint_custom_script_entry = load_function_from_file(custom_file, "multipoint_custom_script_entry")
 
         if RUN_CUSTOM_MULTIPOINT and "multipoint_custom_script_entry" in globals():
             print("run custom multipoint")
