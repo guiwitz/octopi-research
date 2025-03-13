@@ -958,7 +958,7 @@ class HighContentScreeningGui(QMainWindow):
         desktopWidget = QDesktopWidget()
         height_min = 0.9 * desktopWidget.height()
         width_min = 0.96 * desktopWidget.width()
-        self.setMinimumSize(int(width_min), int(height_min))
+        #self.setMinimumSize(int(width_min), int(height_min))
         self.onTabChanged(self.recordTabWidget.currentIndex())
 
     def setupMultiWindowLayout(self):
