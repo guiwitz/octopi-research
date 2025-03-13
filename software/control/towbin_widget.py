@@ -90,6 +90,10 @@ class TowbinWidget(QWidget):
         self.spin_crop_x.valueChanged.connect(self.update_crop)
         self.spin_crop_y.valueChanged.connect(self.update_crop)
 
+        self.check_save_multichannel = QCheckBox("Save multichannel")
+        self.check_save_multichannel.setChecked(True)
+        grid_crop.addWidget(self.check_save_multichannel,2,1)
+
         self.parent.destroyed.connect(self.close_widget)
 
     def close_widget(self):

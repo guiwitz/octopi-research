@@ -1378,6 +1378,10 @@ class MultiPointWorker(QObject):
         self.merged_image = None
         self.image_count = 0
 
+        # for multi-channel image
+        self.image_multichannel = None
+        self.save_multichannel = True
+
     def update_stats(self, new_stats):
         self.count += 1
         self._log.info("stats", self.count)
@@ -1399,6 +1403,10 @@ class MultiPointWorker(QObject):
 
     def run(self):
         try:
+            self.save_multichannel = False
+            if self.multiPointController.parent.flexibleMultiPointWidget.towbin_widget.check_save_multichannel.isChecked():
+                self.save_multichannel = True
+
             self.start_time = time.perf_counter_ns()
             if not self.camera.is_streaming:
                 self.camera.start_streaming()
@@ -1614,6 +1622,8 @@ class MultiPointWorker(QObject):
         x_mm = pos.x_mm
         y_mm = pos.y_mm
 
+        self.z_counter = 0
+        self.image_multichannel = None
         for z_level in range(self.NZ):
             file_ID = f"{region_id}_{fov}_{z_level}"
 
@@ -1629,6 +1639,7 @@ class MultiPointWorker(QObject):
 
             current_round_images = {}
             # iterate through selected modes
+            self.channel_counter = 0
             for config_idx, config in enumerate(self.selected_configurations):
 
                 self.handle_z_offset(config, True)
@@ -1636,6 +1647,7 @@ class MultiPointWorker(QObject):
                 # acquire image
                 if "USB Spectrometer" not in config.name and "RGB" not in config.name:
                     self.acquire_camera_image(config, file_ID, current_path, current_round_images, z_level)
+                    self.channel_counter += 1
                 elif "RGB" in config.name:
                     self.acquire_rgb_image(config, file_ID, current_path, current_round_images, z_level)
                 else:
@@ -1651,6 +1663,8 @@ class MultiPointWorker(QObject):
                 )
                 self.signal_region_progress.emit(current_image, self.total_scans)
 
+            self.z_counter += 1
+        
             # real time processing
             if self.multiPointController.do_fluorescence_rtp:
                 self.run_real_time_processing(current_round_images, z_level)
@@ -1669,6 +1683,15 @@ class MultiPointWorker(QObject):
 
             if z_level < self.NZ - 1:
                 self.move_z_for_stack()
+
+        # save multi-channel image
+        if self.save_multichannel:
+            pos_numerical_id = list(self.scan_region_fov_coords_mm.keys()).index(region_id)
+            multi_channel_id = f"Point{int(pos_numerical_id) :04d}_Time{self.time_point :04d}"
+            channel_names = [config.name for config in self.selected_configurations]
+            saving_path = os.path.join(self.base_path, self.experiment_ID, multi_channel_id + ".tiff")
+            from ..towbin_funs import save_single_plane_tiff
+            save_single_plane_tiff(self.image_multichannel, saving_path, channels=channel_names)
 
         if self.NZ > 1:
             self.move_z_back_after_stack()
@@ -1824,7 +1847,18 @@ class MultiPointWorker(QObject):
         self.image_to_display.emit(image_to_display)
         self.image_to_display_multi.emit(image_to_display, config.illumination_source)
 
-        self.save_image(image, file_ID, config, current_path)
+        if self.save_multichannel:
+            if self.image_multichannel is None:
+                numchannels = len(self.selected_configurations)
+                num_z = self.NZ
+                if image.dtype == np.uint16:
+                    self.image_multichannel = np.zeros((numchannels, num_z, self.crop_height, self.crop_width), dtype=np.uint16)
+                elif image.dtype == np.uint8:
+                    self.image_multichannel = np.zeros((numchannels, num_z, self.crop_height, self.crop_width), dtype=np.uint8)
+            print(f'channel_counter: {self.channel_counter}, z_counter: {self.z_counter}')
+            self.image_multichannel[self.channel_counter, self.z_counter, :, :] = image.copy()
+        else:
+            self.save_image(image, file_ID, config, current_path)
         self.update_napari(image, config.name, k)
 
         current_round_images[config.name] = np.copy(image)
