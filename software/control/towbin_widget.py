@@ -1,6 +1,7 @@
 from qtpy.QtWidgets import (QWidget, QPushButton, QVBoxLayout, QHBoxLayout, QSpinBox,
                             QLineEdit, QCheckBox, QGridLayout, QMessageBox, QGroupBox,
                             QLabel, QTableWidgetItem)
+from qtpy.QtWidgets import QFileDialog
 
 from qtpy.QtCore import Qt
 
@@ -98,7 +99,24 @@ class TowbinWidget(QWidget):
         self.check_save_multichannel.setChecked(True)
         grid_channels.addWidget(self.check_save_multichannel,2,1)
 
+        self.btn_select_custom = QPushButton("Custom multipoint")
+        self.btn_select_custom.setDefault(False)
+        #self.btn_select_custom.setIcon(QIcon("icon/folder.png"))
+        grid_crop.addWidget(self.btn_select_custom,3,1)
+        self.btn_select_custom.clicked.connect(self.set_custom_file)
+
+        self.lineEdit_customfile = QLineEdit()
+        self.lineEdit_customfile.setReadOnly(True)
+        self.lineEdit_customfile.setText("Choose a custom file")
+        grid_crop.addWidget(self.lineEdit_customfile,3,2)
+
         self.parent.destroyed.connect(self.close_widget)
+
+
+    def set_custom_file(self):
+        dialog = QFileDialog()
+        self.custom_file_path, _ = dialog.getOpenFileName(None, "Select File", ".", "Python Files (*.py)")
+        self.lineEdit_customfile.setText(self.custom_file_path)
 
     def close_widget(self):
         self.close()
