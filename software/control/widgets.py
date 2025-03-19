@@ -3222,6 +3222,14 @@ class FlexibleMultiPointWidget(QFrame):
                 x = self.location_list[index, 0]
                 y = self.location_list[index, 1]
                 z = self.location_list[index, 2]
+
+                from .towbin_funs import distance_moved
+                dist = distance_moved(stage=self.stage, coordinate=np.array([x,y]))
+                if (dist > 13):
+                    print("LARGE Distance moved: ", dist)
+                    self.stage.move_z_to(2)
+                    time.sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+
                 self.stage.move_x_to(x)
                 self.stage.move_y_to(y)
                 self.stage.move_z_to(z)
