@@ -1580,14 +1580,18 @@ class MultiPointWorker(QObject):
 
         for region_index, (region_id, coordinates) in enumerate(self.scan_region_fov_coords_mm.items()):
 
+            coordinates_region = self.scan_region_coords_mm[region_index]
             self.signal_acquisition_progress.emit(region_index + 1, n_regions, self.time_point)
 
             self.num_fovs = len(coordinates)
             self.total_scans = self.num_fovs * self.NZ * len(self.selected_configurations)
 
             for fov_count, coordinate_mm in enumerate(coordinates):
+                coordinate_full = coordinate_mm
+                if len(coordinates_region) == 3:
+                    coordinate_full = [coordinate_mm[0], coordinate_mm[1], coordinates_region[2]]
                 self.handle_large_move(coordinate_mm, region_id)
-                self.move_to_coordinate(coordinate_mm)
+                self.move_to_coordinate(coordinate_full)
                 self.acquire_at_position(region_id, current_path, fov_count)
 
                 if self.multiPointController.abort_acqusition_requested:
