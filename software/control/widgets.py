@@ -5424,7 +5424,7 @@ class NapariLiveWidget(QWidget):
         self.layout = QVBoxLayout()
         self.layout.addWidget(self.viewerWidget)
         self.setLayout(self.layout)
-        self.customizeViewer()
+        #self.customizeViewer()
 
     def customizeViewer(self):
         # Hide the status bar (which includes the activity button)
@@ -5623,7 +5623,7 @@ class NapariLiveWidget(QWidget):
 
         control_layout.addStretch(1)
 
-        add_live_controls = False
+        add_live_controls = True
         if USE_NAPARI_FOR_LIVE_CONTROL or add_live_controls:
             live_controls_widget = QWidget()
             live_controls_widget.setLayout(control_layout)
