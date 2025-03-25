@@ -2518,7 +2518,8 @@ class FlexibleMultiPointWidget(QFrame):
         # Make all buttons span 2 columns for consistent width
         grid_line1.addWidget(self.btn_add, 1, 0, 1, 2)
         grid_line1.addWidget(self.btn_remove, 1, 2, 1, 2)
-        grid_line1.addWidget(self.btn_next, 1, 4, 1, 2)
+        grid_line1.addWidget(self.btn_previous, 1, 4, 1, 1)
+        grid_line1.addWidget(self.btn_next, 1, 5, 1, 1)
         grid_line1.addWidget(self.btn_clear, 1, 6, 1, 2)
 
         grid_line1.addWidget(self.btn_import_locations, 2, 0, 1, 4)
