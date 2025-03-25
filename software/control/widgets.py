@@ -2628,7 +2628,8 @@ class FlexibleMultiPointWidget(QFrame):
         # Make all buttons span 2 columns for consistent width
         self.grid_location_list_line2.addWidget(self.btn_add, 1, 0, 1, 2)
         self.grid_location_list_line2.addWidget(self.btn_remove, 1, 2, 1, 2)
-        self.grid_location_list_line2.addWidget(self.btn_next, 1, 4, 1, 2)
+        self.grid_location_list_line2.addWidget(self.btn_previous, 1, 4, 1, 1)
+        self.grid_location_list_line2.addWidget(self.btn_next, 1, 5, 1, 1)
         self.grid_location_list_line2.addWidget(self.btn_clear, 1, 6, 1, 2)
 
         self.grid_location_list_line3 = QGridLayout()
