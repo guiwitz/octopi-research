@@ -1691,7 +1691,7 @@ class MultiPointWorker(QObject):
         # save multi-channel image
         if self.save_multichannel:
             pos_numerical_id = list(self.scan_region_fov_coords_mm.keys()).index(region_id)
-            multi_channel_id = f"Point{int(pos_numerical_id) :04d}_Time{self.time_point :04d}"
+            multi_channel_id = f"Time{self.time_point :04d}_Point{int(pos_numerical_id) :04d}"
             channel_names = [config.name for config in self.selected_configurations]
             saving_path = os.path.join(self.base_path, self.experiment_ID, multi_channel_id + ".tiff")
             from ..towbin_funs import save_single_plane_tiff
