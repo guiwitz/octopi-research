@@ -15,13 +15,15 @@ print('Imported multipoint_custom_script_entry_v2_towbin.py')
 def multipoint_custom_script_entry(worker, current_path, region_id, fov, i=None, j=None):
     print(f"In custom script; t={worker.time_point}, region={region_id}, fov={fov}: {i}_{j}")
 
-    #pos_index = worker.region_index
     pos_index = get_numerical_id_from_region_id(worker, region_id)
     time_index = worker.time_point
     
+    # staggered autofocus. Perform update only for every 3rd time point
+    # by adding the time index to the position index and checking if the sum is divisible by 3
     if (pos_index + time_index) % 3 == 0:
         print(f'do AF at {pos_index} {time_index}  {region_id}')
         perform_autofocus(worker, region_id)
+
     prepare_z_stack(worker)
     acquire_image_towbin(worker, current_path, region_id, fov)
 
@@ -44,17 +46,16 @@ def acquire_image_towbin(worker, current_path, region_id, fov):
             worker.update_napari(image, config.name, z_level)
 
             if image_multichannel is None:
-                if image_multichannel is None:
-                    numchannels = len(worker.selected_configurations)
-                    num_z = worker.NZ
-                    if image.dtype == np.uint16:
-                        image_multichannel = np.zeros((numchannels, num_z, worker.crop_height, worker.crop_width), dtype=np.uint16)
-                    elif image.dtype == np.uint8:
-                        image_multichannel = np.zeros((numchannels, num_z, worker.crop_height, worker.crop_width), dtype=np.uint8)
+                numchannels = len(worker.selected_configurations)
+                num_z = worker.NZ
+                if image.dtype == np.uint16:
+                    image_multichannel = np.zeros((numchannels, num_z, worker.crop_height, worker.crop_width), dtype=np.uint16)
+                elif image.dtype == np.uint8:
+                    image_multichannel = np.zeros((numchannels, num_z, worker.crop_height, worker.crop_width), dtype=np.uint8)
             image_multichannel[config_idx, z_level, :, :] = image.copy()
 
             # Calculate current image number and emit progress signal
-            current_image = (fov * total_images) + (z_level * len(worker.selected_configurations)) + config_idx + 1
+            current_image = (z_level * len(worker.selected_configurations)) + config_idx + 1
             worker.signal_region_progress.emit(current_image, worker.total_scans)
 
 
