@@ -1069,6 +1069,7 @@ class AutofocusWorker(QObject):
             timestamp_1 = time.time()
             print("             calculating focus measure took " + str(timestamp_1 - timestamp_0) + " second")
             focus_measure_vs_z[i] = focus_measure
+            print(f'i: {i}, focus measure: {focus_measure}, zpos: {self.stage.get_pos().z_mm}')
             print(i, focus_measure)
             focus_measure_max = max(focus_measure, focus_measure_max)
             if focus_measure < focus_measure_max * AF.STOP_THRESHOLD:
@@ -1618,6 +1619,10 @@ class MultiPointWorker(QObject):
             self._log.error(
                 f"Autofocus failed in acquire_at_position.  Continuing to acquire anyway using the current z position (z={self.stage.get_pos().z_mm} [mm])"
             )
+        else:
+            # update current z position
+            self.z_pos = self.stage.get_pos().z_mm
+            self.scan_region_coords_mm[region_id][2] = self.z_pos
 
         if self.NZ > 1:
             self.prepare_z_stack()
