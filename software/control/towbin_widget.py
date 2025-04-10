@@ -64,6 +64,7 @@ class TowbinWidget(QWidget):
         self.btn_copy_z_to_same_id.clicked.connect(self.copy_z_to_same_id)
         grid_shift_points.addWidget(self.btn_copy_z_to_same_id)
 
+        """"
         # crop
         grid_crop = QGridLayout()
         self.layout.addLayout(grid_crop)
@@ -89,10 +90,13 @@ class TowbinWidget(QWidget):
         grid_crop.addWidget(self.spin_crop_y,1,4)
         self.spin_crop_x.valueChanged.connect(self.update_crop)
         self.spin_crop_y.valueChanged.connect(self.update_crop)
+        """
 
+        grid_channels = QGridLayout()
+        self.layout.addLayout(grid_channels)
         self.check_save_multichannel = QCheckBox("Save multichannel")
         self.check_save_multichannel.setChecked(True)
-        grid_crop.addWidget(self.check_save_multichannel,2,1)
+        grid_channels.addWidget(self.check_save_multichannel,2,1)
 
         self.parent.destroyed.connect(self.close_widget)
 

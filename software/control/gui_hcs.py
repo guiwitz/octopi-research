@@ -764,6 +764,23 @@ class HighContentScreeningGui(QMainWindow):
         self.cameraTabWidget = QTabWidget()
         self.setupCameraTabWidget()
 
+        # copy camera crop settings to software crop
+        self.cameraSettingWidget.entry_ROI_height.valueChanged.connect(self._on_change_camera_crop)
+        self.cameraSettingWidget.entry_ROI_width.valueChanged.connect(self._on_change_camera_crop)
+
+    def _on_change_camera_crop(self):
+        """Update the software crop settings when the camera crop settings change."""
+
+        self.multipointController.crop_height = self.camera.Height
+        self.multipointController.crop_width = self.camera.Width
+
+        self.streamHandler.set_crop(
+            crop_width=self.camera.Width, crop_height=self.camera.Height)
+        if self.multipointController.multiPointWorker is not None:
+            self.multipointController.multiPointWorker.crop_height = self.camera.Height
+            self.multipointController.multiPointWorker.crop_width = self.camera.Width
+
+
     def setupImageDisplayTabs(self):
         if USE_NAPARI_FOR_LIVE_VIEW:
             self.napariLiveWidget = widgets.NapariLiveWidget(
