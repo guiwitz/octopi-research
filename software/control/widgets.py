@@ -3428,6 +3428,9 @@ class FlexibleMultiPointWidget(QFrame):
         if not self.acquisition_in_place:
             self.last_used_locations = self.location_list.copy()
             self.last_used_location_ids = self.location_ids.copy()
+
+            for ind, reg in enumerate(self.multipointController.scan_region_coords_mm):
+                self.update_location_z_level(ind, reg[2])
         else:
             self.clear_only_location_list()
             self.acquisition_in_place = False
