@@ -1623,7 +1623,7 @@ class MultiPointWorker(QObject):
             # update current z position
             self.z_pos = self.stage.get_pos().z_mm
             pos_numerical_id = list(self.scan_region_fov_coords_mm.keys()).index(region_id)
-            self.scan_region_coords_mm[region_id][2] = self.z_pos
+            self.scan_region_coords_mm[pos_numerical_id][2] = self.z_pos
 
         if self.NZ > 1:
             self.prepare_z_stack()
