@@ -6,6 +6,7 @@ import pandas as pd
 import imageio as iio
 from control._def import *
 import control.utils as utils
+from control.towbin_funs import save_single_plane_tiff
 
 BACKLASH_USTEPS = 160
 
@@ -14,7 +15,8 @@ print('Imported multipoint_custom_script_entry_v2_towbin.py')
 def multipoint_custom_script_entry(worker, current_path, region_id, fov, i=None, j=None):
     print(f"In custom script; t={worker.time_point}, region={region_id}, fov={fov}: {i}_{j}")
 
-    pos_index = worker.region_index
+    #pos_index = worker.region_index
+    pos_index = get_numerical_id_from_region_id(worker, region_id)
     time_index = worker.time_point
     
     if (pos_index + time_index) % 3 == 0:
@@ -73,10 +75,11 @@ def acquire_image_towbin(worker, current_path, region_id, fov):
 
     # save multi-channel image
     if worker.save_multichannel:
-        multi_channel_id = f"Point{int(worker.region_index) :04d}_Time{worker.time_point :04d}"
+        pos_id = get_numerical_id_from_region_id(worker, region_id)
+        multi_channel_id = f"Point{int(pos_id) :04d}_Time{worker.time_point :04d}"
         channel_names = [config.name for config in worker.selected_configurations]
         saving_path = os.path.join(worker.base_path, worker.experiment_ID, multi_channel_id + ".tiff")
-        from .towbin_funs import save_single_plane_tiff
+        
         save_single_plane_tiff(image_multichannel, saving_path, channels=channel_names)
 
 
@@ -85,6 +88,16 @@ def acquire_image_towbin(worker, current_path, region_id, fov):
         #move_z_stack_back(worker)
 
     worker.af_fov_count += 1
+
+def get_numerical_id_from_region_id(worker, region_id):
+    # Get the numerical ID of the region from the dictionary
+    try:
+        pos_numerical_id = list(worker.scan_region_fov_coords_mm.keys()).index(region_id)
+    except ValueError:
+        print(f"Region ID {region_id} not found in scan_region_fov_coords_mm.")
+        return None
+
+    return pos_numerical_id
 
 
 def perform_autofocus(worker, region_id):
@@ -130,7 +143,7 @@ def update_widget_z_level(worker, region_id):
     #if worker.coordinate_dict is not None:
     #    worker.microscope.multiPointWidgetGrid.update_region_z_level(region_id, worker.stage.get_pos().z_mm)
 
-    pos_numerical_id = list(worker.scan_region_fov_coords_mm.keys()).index(region_id)
+    pos_numerical_id = get_numerical_id_from_region_id(worker, region_id)
 
     if worker.microscope.flexibleMultiPointWidget.location_list is not None:
         try:
