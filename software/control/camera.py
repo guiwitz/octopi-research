@@ -612,6 +612,8 @@ class Camera_Simulation(object):
         pass
 
     def set_ROI(self, offset_x=None, offset_y=None, width=None, height=None):
+        self.Height = height
+        self.Width = width
         pass
 
     def reset_camera_acquisition_counter(self):
