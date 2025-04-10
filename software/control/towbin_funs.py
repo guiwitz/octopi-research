@@ -77,4 +77,8 @@ def load_function_from_file(file_path, function_name):
     spec.loader.exec_module(module)  # Execute the module
     
     # Get the function by name
-    return getattr(module, function_name, None)
+    return_function = getattr(module, function_name, None)
+    if return_function is None:
+        raise ImportError(f"Function {function_name} not found in {file_path}")
+    else:
+        return return_function
