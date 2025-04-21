@@ -2346,6 +2346,8 @@ class FlexibleMultiPointWidget(QFrame):
         self.location_ids = np.empty((0,), dtype="<U20")
         self.use_overlap = USE_OVERLAP_FOR_FLEXIBLE
         self.add_components()
+        self.setup_layout()
+        self.setup_connections()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.is_current_acquisition_widget = False
         self.acquisition_in_place = False
@@ -2560,28 +2562,32 @@ class FlexibleMultiPointWidget(QFrame):
         self.eta_timer = QTimer()
 
         # layout
-        grid_line0 = QHBoxLayout()
-        grid_line0.addWidget(QLabel("Saving Path"))
-        grid_line0.addWidget(self.lineEdit_savingDir)
-        grid_line0.addWidget(self.btn_setSavingDir)
-        grid_line0.addWidget(QLabel("ID"))
-        grid_line0.addWidget(self.lineEdit_experimentID)
+        self.grid_line0 = QHBoxLayout()
+        self.grid_line0.addWidget(QLabel("Saving Path"))
+        self.grid_line0.addWidget(self.lineEdit_savingDir)
+        self.grid_line0.addWidget(self.btn_setSavingDir)
+        self.grid_line0.addWidget(QLabel("ID"))
+        self.grid_line0.addWidget(self.lineEdit_experimentID)
 
-        grid_line1 = QGridLayout()
+        self.grid_location_list_line1 = QGridLayout()
         temp3 = QHBoxLayout()
         temp3.addWidget(QLabel("Location List"))
         temp3.addWidget(self.dropdown_location_list)
-        grid_line1.addLayout(temp3, 0, 0, 1, 6)  # Span across all columns except the last
-        grid_line1.addWidget(self.btn_show_table_location_list, 0, 6, 1, 2)  # Align with other buttons
+        self.grid_location_list_line1.addLayout(temp3, 0, 0, 1, 6)  # Span across all columns except the last
+        self.grid_location_list_line1.addWidget(
+            self.btn_show_table_location_list, 0, 6, 1, 2
+        )  # Align with other buttons
 
+        self.grid_location_list_line2 = QGridLayout()
         # Make all buttons span 2 columns for consistent width
-        grid_line1.addWidget(self.btn_add, 1, 0, 1, 2)
-        grid_line1.addWidget(self.btn_remove, 1, 2, 1, 2)
-        grid_line1.addWidget(self.btn_next, 1, 4, 1, 2)
-        grid_line1.addWidget(self.btn_clear, 1, 6, 1, 2)
+        self.grid_location_list_line2.addWidget(self.btn_add, 1, 0, 1, 2)
+        self.grid_location_list_line2.addWidget(self.btn_remove, 1, 2, 1, 2)
+        self.grid_location_list_line2.addWidget(self.btn_next, 1, 4, 1, 2)
+        self.grid_location_list_line2.addWidget(self.btn_clear, 1, 6, 1, 2)
 
-        grid_line1.addWidget(self.btn_import_locations, 2, 0, 1, 4)
-        grid_line1.addWidget(self.btn_export_locations, 2, 4, 1, 4)
+        self.grid_location_list_line3 = QGridLayout()
+        self.grid_location_list_line3.addWidget(self.btn_import_locations, 2, 0, 1, 4)
+        self.grid_location_list_line3.addWidget(self.btn_export_locations, 2, 4, 1, 4)
 
         # Create spacer items
         EDGE_SPACING = 4  # Adjust this value as needed
@@ -2636,15 +2642,16 @@ class FlexibleMultiPointWidget(QFrame):
         dt_half.addWidget(QLabel("Nt"))
         dt_half.addWidget(self.entry_Nt)
 
+        self.grid_acquisition = QGridLayout()
         # Add the layouts to grid_line1
         if self.use_overlap:
-            grid_line1.addLayout(xy_half, 3, 0, 1, 4)
-            grid_line1.addLayout(overlap_half, 3, 4, 1, 4)
+            self.grid_acquisition.addLayout(xy_half, 3, 0, 1, 4)
+            self.grid_acquisition.addLayout(overlap_half, 3, 4, 1, 4)
         else:
-            grid_line1.addLayout(x_half, 3, 0, 1, 4)
-            grid_line1.addLayout(y_half, 3, 4, 1, 4)
-        grid_line1.addLayout(dz_half, 4, 0, 1, 4)
-        grid_line1.addLayout(dt_half, 4, 4, 1, 4)
+            self.grid_acquisition.addLayout(x_half, 3, 0, 1, 4)
+            self.grid_acquisition.addLayout(y_half, 3, 4, 1, 4)
+        self.grid_acquisition.addLayout(dz_half, 4, 0, 1, 4)
+        self.grid_acquisition.addLayout(dt_half, 4, 4, 1, 4)
 
         self.z_min_layout = QHBoxLayout()
         self.z_min_layout.addWidget(self.set_minZ_button)
@@ -2658,8 +2665,8 @@ class FlexibleMultiPointWidget(QFrame):
         self.z_max_layout.addWidget(QLabel("Z-max"), Qt.AlignRight)
         self.z_max_layout.addWidget(self.entry_maxZ)
 
-        grid_line1.addLayout(self.z_min_layout, 5, 0, 1, 4)  # hide this in toggle
-        grid_line1.addLayout(self.z_max_layout, 5, 4, 1, 4)  # hide this in toggle
+        self.grid_acquisition.addLayout(self.z_min_layout, 5, 0, 1, 4)  # hide this in toggle
+        self.grid_acquisition.addLayout(self.z_max_layout, 5, 4, 1, 4)  # hide this in toggle
 
         grid_af = QVBoxLayout()
         grid_af.addWidget(self.checkbox_withAutofocus)
@@ -2682,45 +2689,41 @@ class FlexibleMultiPointWidget(QFrame):
         grid_acquisition.addLayout(grid_af)
         grid_acquisition.addWidget(self.btn_startAcquisition)
 
-        grid_line1.addLayout(grid_config, 6, 0, 3, 4)
-        grid_line1.addLayout(grid_acquisition, 6, 4, 3, 4)
+        self.grid_acquisition.addLayout(grid_config, 6, 0, 3, 4)
+        self.grid_acquisition.addLayout(grid_acquisition, 6, 4, 3, 4)
 
         # Columns 0-3: Combined stretch factor = 4
-        grid_line1.setColumnStretch(0, 1)
-        grid_line1.setColumnStretch(1, 1)
-        grid_line1.setColumnStretch(2, 1)
-        grid_line1.setColumnStretch(3, 1)
-
         # Columns 4-7: Combined stretch factor = 4
-        grid_line1.setColumnStretch(4, 1)
-        grid_line1.setColumnStretch(5, 1)
-        grid_line1.setColumnStretch(6, 1)
-        grid_line1.setColumnStretch(7, 1)
+        for i in range(4):
+            self.grid_location_list_line1.setColumnStretch(i, 1)
+            self.grid_location_list_line2.setColumnStretch(i, 1)
+            self.grid_location_list_line3.setColumnStretch(i, 1)
+            self.grid_acquisition.setColumnStretch(i, 1)
 
-        grid_line1.setRowStretch(0, 0)  # Location list row
-        grid_line1.setRowStretch(1, 0)  # Button row
-        grid_line1.setRowStretch(2, 0)  # Import/Export buttons
-        grid_line1.setRowStretch(3, 0)  # Nx/Ny and overlap row
-        grid_line1.setRowStretch(4, 0)  # dz/Nz and dt/Nt row
-        grid_line1.setRowStretch(5, 0)  # Z-range row
-        grid_line1.setRowStretch(6, 1)  # Configuration/AF row - allow this to stretch
-        grid_line1.setRowStretch(7, 0)  # Last row
+            self.grid_location_list_line1.setColumnStretch(i + 4, 1)
+            self.grid_location_list_line2.setColumnStretch(i + 4, 1)
+            self.grid_location_list_line3.setColumnStretch(i + 4, 1)
+            self.grid_acquisition.setColumnStretch(i + 4, 1)
+
+        self.grid_location_list_line1.setRowStretch(0, 0)  # Location list row
+        self.grid_location_list_line2.setRowStretch(1, 0)  # Button row
+        self.grid_location_list_line3.setRowStretch(2, 0)  # Import/Export buttons
+        self.grid_acquisition.setRowStretch(0, 0)  # Nx/Ny and overlap row
+        self.grid_acquisition.setRowStretch(1, 0)  # dz/Nz and dt/Nt row
+        self.grid_acquisition.setRowStretch(2, 0)  # Z-range row
+        self.grid_acquisition.setRowStretch(3, 1)  # Configuration/AF row - allow this to stretch
+        self.grid_acquisition.setRowStretch(4, 0)  # Last row
 
         # Row : Progress Bar
-        row_progress_layout = QHBoxLayout()
-        row_progress_layout.addWidget(self.progress_label)
-        row_progress_layout.addWidget(self.progress_bar)
-        row_progress_layout.addWidget(self.eta_label)
-
-        self.grid = QVBoxLayout()
-        self.grid.addLayout(grid_line0)
-        self.grid.addLayout(grid_line1)
-        self.grid.addLayout(row_progress_layout)
-        self.setLayout(self.grid)
+        self.row_progress_layout = QHBoxLayout()
+        self.row_progress_layout.addWidget(self.progress_label)
+        self.row_progress_layout.addWidget(self.progress_bar)
+        self.row_progress_layout.addWidget(self.eta_label)
 
         # add and display a timer - to be implemented
         # self.timer = QTimer()
 
+    def setup_connections(self):
         # connections
         if self.use_overlap:
             self.entry_overlap.valueChanged.connect(self.update_fov_positions)

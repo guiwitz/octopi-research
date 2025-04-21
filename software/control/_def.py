@@ -777,6 +777,8 @@ XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM = 2
 RUN_FLUIDICS = False
 FLUIDICS_CONFIG_PATH = "./merfish_config/MERFISH_config.json"
 
+USE_TEMPLATE_MULTIPOINT = False
+
 ##########################################################
 #### start of loading machine specific configurations ####
 ##########################################################

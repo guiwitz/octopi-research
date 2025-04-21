@@ -4418,6 +4418,26 @@ class ScanCoordinates(QObject):
 
         return sorted_points.tolist()
 
+    def add_template_region(
+        self,
+        x_mm: float,
+        y_mm: float,
+        z_mm: float,
+        template_x_mm: np.ndarray,
+        template_y_mm: np.ndarray,
+        region_id: str,
+    ):
+        """Add a region based on a template of x and y coordinates"""
+        scan_coordinates = []
+        for i in range(len(template_x_mm)):
+            x = x_mm + template_x_mm[i]
+            y = y_mm + template_y_mm[i]
+            if self.validate_coordinates(x, y):
+                scan_coordinates.append((x, y))
+                self.navigationViewer.register_fov_to_image(x, y)
+        self.region_centers[region_id] = [x_mm, y_mm, z_mm]
+        self.region_fov_coordinates[region_id] = scan_coordinates
+
     def region_contains_coordinate(self, region_id: str, x: float, y: float) -> bool:
         # TODO: check for manual region
         if not self.validate_region(region_id):

@@ -114,6 +114,9 @@ if USE_JUPYTER_CONSOLE:
 if RUN_FLUIDICS:
     from control.fluidics import Fluidics
 
+# Import the custom widget
+from control.custom_multipoint_widget import TemplateMultiPointWidget
+
 
 class MovementUpdater(QObject):
     position_after_move = Signal(squid.abc.Pos)
@@ -740,6 +743,16 @@ class HighContentScreeningGui(QMainWindow):
             self.focusMapWidget,
             self.napariMosaicDisplayWidget,
         )
+        if USE_TEMPLATE_MULTIPOINT:
+            self.templateMultiPointWidget = TemplateMultiPointWidget(
+                self.stage,
+                self.navigationViewer,
+                self.multipointController,
+                self.objectiveStore,
+                self.channelConfigurationManager,
+                self.scanCoordinates,
+                self.focusMapWidget,
+            )
         self.multiPointWithFluidicsWidget = widgets.MultiPointWithFluidicsWidget(
             self.stage,
             self.navigationViewer,
@@ -867,6 +880,8 @@ class HighContentScreeningGui(QMainWindow):
             self.recordTabWidget.addTab(self.wellplateMultiPointWidget, "Wellplate Multipoint")
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.recordTabWidget.addTab(self.flexibleMultiPointWidget, "Flexible Multipoint")
+        if USE_TEMPLATE_MULTIPOINT:
+            self.recordTabWidget.addTab(self.templateMultiPointWidget, "Template Multipoint")
         if RUN_FLUIDICS:
             self.recordTabWidget.addTab(self.multiPointWithFluidicsWidget, "Multipoint with Fluidics")
         if ENABLE_TRACKING:
