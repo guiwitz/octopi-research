@@ -1450,11 +1450,40 @@ class MultiPointWorker(QObject):
         if len(self.coordinates_pd) > 1:
             x = self.coordinates_pd["x (mm)"].values
             y = self.coordinates_pd["y (mm)"].values
-            if "z_piezo (um)" in self.coordinates_pd.columns:
-                z = self.coordinates_pd["z (um)"].values + self.coordinates_pd["z_piezo (um)"].values
+
+            # When performing a z-stack (NZ > 1), only use the bottom z position for each (x,y) location
+            if self.NZ > 1:
+                # Create a copy to avoid modifying the original dataframe
+                plot_df = self.coordinates_pd.copy()
+
+                # Group by x, y, region and get the minimum z value for each group
+                if "z_piezo (um)" in plot_df.columns:
+                    # Calculate total z for grouping
+                    plot_df["total_z"] = plot_df["z (um)"] + plot_df["z_piezo (um)"]
+                    # Group by x, y, region and get indices of minimum z values
+                    idx = plot_df.groupby(["x (mm)", "y (mm)", "region"])["total_z"].idxmin()
+                    # Filter the dataframe to only include bottom z positions
+                    plot_df = plot_df.loc[idx]
+                    z = plot_df["z (um)"].values + plot_df["z_piezo (um)"].values
+                else:
+                    # Group by x, y, region and get indices of minimum z values
+                    idx = plot_df.groupby(["x (mm)", "y (mm)", "region"])["z (um)"].idxmin()
+                    # Filter the dataframe to only include bottom z positions
+                    plot_df = plot_df.loc[idx]
+                    z = plot_df["z (um)"].values
+
+                # Get the filtered x, y, region values
+                x = plot_df["x (mm)"].values
+                y = plot_df["y (mm)"].values
+                region = plot_df["region"].values
             else:
-                z = self.coordinates_pd["z (um)"].values
-            region = self.coordinates_pd["region"].values
+                # For single z acquisitions, use all points as before
+                if "z_piezo (um)" in self.coordinates_pd.columns:
+                    z = self.coordinates_pd["z (um)"].values + self.coordinates_pd["z_piezo (um)"].values
+                else:
+                    z = self.coordinates_pd["z (um)"].values
+                region = self.coordinates_pd["region"].values
+
             x = np.array(x).astype(float)
             y = np.array(y).astype(float)
             z = np.array(z).astype(float)
