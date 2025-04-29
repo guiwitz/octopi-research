@@ -2775,6 +2775,19 @@ class FlexibleMultiPointWidget(QFrame):
         self.toggle_z_range_controls(False)
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
 
+    def setup_layout(self):
+        self.grid = QVBoxLayout()
+        self.grid.addLayout(self.grid_line0)
+        self.grid.addLayout(self.grid_location_list_line1)
+        self.grid.addLayout(self.grid_location_list_line2)
+        self.grid.addLayout(self.grid_location_list_line3)
+        self.grid.addLayout(self.grid_acquisition)
+        self.grid.addLayout(self.row_progress_layout)
+        self.setLayout(self.grid)
+
+        from .towbin_widget import TowbinWidget
+        self.towbin_widget = TowbinWidget(self)
+
     def toggle_z_range_controls(self, state):
         is_visible = bool(state)
 
@@ -3279,6 +3292,14 @@ class FlexibleMultiPointWidget(QFrame):
                 x = self.location_list[index, 0]
                 y = self.location_list[index, 1]
                 z = self.location_list[index, 2]
+
+                from .towbin_funs import distance_moved
+                dist = distance_moved(stage=self.stage, coordinate=np.array([x,y]))
+                if (dist > 13):
+                    print("LARGE Distance moved: ", dist)
+                    self.stage.move_z_to(2)
+                    time.sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+
                 self.stage.move_x_to(x)
                 self.stage.move_y_to(y)
                 self.stage.move_z_to(z)
@@ -3340,11 +3361,20 @@ class FlexibleMultiPointWidget(QFrame):
                 self.scanCoordinates.region_fov_coordinates[new_id] = self.scanCoordinates.region_fov_coordinates.pop(
                     region_id
                 )
+                for coord in self.scanCoordinates.region_fov_coordinates[new_id]:
+                    self.navigationViewer.register_fov_to_image(coord[0], coord[1])
 
         # Update UI
         location_str = f"x:{round(self.location_list[row,0],3)} mm  y:{round(self.location_list[row,1],3)} mm  z:{round(1000*self.location_list[row,2],3)} μm"
         self.dropdown_location_list.setItemText(row, location_str)
-        self.go_to(row)
+        #self.go_to(row)
+        # move to the new location if it is the selected location,
+        # not if the row was updated but not selected
+        indices = self.table_location_list.selectedIndexes()
+        selected_rows = [ind.row() for ind in indices]
+        if len(selected_rows) > 0:
+            if row == selected_rows[0]:
+                self.go_to(row)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_A and event.modifiers() == Qt.ControlModifier:
