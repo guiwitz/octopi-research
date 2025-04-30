@@ -167,6 +167,9 @@ class HighContentScreeningGui(QMainWindow):
             self.jupyter_dock.setWidget(self.jupyter_widget)
             self.addDockWidget(Qt.LeftDockWidgetArea, self.jupyter_dock)
 
+        # Use same crop for hardware and software
+        self._on_change_camera_crop()
+
     def loadObjects(self, is_simulation):
         self.illuminationController = None
         if is_simulation:
@@ -751,6 +754,8 @@ class HighContentScreeningGui(QMainWindow):
         # copy camera crop settings to software crop
         self.cameraSettingWidget.entry_ROI_height.valueChanged.connect(self._on_change_camera_crop)
         self.cameraSettingWidget.entry_ROI_width.valueChanged.connect(self._on_change_camera_crop)
+        # initializae camera settings
+        self.cameraSettingWidget.set_ROI_offset()
 
     def _on_change_camera_crop(self):
         """Update the software crop settings when the camera crop settings change."""
