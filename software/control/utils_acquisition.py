@@ -32,7 +32,9 @@ def save_image(image: np.array, file_id: str, save_directory: str, config: Chann
     if control._def.SAVE_IN_PSEUDO_COLOR:
         image = return_pseudo_colored_image(image, config)
 
-    imageio.imwrite(saving_path, image)
+    #imageio.imwrite(saving_path, image)
+    from .towbin_funs import save_single_plane_tiff
+    save_single_plane_tiff(image, saving_path)
 
     return image
 
