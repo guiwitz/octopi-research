@@ -755,14 +755,16 @@ class HighContentScreeningGui(QMainWindow):
     def _on_change_camera_crop(self):
         """Update the software crop settings when the camera crop settings change."""
 
-        self.multipointController.crop_height = self.camera.Height
-        self.multipointController.crop_width = self.camera.Width
+        width = self.camera.get_resolution()[0]
+        height = self.camera.get_resolution()[1]
+        self.multipointController.crop_height = height
+        self.multipointController.crop_width = width
 
         self.streamHandler.set_crop(
-            crop_width=self.camera.Width, crop_height=self.camera.Height)
+            crop_width=width, crop_height=height)
         if self.multipointController.multiPointWorker is not None:
-            self.multipointController.multiPointWorker.crop_height = self.camera.Height
-            self.multipointController.multiPointWorker.crop_width = self.camera.Width
+            self.multipointController.multiPointWorker.crop_height = height
+            self.multipointController.multiPointWorker.crop_width = width
 
 
     def setupImageDisplayTabs(self):
