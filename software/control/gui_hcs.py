@@ -755,8 +755,8 @@ class HighContentScreeningGui(QMainWindow):
     def _on_change_camera_crop(self):
         """Update the software crop settings when the camera crop settings change."""
 
-        width = self.camera.get_resolution()[0]
-        height = self.camera.get_resolution()[1]
+        width = self.camera.Width#get_resolution()[0]
+        height = self.camera.Height#.get_resolution()[1]
         self.multipointController.crop_height = height
         self.multipointController.crop_width = width
 
