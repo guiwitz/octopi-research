@@ -318,6 +318,8 @@ class SimulatedCamera(AbstractCamera):
 
     @debug_log
     def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
+        self.Height = height
+        self.Width = width
         self._roi = (offset_x, offset_y, width, height)
 
     @debug_log
