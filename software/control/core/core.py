@@ -31,13 +31,14 @@ import control.utils_channel as utils_channel
 import control.utils_config as utils_config
 import control.tracking as tracking
 import control.serial_peripherals as serial_peripherals
-
+'''
 try:
     from control.multipoint_custom_script_entry_v2 import *
 
     print("custom multipoint script found")
 except:
     pass
+'''
 
 from typing import List, Tuple, Optional, Dict, Any
 from queue import Queue
@@ -1597,7 +1598,12 @@ class MultiPointWorker(QObject):
 
     def acquire_at_position(self, region_id, current_path, fov):
 
-        if RUN_CUSTOM_MULTIPOINT and "multipoint_custom_script_entry" in globals():
+        from ..towbin_funs import load_function_from_file
+        custom_file = self.multiPointController.parent.flexibleMultiPointWidget.towbin_widget.custom_file_path
+        if Path(custom_file).exists():
+            multipoint_custom_script_entry = load_function_from_file(custom_file, "multipoint_custom_script_entry")
+
+        if RUN_CUSTOM_MULTIPOINT and "multipoint_custom_script_entry" in locals():
             print("run custom multipoint")
             multipoint_custom_script_entry(self, current_path, region_id, fov)
             return
