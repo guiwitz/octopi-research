@@ -16,6 +16,8 @@ class TowbinWidget(QWidget):
 
         self.parent = parent
 
+        self.custom_file_path = None
+
         self.layout = QVBoxLayout()
         self.setLayout(self.layout)
 

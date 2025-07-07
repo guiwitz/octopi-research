@@ -1600,8 +1600,9 @@ class MultiPointWorker(QObject):
 
         from ..towbin_funs import load_function_from_file
         custom_file = self.multiPointController.parent.flexibleMultiPointWidget.towbin_widget.custom_file_path
-        if Path(custom_file).exists():
-            multipoint_custom_script_entry = load_function_from_file(custom_file, "multipoint_custom_script_entry")
+        if custom_file is not None:
+                if Path(custom_file).exists():
+                    multipoint_custom_script_entry = load_function_from_file(custom_file, "multipoint_custom_script_entry")
 
         if RUN_CUSTOM_MULTIPOINT and "multipoint_custom_script_entry" in locals():
             print("run custom multipoint")
