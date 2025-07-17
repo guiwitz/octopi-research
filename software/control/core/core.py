@@ -1559,7 +1559,8 @@ class MultiPointWorker(QObject):
                     return
             # update z position after having potentially done autfocus
             # Comment: seems strange that this is never done !?
-            self.scan_region_coords_mm[region_index][2] = self.stage.get_pos().z_mm
+            if len(coordinates_region) == 3:
+                self.scan_region_coords_mm[region_index][2] = self.stage.get_pos().z_mm
 
     def handle_large_move(self, coordinate_mm, region_id):
         from ..towbin_funs import distance_moved
