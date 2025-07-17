@@ -1776,6 +1776,12 @@ class MultiPointWorker(QObject):
 
         # trigger acquisition (including turning on the illumination) and read frame
         if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+            # clean camera buffer
+            self.camera.send_trigger()
+            image = self.camera.read_frame()  # read the frame to clear the buffer
+            time.sleep(0.1)  # wait for the camera to be ready again
+
+            # acquire image
             self.liveController.turn_on_illumination()
             self.wait_till_operation_is_completed()
             self.camera.send_trigger()
