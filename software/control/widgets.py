@@ -3076,8 +3076,9 @@ class FlexibleMultiPointWidget(QFrame):
             # Start coordinate-based acquisition
             self.multipointController.run_acquisition()
 
-            # update the location list
-            updated_coords = self.multipointController.scan_region_coords_mm
+            # update the location list. Not working at the moment probably because
+            # the multipointController is not yet updated with the new coordinates.
+            updated_coords = self.multipointController.multiPointWorker.scan_region_coords_mm
             for i, (x, y, z) in enumerate(updated_coords):
                 self.table_location_list.setItem(i, 2, QTableWidgetItem(str(round(z * 1000, 1))))
 
