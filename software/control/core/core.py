@@ -1065,6 +1065,7 @@ class AutofocusWorker(QObject):
         # determine the in-focus position
         idx_in_focus = focus_measure_vs_z.index(max(focus_measure_vs_z))
         self.stage.move_z((idx_in_focus + 1) * self.deltaZ)
+        print(f'stage z now at {self.stage.get_pos().z_mm} mm, idx_in_focus = {idx_in_focus}')
 
         QApplication.processEvents()
 
