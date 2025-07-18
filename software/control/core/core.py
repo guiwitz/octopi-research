@@ -1393,6 +1393,9 @@ class MultiPointWorker(QObject):
             if not self.camera.is_streaming:
                 self.camera.start_streaming()
 
+            # keep original positions to ensure there's no massive drift
+            self.scan_region_coords_mm_backup = self.scan_region_coords_mm.copy()
+
             while self.time_point < self.Nt:
                 # check if abort acquisition has been requested
                 if self.multiPointController.abort_acqusition_requested:
@@ -1559,8 +1562,18 @@ class MultiPointWorker(QObject):
                     return
             # update z position after having potentially done autfocus
             # Comment: seems strange that this is never done !?
+            threshold_z = 0.5  # mm
             if len(coordinates_region) == 3:
-                self.scan_region_coords_mm[region_index][2] = self.stage.get_pos().z_mm
+                z_dist_fraction = self.scan_region_coords_mm_backup[region_index][2] - self.stage.get_pos().z_mm
+                if abs(z_dist_fraction) > threshold_z:
+                    print(f"Z position has changed by {z_dist_fraction} mm, which is larger than the threshold of {threshold_z} mm. "
+                            "This may indicate a problem with the stage or autofocus. No further z update will be performed.")
+                    self._log.warning(
+                        f"Z position has changed by {z_dist_fraction} mm, which is larger than the threshold of {threshold_z} mm. "
+                        "This may indicate a problem with the stage or autofocus. No further z update will be performed."
+                    )
+                else:
+                    self.scan_region_coords_mm[region_index][2] = self.stage.get_pos().z_mm
 
     def handle_large_move(self, coordinate_mm, region_id):
         from ..towbin_funs import distance_moved
