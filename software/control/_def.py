@@ -64,7 +64,7 @@ class TriggerMode:
 class Acquisition:
     CROP_WIDTH = 3000
     CROP_HEIGHT = 3000
-    NUMBER_OF_FOVS_PER_AF = 3
+    NUMBER_OF_FOVS_PER_AF = 1
     IMAGE_FORMAT = 'bmp'
     IMAGE_DISPLAY_SCALING_FACTOR = 0.3
     DX = 0.9
@@ -430,7 +430,7 @@ CAMERA_SN = {'ch 1':'SN1','ch 2': 'SN2'} # for multiple cameras, to be overwritt
 
 ENABLE_STROBE_OUTPUT = False
 
-Z_STACKING_CONFIG = 'FROM BOTTOM' # 'FROM BOTTOM', 'FROM TOP'
+Z_STACKING_CONFIG = 'FROM CENTER' # 'FROM BOTTOM', 'FROM TOP'
 
 # plate format
 WELLPLATE_FORMAT = 384
