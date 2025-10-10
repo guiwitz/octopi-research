@@ -746,8 +746,8 @@ class CameraSettingsWidget(QFrame):
         self.camera.set_ROI(self.entry_ROI_offset_x.value(),self.entry_ROI_offset_y.value(),self.entry_ROI_width.value(),self.entry_ROI_height.value())
 
     def set_ROI_offset(self):
-    	self.camera.set_ROI(self.entry_ROI_offset_x.value(),self.entry_ROI_offset_y.value(),self.entry_ROI_width.value(),self.entry_ROI_height.value())
-
+        self.camera.set_ROI(self.entry_ROI_offset_x.value(),self.entry_ROI_offset_y.value(),self.entry_ROI_width.value(),self.entry_ROI_height.value())
+    
     def set_temperature(self):
         try:
             self.camera.set_temperature(float(self.entry_temperature.value()))
