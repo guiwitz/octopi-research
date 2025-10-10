@@ -1687,6 +1687,9 @@ class MultiPointWorker(QObject):
             self.scan_coordinates_name = None
             self.use_scan_coordinates = True
 
+        # keep copy of original positions to measure drift
+        self.scan_coordinates_mm_backup = self.scan_coordinates_mm.copy()
+
         while self.time_point < self.Nt:
             # check if abort acquisition has been requested
             if self.multiPointController.abort_acqusition_requested:
@@ -1865,14 +1868,20 @@ class MultiPointWorker(QObject):
                                 if (self.FOV_counter%Acquisition.NUMBER_OF_FOVS_PER_AF==0) or self.autofocusController.use_focus_map:
                                     self.autofocusController.autofocus()
                                     self.autofocusController.wait_till_autofocus_has_completed()
-                                # upate z location of scan_coordinates_mm after AF
+                                # upate z location of scan_coordinates_mm after AF but check if drift is not too large
+                                threshold_z = 0.5 # in mm
                                 if len(coordiante_mm) == 3:
-                                    self.scan_coordinates_mm[coordinate_id,2] = self.navigationController.z_pos_mm
-                                    # update the coordinate in the widget
-                                    try:
-                                        self.microscope.multiPointWidget2._update_z(coordinate_id,self.navigationController.z_pos_mm)
-                                    except:
-                                        pass
+                                    z_dist_fraction = self.scan_coordinates_mm_backup[coordinate_id, 2] - self.navigationController.z_pos_mm
+                                    if abs(z_dist_fraction) > threshold_z:
+                                        print(f"Z position has changed by {z_dist_fraction} mm, which is larger than the threshold of {threshold_z} mm. "
+                                          "This may indicate a problem with the stage or autofocus. No further z update will be performed.")
+                                    else:
+                                        self.scan_coordinates_mm[coordinate_id,2] = self.navigationController.z_pos_mm
+                                        # update the coordinate in the widget
+                                        try:
+                                            self.microscope.multiPointWidget2._update_z(coordinate_id,self.navigationController.z_pos_mm)
+                                        except:
+                                            pass
                         else:
                             # initialize laser autofocus if it has not been done
                             if self.microscope.laserAutofocusController.is_initialized==False:
