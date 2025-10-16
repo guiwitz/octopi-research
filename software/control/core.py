@@ -1849,6 +1849,15 @@ class MultiPointWorker(QObject):
                 # along x
                 for j in range(self.NX):
 
+                    # for multi-channel image
+                    self.image_multichannel = None
+                    self.save_multichannel = False
+                    if self.microscope.multiPointWidget2.towbin_widget.check_save_multichannel.isChecked():
+                        self.save_multichannel = True
+                        numchannels = len(self.selected_configurations)
+                        num_z = self.NZ
+
+
                     if RUN_CUSTOM_MULTIPOINT and "multipoint_custom_script_entry" in globals():
 
                         print('run custom multipoint')
@@ -1946,6 +1955,7 @@ class MultiPointWorker(QObject):
 
                             current_round_images = {}
                             # iterate through selected modes
+                            self.channel_counter = 0
                             for config in self.selected_configurations:
                                 if config.z_offset is not None: # perform z offset for config, assume
                                                                 # z_offset is in um
@@ -2014,8 +2024,18 @@ class MultiPointWorker(QObject):
                                                 elif MULTIPOINT_BF_SAVING_OPTION == 'Green Channel Only':
                                                     image = image[:,:,1]
                                         ##iio.imwrite(saving_path,image)
+                                    
                                     from .towbin_funs import save_single_plane_tiff
-                                    save_single_plane_tiff(image, saving_path)
+                                    if not self.save_multichannel:
+                                        save_single_plane_tiff(image, saving_path)
+                                    else:
+                                        if self.image_multichannel is None:
+                                            if image.dtype == np.uint16:
+                                                self.image_multichannel = np.zeros((numchannels, num_z, image.shape[0], image.shape[1]), dtype=np.uint16)
+                                            elif image.dtype == np.uint8:
+                                                self.image_multichannel = np.zeros((numchannels, num_z, image.shape[0], image.shape[1]), dtype=np.uint8)
+                                        self.image_multichannel[self.channel_counter, k, :, :] = image.copy()
+                                        self.channel_counter += 1
 
                                     if USE_NAPARI_FOR_MULTIPOINT or USE_NAPARI_FOR_TILED_DISPLAY:
                                         if not init_napari_layers:
@@ -2257,6 +2277,14 @@ class MultiPointWorker(QObject):
                                         time.sleep(SCAN_STABILIZATION_TIME_MS_Z/1000)
                                         self.dz_usteps = self.dz_usteps + self.deltaZ_usteps
 
+                        # z and channel finished. Save multichannel image if needed
+                        if self.save_multichannel and self.image_multichannel is not None:
+                            multi_channel_id = f"Time{self.time_point :04d}_Point{int(coordinate_id) :04d}"
+                            channel_names = [config.name for config in self.selected_configurations]
+                            saving_path = os.path.join(self.base_path, self.experiment_ID, multi_channel_id + ".tiff")
+                            save_single_plane_tiff(self.image_multichannel, saving_path, channels=channel_names)
+
+                        
                         if self.NZ > 1:
                             # move z back
                             if self.use_piezo:

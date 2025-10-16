@@ -70,6 +70,12 @@ class TowbinWidget(QWidget):
         self.spin_crop_x.valueChanged.connect(self.update_crop)
         self.spin_crop_y.valueChanged.connect(self.update_crop)
 
+        grid_channels = QGridLayout()
+        self.layout.addLayout(grid_channels)
+        self.check_save_multichannel = QCheckBox("Save multichannel")
+        self.check_save_multichannel.setChecked(True)
+        grid_channels.addWidget(self.check_save_multichannel,0,1)
+
         self.parent.destroyed.connect(self.close_widget)
 
     def close_widget(self):
