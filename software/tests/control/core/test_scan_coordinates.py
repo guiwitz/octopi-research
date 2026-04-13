@@ -33,9 +33,9 @@ def test_scan_coordinates_basic_operation():
 
     scan_coordinates = ScanCoordinates(scope.objective_store, scope.stage, scope.camera, update_callback=test_callback)
 
-    single_fov_center = (6.0, 7.0, 3.0)
-    flexible_center = (8.0, 9.0, 0.5)
-    well_center = (6.5, 8.5, scope.stage.get_pos().z_mm)
+    single_fov_center = (20.0, 20.0, 3.0)
+    flexible_center = (30.0, 30.0, 0.5)
+    well_center = (25.0, 25.0, scope.stage.get_pos().z_mm)
     scan_coordinates.add_single_fov_region("single_fov", *single_fov_center)
     scan_coordinates.add_flexible_region("flexible_region", *flexible_center, 2, 2, 10)
     scan_coordinates.add_region("well_region", well_center[0], well_center[1], 4, 10, "Circle")
@@ -78,3 +78,27 @@ def test_scan_coordinates_basic_operation():
 
     assert len(scan_coordinates.region_centers.keys()) == 0
     assert len(scan_coordinates.region_centers.values()) == 0
+
+
+def test_sort_coordinates_manual_regions_preserve_drawing_order():
+    """Manual regions stay in drawing order, come before wells, and ignore S-Pattern."""
+    scope = Microscope.build_from_global_config(simulated=True)
+    sc = ScanCoordinates(scope.objective_store, scope.stage, scope.camera)
+    sc.acquisition_pattern = "S-Pattern"
+
+    # Set up regions directly (bypass coordinate validation)
+    sc.region_centers = {
+        "A1": [10.0, 10.0],
+        "manual1": [99.0, 99.0],  # Drawn second, far position
+        "B1": [10.0, 20.0],
+        "manual0": [10.0, 10.0],  # Drawn first, same position as A1
+        "B2": [20.0, 20.0],
+        "A2": [20.0, 10.0],
+    }
+    sc.region_fov_coordinates = {k: [(v[0], v[1], 0.0)] for k, v in sc.region_centers.items()}
+
+    sc.sort_coordinates()
+
+    keys = list(sc.region_centers.keys())
+    # Manual regions first (drawing order), then wells (S-Pattern: row B reversed)
+    assert keys == ["manual0", "manual1", "A1", "A2", "B2", "B1"]

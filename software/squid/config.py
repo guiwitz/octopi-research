@@ -1,11 +1,143 @@
 import enum
 import math
-from typing import Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, Union
 
 import pydantic
 
 import control._def as _def
 from control.utils import FlipVariant
+
+
+class FilterWheelControllerVariant(enum.Enum):
+    SQUID = "SQUID"
+    ZABER = "ZABER"
+    OPTOSPIN = "OPTOSPIN"
+    DRAGONFLY = "DRAGONFLY"
+    XLIGHT = "XLIGHT"
+
+    @staticmethod
+    def from_string(filter_wheel_controller_string: str) -> Optional["FilterWheelControllerVariant"]:
+        """
+        Attempts to convert the given string to a filter wheel controller variant.  This ignores all letter cases.
+        """
+        try:
+            return FilterWheelControllerVariant[filter_wheel_controller_string.upper()]
+        except KeyError:
+            return None
+
+
+class SquidFilterWheelConfig(pydantic.BaseModel):
+    """Configuration for SQUID filter wheel controller."""
+
+    max_index: int
+    min_index: int
+    offset: float
+    motor_slot_index: int
+    transitions_per_revolution: int
+
+
+class ZaberFilterWheelConfig(pydantic.BaseModel):
+    """Configuration for Zaber filter wheel controller."""
+
+    serial_number: str
+    delay_ms: int
+    blocking_call: bool
+
+
+class OptospinFilterWheelConfig(pydantic.BaseModel):
+    """Configuration for Optospin filter wheel controller."""
+
+    serial_number: str
+    speed_hz: int
+    delay_ms: int
+    ttl_trigger: bool
+
+
+class FilterWheelConfig(pydantic.BaseModel):
+    """
+    Configuration for filter wheel controller system.
+    """
+
+    # The type of filter wheel controller
+    controller_type: FilterWheelControllerVariant
+
+    # List of filter wheel indices to use (e.g., [1] for single wheel, [1, 2, 3, 4] for Optospin with 4 wheels)
+    indices: list[int]
+
+    # Controller-specific configuration (single config for backward compatibility)
+    controller_config: Optional[Union[SquidFilterWheelConfig, ZaberFilterWheelConfig, OptospinFilterWheelConfig]] = None
+
+    # Per-wheel configs for multi-wheel setups (wheel_id -> config)
+    # Used by SQUID multi-wheel support
+    squid_wheel_configs: Optional[Dict[int, SquidFilterWheelConfig]] = None
+
+
+def _load_filter_wheel_config() -> Optional[FilterWheelConfig]:
+    """Load filter wheel configuration from _def.py."""
+    if not _def.USE_EMISSION_FILTER_WHEEL:
+        return None
+
+    controller_type = FilterWheelControllerVariant.from_string(_def.EMISSION_FILTER_WHEEL_TYPE)
+    if controller_type is None:
+        return None
+
+    controller_config = None
+    squid_wheel_configs = None
+
+    if controller_type == FilterWheelControllerVariant.SQUID:
+        # Build per-wheel configs from SQUID_FILTERWHEEL_CONFIGS if available
+        squid_configs_dict = getattr(_def, "SQUID_FILTERWHEEL_CONFIGS", None)
+        if squid_configs_dict:
+            squid_wheel_configs = {}
+            for wheel_id, wheel_cfg in squid_configs_dict.items():
+                # Only include wheels that are in EMISSION_FILTER_WHEEL_INDICES
+                if wheel_id in _def.EMISSION_FILTER_WHEEL_INDICES:
+                    squid_wheel_configs[wheel_id] = SquidFilterWheelConfig(
+                        max_index=wheel_cfg["max_index"],
+                        min_index=wheel_cfg["min_index"],
+                        offset=wheel_cfg["offset"],
+                        motor_slot_index=wheel_cfg["motor_slot_index"],
+                        transitions_per_revolution=wheel_cfg["transitions_per_revolution"],
+                    )
+
+        # Also create the legacy single config for backward compatibility (uses first wheel)
+        controller_config = SquidFilterWheelConfig(
+            max_index=_def.SQUID_FILTERWHEEL_MAX_INDEX,
+            min_index=_def.SQUID_FILTERWHEEL_MIN_INDEX,
+            offset=_def.SQUID_FILTERWHEEL_OFFSET,
+            motor_slot_index=_def.SQUID_FILTERWHEEL_MOTORSLOTINDEX,
+            transitions_per_revolution=_def.SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION,
+        )
+    elif controller_type == FilterWheelControllerVariant.ZABER:
+        controller_config = ZaberFilterWheelConfig(
+            serial_number=_def.FILTER_CONTROLLER_SERIAL_NUMBER,
+            delay_ms=_def.ZABER_EMISSION_FILTER_WHEEL_DELAY_MS,
+            blocking_call=_def.ZABER_EMISSION_FILTER_WHEEL_BLOCKING_CALL,
+        )
+    elif controller_type == FilterWheelControllerVariant.OPTOSPIN:
+        controller_config = OptospinFilterWheelConfig(
+            serial_number=_def.FILTER_CONTROLLER_SERIAL_NUMBER,
+            speed_hz=_def.OPTOSPIN_EMISSION_FILTER_WHEEL_SPEED_HZ,
+            delay_ms=_def.OPTOSPIN_EMISSION_FILTER_WHEEL_DELAY_MS,
+            ttl_trigger=_def.OPTOSPIN_EMISSION_FILTER_WHEEL_TTL_TRIGGER,
+        )
+
+    return FilterWheelConfig(
+        controller_type=controller_type,
+        indices=_def.EMISSION_FILTER_WHEEL_INDICES,
+        controller_config=controller_config,
+        squid_wheel_configs=squid_wheel_configs,
+    )
+
+
+_filter_wheel_config = _load_filter_wheel_config()
+
+
+def get_filter_wheel_config() -> Optional[FilterWheelConfig]:
+    """
+    Returns the FilterWheelConfig that existed at process startup, or None if no filter wheel is configured.
+    """
+    return _filter_wheel_config
 
 
 class DirectionSign(enum.IntEnum):
@@ -221,6 +353,8 @@ class TucsenCameraModel(enum.Enum):
     DHYANA_400BSI_V3 = "DHYANA-400BSI-V3"
     ARIES_6506 = "ARIES-6506"
     ARIES_6510 = "ARIES-6510"
+    LIBRA_25 = "LIBRA-25"
+    LIBRA_22 = "LIBRA-22"
 
     @staticmethod
     def from_string(cam_string: str) -> Optional["TucsenCameraModel"]:

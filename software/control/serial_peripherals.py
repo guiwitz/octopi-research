@@ -114,15 +114,17 @@ class SerialDevice:
             # check response
             if response == expected_response:
                 return response
-            else:
-                log.warning(response)
 
             # check prefix if the full response does not match
             if check_prefix:
                 if response.startswith(expected_response):
                     return response
-            else:
-                time.sleep(attempt_delay)  # Wait before retrying
+
+            # Log mismatch for debugging (response didn't match exactly or by prefix)
+            if response:
+                log.warning(f"Serial response mismatch: got '{response}', expected '{expected_response}'")
+
+            time.sleep(attempt_delay)  # Wait before retrying
 
         raise SerialDeviceError("Max attempts reached without receiving expected response.")
 
@@ -168,6 +170,7 @@ class XLight_Simulation:
         self.spinning_disk_pos = 0
         self.illumination_iris = 0
         self.emission_iris = 0
+        self.slider_position = 0
 
     def set_emission_filter(self, position, extraction=False, validate=False):
         self.emission_wheel_pos = position
@@ -223,24 +226,22 @@ class XLight_Simulation:
         self.slider_position = position
         return self.slider_position
 
+    def get_filter_slider(self):
+        return self.slider_position
+
 
 # CrestOptics X-Light Port specs:
-# 9600 baud
-# 8 data bits
-# 1 stop bit
-# No parity
-# no flow control
+# V1/V2: 9600 baud, V3/Cicero: 115200 baud
+# 8 data bits, 1 stop bit, No parity, no flow control
 
 
 class XLight:
-    """Wrapper for communicating with CrestOptics X-Light devices over serial"""
+    """Wrapper for communicating with CrestOptics X-Light devices over serial.
 
-    def __init__(self, SN, sleep_time_for_wheel=0.25, disable_emission_filter_wheel=True):
-        """
-        Provide serial number (default is that of the device
-        cephla already has) for device-finding purposes. Otherwise, all
-        XLight devices should use the same serial protocol
-        """
+    Supports V1, V2, V3, and Cicero with automatic protocol detection.
+    """
+
+    def __init__(self, SN, sleep_time_for_wheel=0.25, disable_emission_filter_wheel=False):
         self.log = squid.logging.get_logger(self.__class__.__name__)
 
         self.has_spinning_disk_motor = False
@@ -253,12 +254,32 @@ class XLight:
         self.has_dichroic_filter_slider = False
         self.has_ttl_control = False
         self.sleep_time_for_wheel = sleep_time_for_wheel
-
         self.disable_emission_filter_wheel = disable_emission_filter_wheel
+        self.slider_position = 0
+        self.illumination_iris = 0
+        self.emission_iris = 0
 
+        # Auto-detect protocol: try V3 (115200) first, then V1/V2 (9600)
+        self.protocol_version = self._connect_and_detect(SN)
+        self.log.info(f"X-Light protocol version: {self.protocol_version}")
+
+        if self.protocol_version in ["V1", "V2"]:
+            # V1/V2: assume standard devices, no iris/slider
+            self.has_spinning_disk_motor = True
+            self.has_spinning_disk_slider = True
+            self.has_dichroic_filters_wheel = True
+            self.has_emission_filters_wheel = True
+        else:
+            # V3/Cicero: use idc command for config
+            self.parse_idc_response(self.serial_connection.write_and_read("idc\r"))
+
+        self.print_config()
+
+    def _open_serial(self, SN, baudrate):
+        """Open serial connection with specified baud rate."""
         self.serial_connection = SerialDevice(
             SN=SN,
-            baudrate=115200,
+            baudrate=baudrate,
             bytesize=serial.EIGHTBITS,
             stopbits=serial.STOPBITS_ONE,
             parity=serial.PARITY_NONE,
@@ -268,13 +289,21 @@ class XLight:
         )
         self.serial_connection.open_ser()
 
-        self.parse_idc_response(self.serial_connection.write_and_read("idc\r"))
-        self.print_config()
+    def _connect_and_detect(self, SN):
+        """Try V3 baud rate first, fall back to V1/V2 if idc command fails."""
+        self._open_serial(SN, 115200)
+        try:
+            response = self.serial_connection.write_and_read("idc\r", read_delay=0.2, max_attempts=2)
+            if response:
+                int(response, 16)  # Validate hex response
+                return "V3"
+        except (ValueError, SerialDeviceError) as e:
+            self.log.debug(f"V3 detection failed ({type(e).__name__}), trying V1/V2")
 
-        if self.has_illumination_iris_diaphragm:
-            self.set_illumination_iris(XLIGHT_ILLUMINATION_IRIS_DEFAULT)
-        if self.has_emission_iris_diaphragm:
-            self.set_emission_iris(XLIGHT_EMISSION_IRIS_DEFAULT)
+        # idc failed, try V1/V2 (9600 baud)
+        self.serial_connection.close()
+        self._open_serial(SN, 9600)
+        return "V2"
 
     def parse_idc_response(self, response):
         # Convert hexadecimal response to integer
@@ -308,10 +337,13 @@ class XLight:
 
     def set_emission_filter(self, position, extraction=False, validate=True):
         if self.disable_emission_filter_wheel:
-            print("emission filter wheel disabled")
+            self.log.info("Emission filter wheel disabled, skipping set_emission_filter")
             return -1
-        if str(position) not in ["1", "2", "3", "4", "5", "6", "7", "8"]:
-            raise ValueError("Invalid emission filter wheel position!")
+        valid_positions = [str(i + 1) for i in range(XLIGHT_EMISSION_FILTER_POSITIONS)]
+        if str(position) not in valid_positions:
+            raise ValueError(
+                f"Invalid emission filter position {position}, must be 1-{XLIGHT_EMISSION_FILTER_POSITIONS}"
+            )
         position_to_write = str(position)
         position_to_read = str(position)
         if extraction:
@@ -319,7 +351,7 @@ class XLight:
 
         if validate:
             current_pos = self.serial_connection.write_and_check(
-                "B" + position_to_write + "\r", "B" + position_to_read, read_delay=0.01
+                "B" + position_to_write + "\r", "B" + position_to_read, read_delay=self.sleep_time_for_wheel
             )
             self.emission_wheel_pos = int(current_pos[1])
         else:
@@ -330,7 +362,7 @@ class XLight:
         return self.emission_wheel_pos
 
     def get_emission_filter(self):
-        current_pos = self.serial_connection.write_and_check("rB\r", "rB", read_delay=0.01)
+        current_pos = self.serial_connection.write_and_check("rB\r", "rB", read_delay=self.sleep_time_for_wheel)
         self.emission_wheel_pos = int(current_pos[2])
         return self.emission_wheel_pos
 
@@ -343,13 +375,13 @@ class XLight:
             position_to_write += "m"
 
         current_pos = self.serial_connection.write_and_check(
-            "C" + position_to_write + "\r", "C" + position_to_read, read_delay=0.01
+            "C" + position_to_write + "\r", "C" + position_to_read, read_delay=self.sleep_time_for_wheel
         )
         self.dichroic_wheel_pos = int(current_pos[1])
         return self.dichroic_wheel_pos
 
     def get_dichroic(self):
-        current_pos = self.serial_connection.write_and_check("rC\r", "rC", read_delay=0.01)
+        current_pos = self.serial_connection.write_and_check("rC\r", "rC", read_delay=self.sleep_time_for_wheel)
         self.dichroic_wheel_pos = int(current_pos[2])
         return self.dichroic_wheel_pos
 
@@ -373,9 +405,10 @@ class XLight:
 
     def set_illumination_iris(self, value):
         # value: 0 - 100
+        if value == self.illumination_iris:
+            return self.illumination_iris
         self.illumination_iris = value
-        value = str(int(10 * value))
-        self.serial_connection.write_and_check("J" + value + "\r", "J" + value, read_delay=3)
+        self.serial_connection.write_and_read("J" + str(int(10 * value)) + "\r", read_delay=2)
         return self.illumination_iris
 
     def get_illumination_iris(self):
@@ -385,9 +418,10 @@ class XLight:
 
     def set_emission_iris(self, value):
         # value: 0 - 100
+        if value == self.emission_iris:
+            return self.emission_iris
         self.emission_iris = value
-        value = str(int(10 * value))
-        self.serial_connection.write_and_check("V" + value + "\r", "V" + value, read_delay=3)
+        self.serial_connection.write_and_read("V" + str(int(10 * value)) + "\r", read_delay=2)
         return self.emission_iris
 
     def get_emission_iris(self):
@@ -401,7 +435,12 @@ class XLight:
         self.slider_position = position
         position_to_write = str(position)
         position_to_read = str(position)
-        self.serial_connection.write_and_check("P" + position_to_write + "\r", "V" + position_to_read, read_delay=5)
+        self.serial_connection.write_and_check("P" + position_to_write + "\r", "P" + position_to_read, read_delay=5)
+        return self.slider_position
+
+    def get_filter_slider(self):
+        current_pos = self.serial_connection.write_and_check("rP\r", "rP", read_delay=0.01)
+        self.slider_position = int(current_pos[2])
         return self.slider_position
 
     def get_disk_position(self):
@@ -1266,444 +1305,6 @@ class CellX_Simulation:
         self.serial_connection.write_and_check(
             "SOUR" + str(channel) + "AM:" + modulation + "\r", "OK", read_delay=0.01, print_response=False
         )
-
-    def close(self):
-        pass
-
-
-class FilterDeviceInfo:
-    """
-    keep filter device information
-    """
-
-    # default: 7.36
-    firmware_version = ""
-    # default: 250000
-    maxspeed = 0
-    # default: 900
-    accel = 0
-
-
-class FilterController_Simulation:
-    """
-    controller of filter device
-    """
-
-    def __init__(self, _baudrate, _bytesize, _parity, _stopbits):
-        self.each_hole_microsteps = 4800
-        self.current_position = 0
-        self.current_index = 1
-        """
-        the variable be used to keep current offset of wheel
-        it could be used by get the index of wheel position, the index could be '1', '2', '3' ... 
-        """
-        self.offset_position = 0
-
-        self.deviceinfo = FilterDeviceInfo()
-
-    def __del__(self):
-        pass
-
-    def do_homing(self):
-        self.current_position = 0
-        self.offset_position = 1100
-
-    def wait_homing_finish(self):
-        pass
-
-    def set_emission_filter(self, index):
-        self.current_index = index
-        pass
-
-    def get_emission_filter(self):
-        return 1
-
-    def start_homing(self):
-        pass
-
-    def complete_homing_sequence(self):
-        pass
-
-    def wait_for_homing_complete(self):
-        pass
-
-
-class FilterControllerError(Exception):
-    """Custom exception for FilterController errors."""
-
-    pass
-
-
-class FilterController:
-    """Controller for filter device."""
-
-    MICROSTEPS_PER_HOLE = 4800
-    OFFSET_POSITION = -8500
-    VALID_POSITIONS = set(range(1, 8))
-    MAX_RETRIES = 3
-    COMMAND_TIMEOUT = 1  # seconds
-
-    def __init__(self, serial_number: str, baudrate: int, bytesize: int, parity: str, stopbits: int):
-        self.log = squid.logging.get_logger(self.__class__.__name__)
-        self.current_position = 0
-        self.current_index = 1
-        self.serial = self._initialize_serial(serial_number, baudrate, bytesize, parity, stopbits)
-        self._configure_device()
-
-    def _initialize_serial(
-        self, serial_number: str, baudrate: int, bytesize: int, parity: str, stopbits: int
-    ) -> serial.Serial:
-        ports = [p.device for p in list_ports.comports() if serial_number == p.serial_number]
-        if not ports:
-            raise ValueError(f"No device found with serial number: {serial_number}")
-        return serial.Serial(
-            ports[0],
-            baudrate=baudrate,
-            bytesize=bytesize,
-            parity=parity,
-            stopbits=stopbits,
-            timeout=self.COMMAND_TIMEOUT,
-        )
-
-    def _configure_device(self):
-        time.sleep(0.2)
-        self.firmware_version = self._get_device_info("/get version")
-        self._send_command_with_reply("/set maxspeed 250000")
-        self._send_command_with_reply("/set accel 900")
-        self.maxspeed = self._get_device_info("/get maxspeed")
-        self.accel = self._get_device_info("/get accel")
-
-    def __del__(self):
-        if hasattr(self, "serial") and self.serial.is_open:
-            self._send_command("/stop")
-            time.sleep(0.5)
-            self.serial.close()
-
-    def _send_command(self, cmd: str) -> Tuple[bool, str]:
-        """
-        Send a command to the device and handle the response.
-
-        Args:
-            cmd (str): The command to send.
-
-        Returns:
-            Tuple[bool, str]: A tuple containing a success flag and the response message.
-
-        Raises:
-            FilterControllerError: If the command fails after maximum retries.
-        """
-        if not self.serial.is_open:
-            raise RuntimeError("Serial port is not open")
-
-        for attempt in range(self.MAX_RETRIES):
-            try:
-                self.serial.write(f"{cmd}\n".encode("utf-8"))
-                response = self.serial.readline().decode("utf-8").strip()
-                success, message = self._parse_response(response)
-
-                if success:
-                    return True, message
-                elif message.startswith("BUSY"):
-                    time.sleep(0.1)  # Wait a bit if the device is busy
-                    continue
-                else:
-                    # Log the error and retry
-                    self.log.error(f"Command failed (attempt {attempt + 1}): {message}")
-            except serial.SerialTimeoutException:
-                self.log.error(f"Command timed out (attempt {attempt + 1})")
-
-            time.sleep(0.5)  # Wait before retrying
-
-        raise FilterControllerError(f"Command '{cmd}' failed after {self.MAX_RETRIES} attempts")
-
-    def _parse_response(self, response: str) -> Tuple[bool, str]:
-        """
-        Parse the response from the device.
-
-        Args:
-            response (str): The response string from the device.
-
-        Returns:
-            Tuple[bool, str]: A tuple containing a success flag and the parsed message.
-        """
-        if not response:
-            return False, "No response received"
-
-        parts = response.split()
-        if len(parts) < 4:
-            return False, f"Invalid response format: {response}"
-
-        if parts[0].startswith("@"):
-            if parts[2] == "OK":
-                return True, " ".join(parts[3:])
-            else:
-                return False, " ".join(parts[2:])
-        elif parts[0].startswith("!"):
-            return False, f"Alert: {' '.join(parts[1:])}"
-        elif parts[0].startswith("#"):
-            return True, f"Info: {' '.join(parts[1:])}"
-        else:
-            return False, f"Unknown response format: {response}"
-
-    def _send_command_with_reply(self, cmd: str) -> bool:
-        success, message = self._send_command(cmd)
-        return success and (message == "IDLE" or message.startswith("BUSY"))
-
-    def _get_device_info(self, cmd: str) -> Optional[str]:
-        success, message = self._send_command(cmd)
-        return message if success else None
-
-    def get_current_position(self) -> Tuple[bool, int]:
-        success, message = self._send_command("/get pos")
-        if success:
-            try:
-                return True, int(message.split()[-1])
-            except (ValueError, IndexError):
-                return False, 0
-        return False, 0
-
-    def calculate_filter_index(self) -> int:
-        return (self.current_position - self.OFFSET_POSITION) // self.MICROSTEPS_PER_HOLE
-
-    def move_to_offset_position(self):
-        self._move_to_absolute_position(self.OFFSET_POSITION)
-
-    def _move_to_absolute_position(self, target_position: int, timeout: int = 5):
-        success, _ = self._send_command(f"/move abs {target_position}")
-        if not success:
-            raise FilterControllerError("Failed to initiate filter movement")
-        self._wait_for_position(target_position, target_index=None, timeout=timeout)
-
-    def set_emission_filter(self, index: int, blocking: bool = True, timeout: int = 5):
-        """
-        Set the emission filter to the specified position.
-
-        Args:
-            position (int): The desired filter position (1-7).
-            blocking (bool): If True, wait for the movement to complete. If False, return immediately.
-            timeout (int): Maximum time to wait for the movement to complete (in seconds).
-
-        Raises:
-            ValueError: If the position is invalid.
-            FilterControllerError: If the command fails to initiate movement.
-            TimeoutError: If the movement doesn't complete within the specified timeout (only in blocking mode).
-        """
-        if index not in self.VALID_POSITIONS:
-            raise ValueError(f"Invalid emission filter wheel index position: {index}")
-
-        target_position = self.OFFSET_POSITION + (index - 1) * self.MICROSTEPS_PER_HOLE
-        success, _ = self._send_command(f"/move abs {target_position}")
-
-        if not success:
-            raise FilterControllerError("Failed to initiate filter movement")
-
-        if blocking:
-            self._wait_for_position(target_position, index, timeout)
-        else:
-            # Update the current position without waiting
-            self.current_position = target_position
-            self.current_index = index
-
-    def _wait_for_position(self, target_position: int, target_index: int, timeout: int):
-        """
-        Wait for the filter to reach the target position.
-
-        Args:
-            target_position (int): The expected final position.
-            timeout (int): Maximum time to wait (in seconds).
-
-        Raises:
-            TimeoutError: If the movement doesn't complete within the specified timeout.
-        """
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            time.sleep(0.003)
-            success, position = self.get_current_position()
-            if success and position == target_position:
-                self.current_position = target_position
-                self.current_index = target_index
-                return
-        raise TimeoutError(f"Filter move to position {target_position} timed out")
-
-    def get_emission_filter_position(self) -> int:
-        return self.calculate_filter_index() + 1
-
-    def start_homing(self):
-        """
-        Start the homing sequence for the filter device.
-
-        This function initiates the homing process but does not wait for it to complete.
-        Use wait_for_homing_complete() to wait for the homing process to finish.
-
-        Raises:
-            FilterControllerError: If the homing command fails to initiate.
-        """
-        success, _ = self._send_command("/home")
-        if not success:
-            raise FilterControllerError("Failed to initiate homing sequence")
-
-    def wait_for_homing_complete(self, timeout: int = 50) -> bool:
-        """
-        Wait for the homing sequence to complete.
-
-        Args:
-            timeout (int): Maximum time to wait for homing to complete, in seconds.
-
-        Returns:
-            bool: True if homing completed successfully, False if it timed out.
-
-        Raises:
-            FilterControllerError: If there's an error while checking the homing status.
-        """
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            time.sleep(0.5)
-            success, position = self.get_current_position()
-            if not success:
-                raise FilterControllerError("Failed to get current position during homing")
-            if position == 0:
-                self.current_position = 0
-                self.move_to_offset_position()
-                return True
-        return False
-
-    def complete_homing_sequence(self, timeout: int = 50):
-        """
-        Perform a complete homing sequence.
-
-        This method starts the homing sequence and waits for it to complete.
-
-        Args:
-            timeout (int): Maximum time to wait for homing to complete, in seconds.
-
-        Raises:
-            FilterControllerError: If homing fails to start or complete.
-            TimeoutError: If homing doesn't complete within the specified timeout.
-        """
-        self.start_homing()
-        if not self.wait_for_homing_complete(timeout):
-            raise TimeoutError("Filter device homing failed")
-
-
-class Optospin:
-    def __init__(self, SN, baudrate=115200, timeout=1, max_retries=3, retry_delay=0.5):
-        self.log = squid.logging.get_logger(self.__class__.__name__)
-
-        optospin_port = [p.device for p in serial.tools.list_ports.comports() if SN == p.serial_number]
-        self.ser = serial.Serial(optospin_port[0], baudrate=baudrate, timeout=timeout)
-        self.max_retries = max_retries
-        self.retry_delay = retry_delay
-        self.current_index = 1
-
-    def _send_command(self, command, data=None):
-        if data is None:
-            data = []
-        full_command = struct.pack(">H", command) + bytes(data)
-
-        for attempt in range(self.max_retries):
-            try:
-                self.ser.write(full_command)
-                response = self.ser.read(2)
-
-                if len(response) != 2:
-                    raise serial.SerialTimeoutException("Timeout: No response from device")
-
-                status, length = struct.unpack(">BB", response)
-
-                if status != 0xFF:
-                    raise Exception(f"Command failed with status: {status}")
-
-                if length > 0:
-                    additional_data = self.ser.read(length)
-                    if len(additional_data) != length:
-                        raise serial.SerialTimeoutException("Timeout: Incomplete additional data")
-                    return additional_data
-                return None
-
-            except (serial.SerialTimeoutException, Exception) as e:
-                self.log.error(f"Attempt {attempt + 1} failed: {str(e)}")
-                if attempt < self.max_retries - 1:
-                    self.log.error(f"Retrying in {self.retry_delay} seconds...")
-                    time.sleep(self.retry_delay)
-                else:
-                    raise Exception(f"Command failed after {self.max_retries} attempts: {str(e)}")
-
-    def get_version(self):
-        result = self._send_command(0x0040)
-        return struct.unpack(">BB", result)
-
-    def set_speed(self, speed):
-        speed_int = int(speed * 100)
-        self._send_command(0x0048, struct.pack("<H", speed_int))
-
-    def spin_rotors(self):
-        self._send_command(0x0060)
-
-    def stop_rotors(self):
-        self._send_command(0x0064)
-
-    def _usb_go(self, rotor1_pos, rotor2_pos=0, rotor3_pos=0, rotor4_pos=0):
-        data = bytes([rotor1_pos | (rotor2_pos << 4), rotor3_pos | (rotor4_pos << 4)])
-        self._send_command(0x0088, data)
-
-    def set_emission_filter(self, index):
-        self._usb_go(int(index))
-        self.current_index = int(index)
-
-    def get_rotor_positions(self):
-        result = self._send_command(0x0098)
-        rotor1 = result[0] & 0x07
-        rotor2 = (result[0] >> 4) & 0x07
-        rotor3 = result[1] & 0x07
-        rotor4 = (result[1] >> 4) & 0x07
-        return rotor1, rotor2, rotor3, rotor4
-
-    def measure_temperatures(self):
-        self._send_command(0x00A8)
-
-    def read_temperatures(self):
-        result = self._send_command(0x00AC)
-        return struct.unpack(">BBBB", result)
-
-    def close(self):
-        self.ser.close()
-
-
-class Optospin_Simulation:
-    def __init__(self, SN, baudrate=115200, timeout=1, max_retries=3, retry_delay=0.5):
-        self.current_index = 1
-        pass
-
-    def _send_command(self, command, data=None):
-        pass
-
-    def get_version(self):
-        pass
-
-    def set_speed(self, speed):
-        pass
-
-    def spin_rotors(self):
-        pass
-
-    def stop_rotors(self):
-        pass
-
-    def _usb_go(self, rotor1_pos, rotor2_pos=0, rotor3_pos=0, rotor4_pos=0):
-        pass
-
-    def set_emission_filter(self, index):
-        self.current_index = index
-        pass
-
-    def get_rotor_positions(self):
-        return 0, 0, 0, 0
-
-    def measure_temperatures(self):
-        pass
-
-    def read_temperatures(self):
-        pass
 
     def close(self):
         pass
