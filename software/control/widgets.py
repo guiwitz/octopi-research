@@ -5744,6 +5744,14 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         # add and display a timer - to be implemented
         # self.timer = QTimer()
 
+        from .towbin_widget import TowbinWidget
+        self.towbin_widget = TowbinWidget(self)
+        self.towbin_widget.setVisible(True)  # Hide the Towbin widget by default
+        # display widget in independent window
+        self.towbin_widget.setWindowTitle("Towbin Controls")
+        self.towbin_widget.setWindowFlags(self.towbin_widget.windowFlags() | Qt.WindowStaysOnTopHint)
+        self.towbin_widget.show()
+
     def setup_connections(self):
         # connections
         if self.use_overlap:
