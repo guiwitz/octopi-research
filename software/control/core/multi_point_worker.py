@@ -1225,6 +1225,11 @@ class MultiPointWorker:
                         self.request_abort_fn()
                         return
 
+                # check for large moves and adjust z to avoid crashing into the slide   
+                dist_to_next = self._calculate_distance_to_coordinate(coordinate_mm)
+                if (dist_to_next > 13):
+                    self.move_to_z_level(2)
+
                 with self._timing.get_timer("move_to_coordinate"):
                     self.move_to_coordinate(coordinate_mm, region_id, fov)
                 with self._timing.get_timer("acquire_at_position"):
@@ -1233,6 +1238,12 @@ class MultiPointWorker:
                 if self.abort_requested_fn():
                     self.handle_acquisition_abort(current_path)
                     return
+                
+    def _calculate_distance_to_coordinate(self, coordinate_mm):
+        current_pos = self.stage.get_pos()
+        dx = (coordinate_mm[0] - current_pos.x_mm)
+        dy = (coordinate_mm[1] - current_pos.y_mm)
+        return np.sqrt(dx**2 + dy**2)
 
     def acquire_at_position(self, region_id, current_path, fov):
         if not self.perform_autofocus(region_id, fov):
