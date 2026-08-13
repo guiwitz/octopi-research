@@ -1318,16 +1318,6 @@ class AutofocusWorker(QObject):
             if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
                 self.liveController.turn_on_illumination()
                 self.wait_till_operation_is_completed()
-
-                # at first plane, clean the camera buffer. Otherwise the first image
-                # has the wrong exposure which can make the autofocus metric fail and
-                # for example even stop early
-                if i == 0:
-                    self.camera.send_trigger()
-                    image = self.camera.read_frame()
-                    time.sleep(0.1)
-                
-                # acquire
                 self.camera.send_trigger()
                 image = self.camera.read_frame()
             elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
@@ -1971,12 +1961,6 @@ class MultiPointWorker(QObject):
                                     self.wait_till_operation_is_completed()
                                     # trigger acquisition (including turning on the illumination) and read frame
                                     if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
-                                        # clean camera buffer
-                                        self.camera.send_trigger()
-                                        image = self.camera.read_frame()  # read the frame to clear the buffer
-                                        time.sleep(0.1)  # wait for the camera to be ready again
-                                        
-                                        # acquire image
                                         self.liveController.turn_on_illumination()
                                         self.wait_till_operation_is_completed()
                                         self.camera.send_trigger()
