@@ -2184,7 +2184,17 @@ class MultiPointWidget2(QFrame):
         self.shortcut.activated.connect(self.btn_add.click)
 
         from .towbin_widget import TowbinWidget
-        self.towbin_widget = TowbinWidget(self)
+        # Pass camera, controllers, and stream handler directly for simpler access
+        stream_handler = self.multipointController.parent.streamHandler \
+            if hasattr(self.multipointController, 'parent') and self.multipointController.parent is not None \
+            and hasattr(self.multipointController.parent, 'streamHandler') else None
+        self.towbin_widget = TowbinWidget(
+            parent=self,
+            camera=self.multipointController.camera,
+            multipoint_controller=self.multipointController,
+            autofocus_controller=getattr(self.multipointController, 'autofocusController', None),
+            stream_handler=stream_handler,
+        )
 
     def set_deltaX(self,value):
         mm_per_ustep = SCREW_PITCH_X_MM/(self.multipointController.navigationController.x_microstepping*FULLSTEPS_PER_REV_X) # to implement a get_x_microstepping() in multipointController

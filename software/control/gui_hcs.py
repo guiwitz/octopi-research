@@ -287,6 +287,9 @@ class OctopiGUI(QMainWindow):
             self.trackingControlWidget = widgets.TrackingControllerWidget(self.trackingController,self.configurationManager,show_configurations=TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS)
         self.multiPointWidget = widgets.MultiPointWidget(self.multipointController,self.configurationManager)
         self.multiPointWidget2 = widgets.MultiPointWidget2(self.navigationController,self.navigationViewer,self.multipointController,self.configurationManager,scanCoordinates=None) # =self.scanCoordinates
+        # Wire up TowbinWidget to CameraSettingWidget so crop changes sync ROI spinboxes
+        if hasattr(self.multiPointWidget2, 'towbin_widget'):
+            self.multiPointWidget2.towbin_widget.camera_setting_widget = self.cameraSettingWidget
         self.piezoWidget = widgets.PiezoWidget(self.navigationController)
         self.wellplateFormatWidget = widgets.WellplateFormatWidget()
         self.objectivesWidget = widgets.ObjectivesWidget(self.objectiveStore)
