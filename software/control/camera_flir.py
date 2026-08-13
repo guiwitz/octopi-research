@@ -557,7 +557,26 @@ class Camera(object):
         self.WidthMaxAbsolute = PySpin.CIntegerPtr(self.nodemap.GetNode('WidthMax')).GetValue()
         self.HeightMaxAbsolute = PySpin.CIntegerPtr(self.nodemap.GetNode('HeightMax')).GetValue()
 
+        """
         self.set_ROI(0,0,self.WidthMaxAbsolute,self.HeightMaxAbsolute)
+
+        self.WidthMax = self.WidthMaxAbsolute
+        self.HeightMax = self.HeightMaxAbsolute
+        self.OffsetX = PySpin.CIntegerPtr(self.nodemap.GetNode('OffsetX')).GetValue()
+        self.OffsetY = PySpin.CIntegerPtr(self.nodemap.GetNode('OffsetY')).GetValue()
+        """
+
+        # fix the above rows to use presets defined in the config file for the ROI size
+        self.set_ROI(0,0,self.WidthMaxAbsolute,self.HeightMaxAbsolute)
+
+        # Apply default ROI from config (centered on sensor) - ADD THIS HERE
+        roi_width = CAMERA_CONFIG.ROI_WIDTH_DEFAULT
+        roi_height = CAMERA_CONFIG.ROI_HEIGHT_DEFAULT
+        offset_x = int((self.WidthMaxAbsolute - roi_width) / 2)
+        offset_y = int((self.HeightMaxAbsolute - roi_height) / 2)
+        offset_x = max(0, min(offset_x, self.WidthMaxAbsolute - roi_width))
+        offset_y = max(0, min(offset_y, self.HeightMaxAbsolute - roi_height))
+        self.set_ROI(offset_x, offset_y, roi_width, roi_height)
 
         self.WidthMax = self.WidthMaxAbsolute
         self.HeightMax = self.HeightMaxAbsolute
@@ -566,7 +585,8 @@ class Camera(object):
 
         # disable gamma
         PySpin.CBooleanPtr(self.nodemap.GetNode('GammaEnable')).SetValue(False)
-
+        PySpin.CBooleanPtr(self.nodemap.GetNode('GammaEnable')).SetValue(False)
+        
     def set_callback(self,function):
         self.new_image_callback_external = function
 
