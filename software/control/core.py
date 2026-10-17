@@ -12,6 +12,7 @@ from qtpy.QtGui import *
 from control.processing_handler import ProcessingHandler
 
 import control.utils as utils
+import control.autofocus_settings as autofocus_settings
 from control._def import *
 
 import control.tracking as tracking
@@ -1275,6 +1276,7 @@ class AutofocusWorker(QObject):
         self.N = self.autofocusController.N
         self.deltaZ = self.autofocusController.deltaZ
         self.deltaZ_usteps = self.autofocusController.deltaZ_usteps
+        self.focus_measure_name = self.autofocusController.focus_measure
         
         self.crop_width = self.autofocusController.crop_width
         self.crop_height = self.autofocusController.crop_height
@@ -1310,6 +1312,7 @@ class AutofocusWorker(QObject):
             self.wait_till_operation_is_completed()
 
         steps_moved = 0
+        metric_failed = False
         for i in range(self.N):
             self.navigationController.move_z_usteps(self.deltaZ_usteps)
             self.wait_till_operation_is_completed()
@@ -1338,14 +1341,23 @@ class AutofocusWorker(QObject):
             self.image_to_display.emit(image)
             QApplication.processEvents()
             timestamp_0 = time.time()
-            focus_measure = utils.calculate_focus_measure(image,FOCUS_MEASURE_OPERATOR)
+            focus_measure = self.autofocusController.compute_focus_measure(image,self.focus_measure_name)
+            if focus_measure is None:
+                # a custom focus measure raised: finish the scan without evaluating it and return to the start z
+                metric_failed = True
+                focus_measure = 0
             timestamp_1 = time.time()
             print('             calculating focus measure took ' + str(timestamp_1-timestamp_0) + ' second')
             focus_measure_vs_z[i] = focus_measure
             print(i,focus_measure)
             focus_measure_max = max(focus_measure, focus_measure_max)
-            if focus_measure < focus_measure_max*AF.STOP_THRESHOLD:
+            if (not metric_failed) and focus_measure < focus_measure_max*AF.STOP_THRESHOLD:
                 break
+
+        if metric_failed:
+            print('*** autofocus: focus measure failed, z position is left unchanged ***')
+            focus_measure_vs_z = [0]*self.N
+            focus_measure_vs_z[max(0,min(round(self.N/2)-1,steps_moved-1))] = 1
 
         QApplication.processEvents()
 
@@ -1383,6 +1395,7 @@ class AutoFocusController(QObject):
     z_pos = Signal(float)
     autofocusFinished = Signal()
     image_to_display = Signal(np.ndarray)
+    settings_changed = Signal() # emitted whenever N, deltaZ, focus measure or autofocus channel change
 
     def __init__(self,camera,navigationController,liveController):
         QObject.__init__(self)
@@ -1394,17 +1407,48 @@ class AutoFocusController(QObject):
         self.deltaZ_usteps = None
         self.crop_width = AF.CROP_WIDTH
         self.crop_height = AF.CROP_HEIGHT
+        self.focus_measure = FOCUS_MEASURE_OPERATOR # 'LAPE', 'GLVA' or 'CUSTOM:<file>::<function>'
+        self.af_channel = MULTIPOINT_AUTOFOCUS_CHANNEL # channel used for autofocus in multipoint acquisitions
         self.autofocus_in_progress = False
         self.focus_map_coords = []
         self.use_focus_map = False
 
     def set_N(self,N):
         self.N = N
+        self.settings_changed.emit()
 
     def set_deltaZ(self,deltaZ_um):
         mm_per_ustep_Z = SCREW_PITCH_Z_MM/(self.navigationController.z_microstepping*FULLSTEPS_PER_REV_Z)
         self.deltaZ = deltaZ_um/1000
         self.deltaZ_usteps = round((deltaZ_um/1000)/mm_per_ustep_Z)
+        self.settings_changed.emit()
+
+    def set_focus_measure(self,name):
+        self.focus_measure = name
+        self.settings_changed.emit()
+
+    def set_af_channel(self,channel_name):
+        self.af_channel = channel_name
+        self.settings_changed.emit()
+
+    def compute_focus_measure(self,image,name=None):
+        """Focus measure of one frame; None if a custom focus measure raised an exception."""
+        try:
+            return autofocus_settings.REGISTRY.calculate(image,self.focus_measure if name is None else name)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print('*** focus measure failed: ' + str(e))
+            return None
+
+    def get_settings(self):
+        """Current autofocus conditions as a dict (what is written to a settings file)."""
+        return {
+            'focus_measure': self.focus_measure,
+            'af_channel': self.af_channel,
+            'delta_z_um': round(self.deltaZ*1000,6) if self.deltaZ is not None else None,
+            'n_planes': self.N,
+        }
 
     def set_crop(self,crop_width,crop_height):
         self.crop_width = crop_width
@@ -1861,7 +1905,7 @@ class MultiPointWorker(QObject):
                             if ( (self.NZ == 1) or Z_STACKING_CONFIG == 'FROM CENTER' ) and (self.do_autofocus) and (self.FOV_counter%Acquisition.NUMBER_OF_FOVS_PER_AF==0):
                             # temporary: replace the above line with the line below to AF every FOV
                             # if (self.NZ == 1) and (self.do_autofocus):
-                                configuration_name_AF = MULTIPOINT_AUTOFOCUS_CHANNEL
+                                configuration_name_AF = self.autofocusController.af_channel
                                 config_AF = next((config for config in self.configurationManager.configurations if config.name == configuration_name_AF))
                                 self.signal_current_configuration.emit(config_AF)
                                 if (self.FOV_counter%Acquisition.NUMBER_OF_FOVS_PER_AF==0) or self.autofocusController.use_focus_map:
@@ -1888,7 +1932,7 @@ class MultiPointWorker(QObject):
                                 self.microscope.laserAutofocusController.initialize_auto()
                                 # do contrast AF for the first FOV (if contrast AF box is checked)
                                 if self.do_autofocus and ( (self.NZ == 1) or Z_STACKING_CONFIG == 'FROM CENTER' ) :
-                                    configuration_name_AF = MULTIPOINT_AUTOFOCUS_CHANNEL
+                                    configuration_name_AF = self.autofocusController.af_channel
                                     config_AF = next((config for config in self.configurationManager.configurations if config.name == configuration_name_AF))
                                     self.signal_current_configuration.emit(config_AF)
                                     self.autofocusController.autofocus()
