@@ -332,7 +332,10 @@ class OctopiGUI(QMainWindow):
 
         # acquisition tabs
         self.recordTabWidget = QTabWidget()
-        self.recordTabWidget.addTab(self.multiPointWidget, "Multipoint (Wellplate)")
+        # the wellplate tab is hidden unless enabled, but never leave the GUI without a multipoint tab
+        self.show_wellplate_tab = ENABLE_WELLPLATE_MULTIPOINT or not ENABLE_FLEXIBLE_MULTIPOINT
+        if self.show_wellplate_tab:
+            self.recordTabWidget.addTab(self.multiPointWidget, "Multipoint (Wellplate)")
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.recordTabWidget.addTab(self.multiPointWidget2, "Flexible Multipoint")
         if ENABLE_SPINNING_DISK_CONFOCAL:
@@ -394,6 +397,8 @@ class OctopiGUI(QMainWindow):
             main_dockArea = dock.DockArea()
             main_dockArea.addDock(dock_display)
             main_dockArea.addDock(self.dock_wellSelection,'bottom')
+            if not self.show_wellplate_tab:
+                self.dock_wellSelection.setVisible(False) # well selector belongs to the wellplate tab
             main_dockArea.addDock(dock_controlPanel,'right')
             self.setCentralWidget(main_dockArea)
             desktopWidget = QDesktopWidget()
@@ -622,7 +627,8 @@ class OctopiGUI(QMainWindow):
     def onTabChanged(self, index):
         acquisitionWidget = self.recordTabWidget.widget(index)
         if self.wellSelectionWidget.format != 0:
-            self.toggleWellSelector(index)
+            # originally 'index' (tab 0 = wellplate tab); identify the tab by widget so removing it does not shift this
+            self.toggleWellSelector(acquisitionWidget is not self.multiPointWidget)
         try:
             acquisitionWidget.emit_selected_channels()
         except AttributeError:
@@ -678,7 +684,7 @@ class OctopiGUI(QMainWindow):
         current_index = self.recordTabWidget.currentIndex()
         for index in range(self.recordTabWidget.count()):
             self.recordTabWidget.setTabEnabled(index, not acquisition_started or index == current_index)
-        if current_index == 0 and self.wellSelectionWidget.format != 0:
+        if self.recordTabWidget.currentWidget() is self.multiPointWidget and self.wellSelectionWidget.format != 0: # was: current_index == 0 (wellplate tab)
             self.dock_wellSelection.setVisible(not acquisition_started)
         
     def closeEvent(self, event):

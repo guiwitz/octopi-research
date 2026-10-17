@@ -425,6 +425,8 @@ DEFAULT_MULTIPOINT_NX=1
 DEFAULT_MULTIPOINT_NY=1
 
 ENABLE_FLEXIBLE_MULTIPOINT = False
+# Show the legacy 'Multipoint (Wellplate)' tab. Ignored (tab is shown anyway) if ENABLE_FLEXIBLE_MULTIPOINT is False.
+ENABLE_WELLPLATE_MULTIPOINT = False
 
 CAMERA_SN = {'ch 1':'SN1','ch 2': 'SN2'} # for multiple cameras, to be overwritten in the configuration file
 
