@@ -1159,6 +1159,12 @@ PI_FOCUS_Z_TRAVEL_MM = 0.0
 # camera blacklevel settings
 DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS = False
 
+# Toupcam global reset mode: every row starts exposing at once, so hardware-triggered frames need no
+# rolling-shutter strobe delay.  Used in hardware trigger mode only, the one mode where the illumination is pulsed
+# for just the exposure (see ToupcamCamera._set_global_reset for why).  Needs a camera that supports the option
+# (eg: the ITR10CMOS26000KMA); on other cameras it is ignored.
+ENABLE_TOUPCAM_GLOBAL_RESET = False
+
 
 class HardwareTriggerMode:
     EDGE = 0  # Fixed pulse width (TRIGGER_PULSE_LENGTH_us)
