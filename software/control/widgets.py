@@ -2550,14 +2550,14 @@ class MultiPointWidget2(QFrame):
     @_undoable
     def clear(self):
         self.location_list = np.empty((0, 3), dtype=float)
-        self.location_ids = np.empty((0,), dtype=str)
+        self.location_ids = np.empty((0,), dtype='<U64') # was dtype=str (= 1 character): typed IDs like 'A-3' were cut to 'A'
         self.dropdown_location_list.clear()
         self.navigationViewer.clear_slide()
         self.table_location_list.setRowCount(0)
 
     def clear_only_location_list(self):
         self.location_list = np.empty((0,3),dtype=float)
-        self.location_ids = np.empty((0,),dtype=str)
+        self.location_ids = np.empty((0,), dtype='<U64')
         self.dropdown_location_list.clear()
         self.table_location_list.setRowCount(0)
 

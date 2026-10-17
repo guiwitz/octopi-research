@@ -1,0 +1,220 @@
+"""JOBs tab: select a job file (Python, see control/jobs/README.md), check it (dry run), run it.
+
+The positions (and their IDs/groups) come from the Flexible Multipoint tab. Starting a job uses the same
+experiment preparation (saving folder, configurations) and the same MultiPointController/Worker thread
+as a standard acquisition; the worker runs the job instead of the standard loops.
+"""
+import os
+import json
+import shutil
+
+from qtpy.QtCore import Signal
+from qtpy.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog,
+                            QMessageBox, QPlainTextEdit)
+
+from control.jobs import make_points, dry_run, describe, JobError
+
+CACHE_FILE = os.path.join('cache', 'jobs_settings.json')
+EXAMPLE_DIR = 'job_examples'
+UNSUPPORTED_CHANNELS = ('RGB', 'USB Spectrometer')
+
+
+class JobsWidget(QFrame):
+
+    signal_acquisition_started = Signal(bool)     # same meaning as in the other acquisition tabs (locks the stage controls)
+
+    def __init__(self, multipointController, configurationManager, positionsWidget, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.mpc = multipointController
+        self.configurationManager = configurationManager
+        self.positionsWidget = positionsWidget      # Flexible Multipoint tab: location_list, location_ids, saving dir, experiment ID
+        self.running = False
+        self._build()
+        self._load_cache()
+        self.mpc.signal_job_message.connect(self.append_log)
+        self.mpc.acquisitionFinished.connect(self.acquisition_is_finished)
+
+    # --- layout
+    def _build(self):
+        self.lineEdit_job = QLineEdit()
+        self.lineEdit_job.setPlaceholderText('job file (.py) defining run_job(scope)')
+        self.btn_select_job = QPushButton('Select job...')
+        self.btn_example = QPushButton('New from example...')
+        self.btn_example.setToolTip('Copy an example job to a place of your choice and select it')
+        self.lineEdit_savingDir = QLineEdit()
+        self.btn_savingDir = QPushButton('Saving dir...')
+        self.lineEdit_experimentID = QLineEdit('job')
+        self.label_points = QLabel('')
+        self.btn_check = QPushButton('Check job (dry run)')
+        self.btn_check.setToolTip('Runs the job with simulated time and no hardware: finds errors, counts images and estimates the duration')
+        self.btn_start = QPushButton('Start job')
+        self.btn_start.setCheckable(True)
+        self.btn_start.setStyleSheet('background-color: #C2C2FF')
+        self.label_status = QLabel('')
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setMaximumBlockCount(5000)
+
+        row1 = QHBoxLayout(); row1.addWidget(QLabel('Job file')); row1.addWidget(self.lineEdit_job, 1)
+        row1.addWidget(self.btn_select_job); row1.addWidget(self.btn_example)
+        row2 = QHBoxLayout(); row2.addWidget(QLabel('Saving dir')); row2.addWidget(self.lineEdit_savingDir, 1); row2.addWidget(self.btn_savingDir)
+        row2.addWidget(QLabel('Experiment ID')); row2.addWidget(self.lineEdit_experimentID)
+        row3 = QHBoxLayout(); row3.addWidget(self.btn_check); row3.addWidget(self.btn_start)
+        layout = QVBoxLayout()
+        layout.addLayout(row1); layout.addLayout(row2); layout.addWidget(self.label_points)
+        layout.addLayout(row3); layout.addWidget(self.label_status); layout.addWidget(self.log, 1)
+        self.setLayout(layout)
+
+        self.btn_select_job.clicked.connect(self.select_job)
+        self.btn_example.clicked.connect(self.new_from_example)
+        self.btn_savingDir.clicked.connect(self.select_saving_dir)
+        self.btn_check.clicked.connect(self.check_job)
+        self.btn_start.clicked.connect(self.toggle_job)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # take over saving folder / experiment ID typed in the Flexible Multipoint tab if still empty
+        pw = self.positionsWidget
+        if not self.lineEdit_savingDir.text() and pw.lineEdit_savingDir.text():
+            self.lineEdit_savingDir.setText(pw.lineEdit_savingDir.text())
+        self.refresh_points_label()
+
+    # --- persistence of the last job / folder
+    def _load_cache(self):
+        try:
+            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                d = json.load(f)
+            self.lineEdit_job.setText(d.get('job_file', ''))
+            self.lineEdit_savingDir.setText(d.get('saving_dir', ''))
+        except Exception:
+            pass
+
+    def _save_cache(self):
+        try:
+            os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
+            with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+                json.dump(dict(job_file=self.lineEdit_job.text(), saving_dir=self.lineEdit_savingDir.text()), f)
+        except Exception:
+            pass
+
+    # --- helpers
+    def append_log(self, text):
+        self.log.appendPlainText(text)
+
+    def _points(self):
+        pw = self.positionsWidget
+        ids = [str(i) for i in pw.location_ids]
+        return make_points(ids, [tuple(r) for r in pw.location_list])
+
+    def refresh_points_label(self):
+        pts = self._points()
+        groups = {}
+        for p in pts:
+            groups[p.group] = groups.get(p.group, 0) + 1
+        if pts:
+            self.label_points.setText(f'{len(pts)} positions from the Flexible Multipoint tab; groups: ' + ', '.join(f'{g} ({n})' for g, n in groups.items()))
+        else:
+            self.label_points.setText('No positions yet: define them in the Flexible Multipoint tab (the group is the part of the ID before the first "-").')
+
+    def _channel_infos(self):
+        return {c.name: dict(exposure_ms=c.exposure_time, gain=c.analog_gain, intensity=c.illumination_intensity)
+                for c in self.configurationManager.configurations if not any(u in c.name for u in UNSUPPORTED_CHANNELS)}
+
+    def _warn(self, title, text):
+        QMessageBox.warning(self, title, text)
+
+    # --- buttons
+    def select_job(self):
+        start = os.path.dirname(self.lineEdit_job.text()) or EXAMPLE_DIR
+        path, _ = QFileDialog.getOpenFileName(self, 'Select job file', start, 'Python files (*.py);;All files (*)')
+        if path:
+            self.lineEdit_job.setText(path)
+            self._save_cache()
+            self.check_job()
+
+    def new_from_example(self):
+        examples = sorted(f for f in os.listdir(EXAMPLE_DIR) if f.endswith('.py')) if os.path.isdir(EXAMPLE_DIR) else []
+        if not examples:
+            self._warn('Examples', 'No examples found in ' + EXAMPLE_DIR)
+            return
+        src, _ = QFileDialog.getOpenFileName(self, 'Choose an example', EXAMPLE_DIR, 'Python files (*.py)')
+        if not src:
+            return
+        dst, _ = QFileDialog.getSaveFileName(self, 'Save a copy of the example as', os.path.basename(src), 'Python files (*.py)')
+        if dst:
+            shutil.copy2(src, dst)
+            self.lineEdit_job.setText(dst)
+            self._save_cache()
+            self.append_log(f'copied {os.path.basename(src)} to {dst}; edit it with any text editor, then press "Check job".')
+
+    def select_saving_dir(self):
+        d = QFileDialog.getExistingDirectory(self, 'Select folder')
+        if d:
+            self.lineEdit_savingDir.setText(d)
+            self._save_cache()
+
+    def check_job(self):
+        """Dry run; returns the JobResult (None if no job file)."""
+        self.refresh_points_label()
+        path = self.lineEdit_job.text().strip()
+        if not path:
+            self.label_status.setText('Select a job file first.')
+            return None
+        pts = self._points()
+        if not pts:
+            self.label_status.setText('Define positions in the Flexible Multipoint tab first.')
+            return None
+        res = dry_run(path, pts, self._channel_infos())
+        self.log.appendPlainText('--- check of ' + os.path.basename(path) + ' ---\n' + describe(res))
+        self.label_status.setText('Job OK (dry run)' if res.status == 'completed' else 'Job has a problem: ' + (res.error.splitlines()[0] if res.error else res.status))
+        return res
+
+    def toggle_job(self, pressed):
+        if not pressed:
+            self.append_log('abort requested ...')
+            self.mpc.request_abort_aquisition()
+            return
+        saving_dir = self.lineEdit_savingDir.text().strip()
+        if not saving_dir or not os.path.isdir(saving_dir):
+            self.btn_start.setChecked(False)
+            self._warn('Saving directory', 'Please choose an existing saving directory.\n' + saving_dir)
+            return
+        res = self.check_job()
+        if res is None or res.status != 'completed':
+            self.btn_start.setChecked(False)
+            self._warn('Job', 'The job cannot be started:\n\n' + (res.error if res is not None and res.error else 'see the message in the JOBs tab'))
+            return
+        used = list(res.stats.get('per_channel', {}))
+        self._save_cache()
+        # same preparation as a standard acquisition
+        self.mpc.set_base_path(saving_dir)
+        self.mpc.set_selected_configurations(used or [c.name for c in self.configurationManager.configurations])
+        self.mpc.set_gen_focus_map_flag(False)
+        self.mpc.start_new_experiment(self.lineEdit_experimentID.text().strip() or 'job')
+        self.running = True
+        self.btn_start.setText('Abort job')
+        self._set_controls_enabled(False)
+        self.signal_acquisition_started.emit(True)
+        self.label_status.setText('Job running ...')
+        self.append_log(f'--- job started, experiment folder {self.mpc.experiment_ID} ---')
+        self.mpc.run_job(self.lineEdit_job.text().strip(), self._points())
+
+    def acquisition_is_finished(self):
+        if not self.running:
+            return          # a standard acquisition of another tab finished
+        self.running = False
+        res = self.mpc.job_result
+        self.btn_start.setChecked(False)
+        self.btn_start.setText('Start job')
+        self._set_controls_enabled(True)
+        self.signal_acquisition_started.emit(False)
+        if res is not None:
+            self.append_log('--- job finished ---\n' + describe(res))
+            self.label_status.setText('Job ' + res.status + ((': ' + res.error.splitlines()[0]) if res.error else ''))
+        else:
+            self.label_status.setText('Job ended')
+
+    def _set_controls_enabled(self, enabled):
+        for w in (self.lineEdit_job, self.btn_select_job, self.btn_example, self.lineEdit_savingDir, self.btn_savingDir,
+                  self.lineEdit_experimentID, self.btn_check):
+            w.setEnabled(enabled)

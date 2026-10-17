@@ -1671,6 +1671,7 @@ class MultiPointWorker(QObject):
     napari_layers_init = Signal(int, int, object, bool)
 
     signal_update_stats = Signal(object)
+    signal_job_message = Signal(str)   # JOBs: progress messages of a job script
 
     def __init__(self,multiPointController):
         QObject.__init__(self)
@@ -1732,7 +1733,35 @@ class MultiPointWorker(QObject):
             self.detection_stats["Positives per 5M RBC"] = 5e6*(self.detection_stats["Total Positives"]/self.detection_stats["Total RBC"])
         self.signal_detection_stats.emit(self.detection_stats)
 
+    def run_job_script(self):
+        """JOBs: run the job file selected in the JOBs tab instead of the standard loops (see control/jobs)."""
+        self.start_time = time.perf_counter_ns()
+        if self.camera.is_streaming == False:
+            self.camera.start_streaming()
+        from control.jobs.runner import run_job
+        from control.jobs.hardware_backend import HardwareBackend
+        mpc = self.multiPointController
+        try:
+            result = run_job(mpc.job_file, mpc.job_points, HardwareBackend(self),
+                             experiment_dir=os.path.join(self.base_path,self.experiment_ID),
+                             meta=dict(experiment_id=self.experiment_ID))
+            mpc.job_result = result
+            self.signal_job_message.emit('job ' + result.status + (': ' + result.error.splitlines()[0] if result.error else ''))
+        except BaseException:
+            import traceback
+            traceback.print_exc()
+            self.signal_job_message.emit('job runner crashed, see the console')
+        self.processingHandler.processing_queue.join()
+        self.processingHandler.upload_queue.join()
+        elapsed_time = time.perf_counter_ns()-self.start_time
+        print("Time taken for job: "+str(elapsed_time/10**9))
+        self.finished.emit()
+
     def run(self):
+
+        if getattr(self.multiPointController,'job_file',None):
+            self.run_job_script()
+            return
 
         self.start_time = time.perf_counter_ns()
         if self.camera.is_streaming == False:
@@ -2465,6 +2494,7 @@ class MultiPointController(QObject):
     napari_layers_update = Signal(np.ndarray, int, int, int, str)
     napari_layers_init = Signal(int, int, object, bool)
     signal_z_piezo_um = Signal(float)
+    signal_job_message = Signal(str)   # JOBs: progress messages of a job script
 
     def __init__(self,camera,navigationController,liveController,autofocusController,configurationManager,usb_spectrometer=None,scanCoordinates=None,parent=None):
         QObject.__init__(self)
@@ -2513,6 +2543,9 @@ class MultiPointController(QObject):
         except:
             pass
         self.location_list = None # for flexible multipoint
+        self.job_file = None # JOBs: path of the job file to run instead of the standard loops (None = standard acquisition)
+        self.job_points = None # JOBs: list of control.jobs.Point
+        self.job_result = None
 
     def set_NX(self,N):
         self.NX = N
@@ -2588,7 +2621,17 @@ class MultiPointController(QObject):
         for configuration_name in selected_configurations_name:
             self.selected_configurations.append(next((config for config in self.configurationManager.configurations if config.name == configuration_name)))
         
-    def run_acquisition(self, location_list=None): # @@@ to do: change name to run_experiment
+    def run_job(self, job_file, points):
+        """JOBs: run a job file (control/jobs) with the given list of control.jobs.Point. Same preparation as a
+        standard acquisition (call set_base_path, set_selected_configurations and start_new_experiment first)."""
+        self.job_file = job_file
+        self.job_points = points
+        self.job_result = None
+        self.run_acquisition(np.array([[p.x,p.y,p.z] for p in points],dtype=float),_job=True)
+
+    def run_acquisition(self, location_list=None, _job=False): # @@@ to do: change name to run_experiment
+        if not _job:
+            self.job_file = None # a standard acquisition never runs a leftover job
         print('start multipoint')
         print(str(self.Nt) + '_' + str(self.NX) + '_' + str(self.NY) + '_' + str(self.NZ))
 
@@ -2689,6 +2732,7 @@ class MultiPointController(QObject):
         self.multiPointWorker.image_to_display_tiled_preview.connect(self.slot_image_to_display_tiled_preview)
         self.multiPointWorker.spectrum_to_display.connect(self.slot_spectrum_to_display)
         self.multiPointWorker.signal_current_configuration.connect(self.slot_current_configuration,type=Qt.BlockingQueuedConnection)
+        self.multiPointWorker.signal_job_message.connect(self.signal_job_message)
         self.multiPointWorker.signal_register_current_fov.connect(self.slot_register_current_fov)
         self.multiPointWorker.napari_layers_init.connect(self.slot_napari_layers_init)
         self.multiPointWorker.napari_layers_update.connect(self.slot_napari_layers_update)

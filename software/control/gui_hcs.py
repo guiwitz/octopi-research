@@ -287,6 +287,8 @@ class OctopiGUI(QMainWindow):
             self.trackingControlWidget = widgets.TrackingControllerWidget(self.trackingController,self.configurationManager,show_configurations=TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS)
         self.multiPointWidget = widgets.MultiPointWidget(self.multipointController,self.configurationManager)
         self.multiPointWidget2 = widgets.MultiPointWidget2(self.navigationController,self.navigationViewer,self.multipointController,self.configurationManager,scanCoordinates=None) # =self.scanCoordinates
+        from control.jobs_widget import JobsWidget
+        self.jobsWidget = JobsWidget(self.multipointController,self.configurationManager,self.multiPointWidget2) # JOBs: scripted acquisition on the positions of the flexible multipoint tab
         self.piezoWidget = widgets.PiezoWidget(self.navigationController)
         self.wellplateFormatWidget = widgets.WellplateFormatWidget()
         self.objectivesWidget = widgets.ObjectivesWidget(self.objectiveStore)
@@ -335,6 +337,7 @@ class OctopiGUI(QMainWindow):
             self.recordTabWidget.addTab(self.multiPointWidget, "Multipoint (Wellplate)")
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.recordTabWidget.addTab(self.multiPointWidget2, "Flexible Multipoint")
+            self.recordTabWidget.addTab(self.jobsWidget, "JOBs")
         if ENABLE_SPINNING_DISK_CONFOCAL:
             self.recordTabWidget.addTab(self.spinningDiskConfocalWidget,"Spinning Disk Confocal")
         if ENABLE_TRACKING:
@@ -444,6 +447,8 @@ class OctopiGUI(QMainWindow):
             self.recordTabWidget.currentChanged.connect(self.onTabChanged)
             self.multiPointWidget2.signal_acquisition_started.connect(self.navigationWidget.toggle_navigation_controls)
             self.multiPointWidget2.signal_acquisition_started.connect(self.toggleAcquisitionStart)
+            self.jobsWidget.signal_acquisition_started.connect(self.navigationWidget.toggle_navigation_controls)
+            self.jobsWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
 
         # exposure/gain edits in the live control widget are applied directly to the camera
         # (previously relayed through the hidden spin boxes of the removed camera settings widget)
