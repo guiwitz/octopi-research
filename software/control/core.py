@@ -1886,7 +1886,7 @@ class MultiPointWorker(QObject):
                     # for multi-channel image
                     self.image_multichannel = None
                     self.save_multichannel = False
-                    if self.microscope.multiPointWidget2.towbin_widget.check_save_multichannel.isChecked():
+                    if self.microscope.multiPointWidget2.checkbox_save_multichannel.isChecked():
                         self.save_multichannel = True
                         numchannels = len(self.selected_configurations)
                         num_z = self.NZ

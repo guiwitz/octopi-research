@@ -1997,6 +1997,7 @@ class MultiPointWidget2(QFrame):
 
         self.btn_export_locations = QPushButton('Export Location List')
         self.btn_import_locations = QPushButton('Import Location List')
+        self.btn_edit_positions = QPushButton('Edit positions...') # opens the position editing window
 
         # editable points table
         self.table_location_list = QTableWidget()
@@ -2072,6 +2073,10 @@ class MultiPointWidget2(QFrame):
         self.checkbox_withAutofocus = QCheckBox('Contrast AF')
         self.checkbox_withAutofocus.setChecked(MULTIPOINT_AUTOFOCUS_ENABLE_BY_DEFAULT)
         self.multipointController.set_af_flag(MULTIPOINT_AUTOFOCUS_ENABLE_BY_DEFAULT)
+        self.label_af_summary = QLabel() # brief summary of the autofocus conditions (set in the Contrast AF tab)
+        self.label_af_summary.setStyleSheet('font-size: 8pt; color: gray;')
+        self.checkbox_save_multichannel = QCheckBox('save as multichannel')
+        self.checkbox_save_multichannel.setChecked(True)
         self.checkbox_withReflectionAutofocus = QCheckBox('Reflection AF')
         self.checkbox_withReflectionAutofocus.setChecked(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
         self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
@@ -2104,6 +2109,7 @@ class MultiPointWidget2(QFrame):
         grid_line3point75 = QGridLayout()
         grid_line3point75.addWidget(self.btn_import_locations,0,0)
         grid_line3point75.addWidget(self.btn_export_locations,0,1)
+        grid_line3point75.addWidget(self.btn_edit_positions,0,2)
 
         grid_line2 = QGridLayout()
         grid_line2.addWidget(QLabel('dx (mm)'), 0,0)
@@ -2126,8 +2132,11 @@ class MultiPointWidget2(QFrame):
 
         grid_af = QVBoxLayout()
         grid_af.addWidget(self.checkbox_withAutofocus)
+        grid_af.addWidget(self.label_af_summary)
         if SUPPORT_LASER_AUTOFOCUS:
             grid_af.addWidget(self.checkbox_withReflectionAutofocus)
+        grid_af.addWidget(self.checkbox_save_multichannel)
+        grid_af.addStretch(1) # keep the checkboxes and the summary together at the top
 
         grid_line3 = QHBoxLayout()
         grid_line3.addWidget(self.list_configurations)
@@ -2183,18 +2192,30 @@ class MultiPointWidget2(QFrame):
         self.shortcut = QShortcut(QKeySequence(";"), self)
         self.shortcut.activated.connect(self.btn_add.click)
 
+        # position editing window: created once, opened with the button, closing only hides it
         from .towbin_widget import TowbinWidget
-        # Pass camera, controllers, and stream handler directly for simpler access
-        stream_handler = self.multipointController.parent.streamHandler \
-            if hasattr(self.multipointController, 'parent') and self.multipointController.parent is not None \
-            and hasattr(self.multipointController.parent, 'streamHandler') else None
-        self.towbin_widget = TowbinWidget(
-            parent=self,
-            camera=self.multipointController.camera,
-            multipoint_controller=self.multipointController,
-            autofocus_controller=getattr(self.multipointController, 'autofocusController', None),
-            stream_handler=stream_handler,
-        )
+        self.towbin_widget = TowbinWidget(parent=self)
+        self.btn_edit_positions.clicked.connect(self.show_position_editor)
+
+        # keep the autofocus summary next to 'Contrast AF' up to date
+        self.autofocus_controller = getattr(self.multipointController, 'autofocusController', None)
+        if self.autofocus_controller is not None:
+            self.autofocus_controller.settings_changed.connect(self.update_af_summary)
+        self.update_af_summary()
+
+    def show_position_editor(self):
+        self.towbin_widget.show()
+        self.towbin_widget.raise_()
+        self.towbin_widget.activateWindow()
+
+    def update_af_summary(self):
+        if self.autofocus_controller is None:
+            self.label_af_summary.setText('')
+            return
+        import control.autofocus_settings as autofocus_settings
+        settings = self.autofocus_controller.get_settings()
+        self.label_af_summary.setText(autofocus_settings.summary_text(settings))
+        self.label_af_summary.setToolTip(autofocus_settings.tooltip_text(settings))
 
     def set_deltaX(self,value):
         mm_per_ustep = SCREW_PITCH_X_MM/(self.multipointController.navigationController.x_microstepping*FULLSTEPS_PER_REV_X) # to implement a get_x_microstepping() in multipointController
@@ -2321,6 +2342,7 @@ class MultiPointWidget2(QFrame):
         self.entry_Nt.setEnabled(enabled)
         self.list_configurations.setEnabled(enabled)
         self.checkbox_withAutofocus.setEnabled(enabled)
+        self.checkbox_save_multichannel.setEnabled(enabled)
         self.checkbox_withReflectionAutofocus.setEnabled(enabled)
         if exclude_btn_startAcquisition is not True:
             self.btn_startAcquisition.setEnabled(enabled)

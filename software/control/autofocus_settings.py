@@ -182,6 +182,30 @@ def load_settings(path):
     return clean
 
 
+# ---- short descriptions for the GUI --------------------------------------------------------
+def summary_text(settings, registry=REGISTRY):
+    """One-line summary of the autofocus conditions, e.g. 'dZ 1.524 um | N 10 | LAPE'."""
+    dz = settings.get('delta_z_um')
+    n = settings.get('n_planes')
+    key = settings.get('focus_measure')
+    dz_text = f'{dz:g}' if dz is not None else '?'
+    n_text = str(n) if n is not None else '?'
+    measure = registry.label(key).split('  (')[0] if key else '?'
+    return f'dZ {dz_text} um | N {n_text} | {measure}'
+
+
+def tooltip_text(settings, registry=REGISTRY):
+    """Longer description of the autofocus conditions for a tooltip."""
+    dz = settings.get('delta_z_um')
+    n = settings.get('n_planes')
+    lines = ['Contrast autofocus conditions (set in the Contrast AF tab):']
+    if dz is not None and n is not None:
+        lines.append(f'dZ {dz:g} um x N {n} planes = scan range {dz * n:g} um')
+    lines.append('Focus measure: ' + (registry.label(settings.get('focus_measure')) if settings.get('focus_measure') else '?'))
+    lines.append('Autofocus channel: ' + str(settings.get('af_channel')))
+    return '\n'.join(lines)
+
+
 # ---- remember the last used settings file ------------------------------------------------
 def remember_settings_file(path):
     try:

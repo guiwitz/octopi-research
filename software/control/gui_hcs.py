@@ -14,6 +14,8 @@ from control._def import *
 
 # app specific libraries
 import control.widgets as widgets
+from control.camera_roi_widget import CameraROIWidget
+from control.autofocus_settings_widget import AutofocusSettingsWidget
 import serial
 
 if CAMERA_TYPE == "Toupcam":
@@ -272,12 +274,12 @@ class OctopiGUI(QMainWindow):
             import control.NL5Widget as NL5Widget
             self.nl5Wdiget = NL5Widget.NL5Widget(self.nl5)
 
-        # NOTE: the former 'Camera' settings tab (widgets.CameraSettingsWidget) was removed from the main GUI.
-        # ROI (centred) and pixel format are now set in the TowbinWidget (Flexible Multipoint tab).
+        # Camera tab: centred hardware ROI (the only crop) and camera mode; replaces widgets.CameraSettingsWidget
+        self.cameraROIWidget = CameraROIWidget(self.camera,self.streamHandler,self.multipointController,self.autofocusController)
         self.liveControlWidget = widgets.LiveControlWidget(self.streamHandler,self.liveController,self.configurationManager,show_display_options=True,show_autolevel=True,autolevel=True)
         self.navigationWidget = widgets.NavigationWidget(self.navigationController,self.slidePositionController,widget_configuration=f'{WELLPLATE_FORMAT} well plate')
         self.dacControlWidget = widgets.DACControWidget(self.microcontroller)
-        self.autofocusWidget = widgets.AutoFocusWidget(self.autofocusController)
+        self.autofocusWidget = AutofocusSettingsWidget(self.autofocusController,self.configurationManager)
         if USE_ZABER_EMISSION_FILTER_WHEEL or USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
             self.filterControllerWidget = widgets.FilterControllerWidget(self.emission_filter_wheel, self.liveController)
         self.recordingControlWidget = widgets.RecordingWidget(self.streamHandler,self.imageSaver)
@@ -346,6 +348,7 @@ class OctopiGUI(QMainWindow):
         self.microscopeControlTabWidget.addTab(self.autofocusWidget,"Contrast AF")
         if USE_ZABER_EMISSION_FILTER_WHEEL or USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
             self.microscopeControlTabWidget.addTab(self.filterControllerWidget,"Emission Filter")
+        self.microscopeControlTabWidget.addTab(self.cameraROIWidget,"Camera")
 
         # Creating the frame widget
         frame = QFrame()
@@ -529,6 +532,7 @@ class OctopiGUI(QMainWindow):
             self.streamHandler_focus_camera = core.StreamHandler()
             self.liveController_focus_camera = core.LiveController(self.camera_focus,self.microcontroller,self.configurationManager_focus_camera,self,control_illumination=False,for_displacement_measurement=True)
             self.multipointController = core.MultiPointController(self.camera,self.navigationController,self.liveController,self.autofocusController,self.configurationManager,scanCoordinates=self.scanCoordinates,parent=self)
+            self.cameraROIWidget.multipoint_controller = self.multipointController # keep the ROI widget pointing at the new controller
             self.imageDisplayWindow_focus = core.ImageDisplayWindow(draw_crosshairs=True)
             self.displacementMeasurementController = core_displacement_measurement.DisplacementMeasurementController()
             self.laserAutofocusController = core.LaserAutofocusController(self.microcontroller,self.camera_focus,self.liveController_focus_camera,self.navigationController,has_two_interfaces=HAS_TWO_INTERFACES,use_glass_top=USE_GLASS_TOP,look_for_cache=False)
