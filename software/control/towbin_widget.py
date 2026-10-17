@@ -180,7 +180,7 @@ class TowbinWidget(QWidget):
             rows = list(range(p.location_list.shape[0]))
 
         what = f"{len(rows)} position(s)" + (f" of group '{group}'" if group_only else "")
-        text = (f"Selected position {row + 1} is moved to the current coordinates and {what} are shifted by\n"
+        text = (f"Selected position {row} is moved to the current coordinates and {what} are shifted by\n"
                 f"dx = {delta[0]:+.4f} mm, dy = {delta[1]:+.4f} mm, dz = {delta[2] * 1000:+.1f} um.\n\nContinue?")
         if QMessageBox.question(self, 'Offset positions', text,
                                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:

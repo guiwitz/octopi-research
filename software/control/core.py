@@ -1451,8 +1451,8 @@ class AutoFocusController(QObject):
 
         time_point: 0 for the first time point (folder '0'); position_index: 0 for the first position of the list.
         every_timepoint: always.   every_n: at t = 0, n, 2n, ... for all positions.
-        staggered: position p (counted from 1) at the time points t with (p - t) divisible by n, i.e. for n=10
-        t=1: positions 1, 11, 21, ...; t=2: positions 2, 12, 22, ...; optionally all positions at t=0.
+        staggered: position p (counted from 0) at the time points t (counted from 0) with (p - t) divisible by n,
+        i.e. for n=10 t=0: positions 0, 10, 20, ...; t=1: positions 1, 11, 21, ...; optionally all positions at t=0.
         """
         n = max(1,int(self.af_schedule_n))
         if self.af_schedule_mode == 'every_n':
@@ -1460,7 +1460,7 @@ class AutoFocusController(QObject):
         if self.af_schedule_mode == 'staggered':
             if self.af_all_at_t0 and time_point == 0:
                 return True
-            return ((position_index + 1) - time_point) % n == 0  # time points counted from 0, positions from 1
+            return (position_index - time_point) % n == 0  # time points and positions both counted from 0
         return True
 
     def compute_focus_measure(self,image,name=None):
