@@ -272,10 +272,8 @@ class OctopiGUI(QMainWindow):
             import control.NL5Widget as NL5Widget
             self.nl5Wdiget = NL5Widget.NL5Widget(self.nl5)
 
-        if CAMERA_TYPE == "Toupcam":
-            self.cameraSettingWidget = widgets.CameraSettingsWidget(self.camera, include_gain_exposure_time=False, include_camera_temperature_setting = True, include_camera_auto_wb_setting = False)
-        else:
-            self.cameraSettingWidget = widgets.CameraSettingsWidget(self.camera, include_gain_exposure_time=False, include_camera_temperature_setting = False, include_camera_auto_wb_setting = True)
+        # NOTE: the former 'Camera' settings tab (widgets.CameraSettingsWidget) was removed from the main GUI.
+        # ROI (centred) and pixel format are now set in the TowbinWidget (Flexible Multipoint tab).
         self.liveControlWidget = widgets.LiveControlWidget(self.streamHandler,self.liveController,self.configurationManager,show_display_options=True,show_autolevel=True,autolevel=True)
         self.navigationWidget = widgets.NavigationWidget(self.navigationController,self.slidePositionController,widget_configuration=f'{WELLPLATE_FORMAT} well plate')
         self.dacControlWidget = widgets.DACControWidget(self.microcontroller)
@@ -287,9 +285,6 @@ class OctopiGUI(QMainWindow):
             self.trackingControlWidget = widgets.TrackingControllerWidget(self.trackingController,self.configurationManager,show_configurations=TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS)
         self.multiPointWidget = widgets.MultiPointWidget(self.multipointController,self.configurationManager)
         self.multiPointWidget2 = widgets.MultiPointWidget2(self.navigationController,self.navigationViewer,self.multipointController,self.configurationManager,scanCoordinates=None) # =self.scanCoordinates
-        # Wire up TowbinWidget to CameraSettingWidget so crop changes sync ROI spinboxes
-        if hasattr(self.multiPointWidget2, 'towbin_widget'):
-            self.multiPointWidget2.towbin_widget.camera_setting_widget = self.cameraSettingWidget
         self.piezoWidget = widgets.PiezoWidget(self.navigationController)
         self.wellplateFormatWidget = widgets.WellplateFormatWidget()
         self.objectivesWidget = widgets.ObjectivesWidget(self.objectiveStore)
@@ -348,7 +343,6 @@ class OctopiGUI(QMainWindow):
         self.microscopeControlTabWidget.addTab(self.navigationWidget,"Stages")
         if ENABLE_OBJECTIVE_PIEZO:
             self.microscopeControlTabWidget.addTab(self.piezoWidget,"Piezo")
-        self.microscopeControlTabWidget.addTab(self.cameraSettingWidget,'Camera')
         self.microscopeControlTabWidget.addTab(self.autofocusWidget,"Contrast AF")
         if USE_ZABER_EMISSION_FILTER_WHEEL or USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
             self.microscopeControlTabWidget.addTab(self.filterControllerWidget,"Emission Filter")
@@ -448,8 +442,10 @@ class OctopiGUI(QMainWindow):
             self.multiPointWidget2.signal_acquisition_started.connect(self.navigationWidget.toggle_navigation_controls)
             self.multiPointWidget2.signal_acquisition_started.connect(self.toggleAcquisitionStart)
 
-        self.liveControlWidget.signal_newExposureTime.connect(self.cameraSettingWidget.set_exposure_time)
-        self.liveControlWidget.signal_newAnalogGain.connect(self.cameraSettingWidget.set_analog_gain)
+        # exposure/gain edits in the live control widget are applied directly to the camera
+        # (previously relayed through the hidden spin boxes of the removed camera settings widget)
+        self.liveControlWidget.signal_newExposureTime.connect(self.camera.set_exposure_time)
+        self.liveControlWidget.signal_newAnalogGain.connect(self.camera.set_analog_gain)
         self.liveControlWidget.update_camera_settings()
         self.objectivesWidget.signal_objective_changed.connect(self.navigationViewer.on_objective_changed)
 
