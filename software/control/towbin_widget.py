@@ -10,6 +10,16 @@ from qtpy.QtWidgets import (QWidget, QPushButton, QVBoxLayout, QLabel,
 from qtpy.QtCore import Qt
 
 
+def _undo_step(method):
+    """One undo step per call of a position-changing button."""
+    import functools
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):  # args: the 'checked' value of clicked(bool) is not needed
+        with self.parent.undo_group():
+            return method(self)
+    return wrapper
+
+
 class TowbinWidget(QWidget):
     def __init__(self, parent=None):
         super(TowbinWidget, self).__init__(parent)
@@ -26,6 +36,26 @@ class TowbinWidget(QWidget):
 
         # the position table lives here (reparented from the Flexible Multipoint widget)
         self.layout.addWidget(self.parent.table_location_list, 1)
+
+        from control.widgets import POSITION_SHORTCUTS
+        grid_nav = QGridLayout()
+        self.layout.addLayout(grid_nav)
+        self.btn_previous = QPushButton("Previous position")
+        self.btn_previous.clicked.connect(self.parent.previous)
+        grid_nav.addWidget(self.btn_previous, 0, 0)
+        self.btn_next = QPushButton("Next position")
+        self.btn_next.clicked.connect(self.parent.next)
+        grid_nav.addWidget(self.btn_next, 0, 1)
+        self.btn_undo = QPushButton("Undo")
+        self.btn_undo.setToolTip("Undo the last change of the position list (add, remove, edit, offset, ...)")
+        self.btn_undo.clicked.connect(self.parent.undo_positions)
+        grid_nav.addWidget(self.btn_undo, 0, 2)
+        grid_nav.addWidget(self.parent.checkbox_move_to_selected, 1, 0, 1, 3)
+        label_keys = QLabel(f"Shortcuts: {POSITION_SHORTCUTS['previous']} previous | "
+                            f"{POSITION_SHORTCUTS['next']} next | {POSITION_SHORTCUTS['undo']} undo")
+        label_keys.setStyleSheet('font-size: 8pt; color: gray;')
+        grid_nav.addWidget(label_keys, 2, 0, 1, 3)
+        self.update_undo_button()
 
         grid_edit_points_id = QGridLayout()
         self.layout.addLayout(grid_edit_points_id)
@@ -75,9 +105,13 @@ class TowbinWidget(QWidget):
 
         self.parent.destroyed.connect(self.close_widget)
 
+    def update_undo_button(self):
+        self.btn_undo.setEnabled(self.parent.can_undo())
+
     def close_widget(self):
         self.close()
 
+    @_undo_step
     def edit_id_selected_location(self):
         """Edit the ID of the selected locations in the table. If the checkbox
         is checked, the ID will be sequential."""
@@ -96,6 +130,7 @@ class TowbinWidget(QWidget):
             else:
                 item.setText(self.editable_text.text())
 
+    @_undo_step
     def update_position(self):
         """Update the position of the selected location."""
         
@@ -120,6 +155,7 @@ class TowbinWidget(QWidget):
         self.parent.table_location_list.setItem(index, 2, QTableWidgetItem(str(round(1000*z,1))))
         self.parent.navigationViewer.register_fov_to_image(x,y)
 
+    @_undo_step
     def copy_z_to_all(self):
         """Copy the Z value of the selected location to all the locations in the
         table."""
@@ -131,6 +167,7 @@ class TowbinWidget(QWidget):
             item = self.parent.table_location_list.item(row, 2)
             item.setText(z_value)
 
+    @_undo_step
     def copy_z_to_same_id(self):
         """Copy the Z value of the selected location to all the locations with the
         same group ID."""
@@ -186,13 +223,14 @@ class TowbinWidget(QWidget):
                                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
 
-        for r in rows:
-            if r == row:
-                new = [current[0], current[1], current[2] if use_z else saved[2]]
-            else:
-                old = p.location_list[r]
-                new = [old[0] + delta[0], old[1] + delta[1], old[2] + delta[2]]
-            p.set_location(r, *new)
+        with p.undo_group():
+            for r in rows:
+                if r == row:
+                    new = [current[0], current[1], current[2] if use_z else saved[2]]
+                else:
+                    old = p.location_list[r]
+                    new = [old[0] + delta[0], old[1] + delta[1], old[2] + delta[2]]
+                p.set_location(r, *new)
         self._status(f"Shifted {len(rows)} position(s) by dx={delta[0]:+.4f} mm, dy={delta[1]:+.4f} mm, "
                      f"dz={delta[2] * 1000:+.1f} um.")
 

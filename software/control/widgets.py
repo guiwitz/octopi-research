@@ -1,5 +1,6 @@
 # set QT_API environment variable
 import os 
+from contextlib import contextmanager
 os.environ["QT_API"] = "pyqt5"
 import qtpy
 
@@ -1947,6 +1948,22 @@ class MultiPointWidget(QFrame):
     def enable_the_start_aquisition_button(self):
         self.btn_startAcquisition.setEnabled(True)
 
+POSITION_SHORTCUTS = {'next': 'Alt+Right', 'previous': 'Alt+Left', 'undo': 'Ctrl+Z'}
+
+
+def _undoable(method):
+    """Make a position-changing method of MultiPointWidget2 undoable (one undo step per call)."""
+    import functools, inspect
+    n_args = len([q for q in inspect.signature(method).parameters.values()
+                  if q.kind in (q.POSITIONAL_ONLY, q.POSITIONAL_OR_KEYWORD)]) - 1  # without self
+    @functools.wraps(method)
+    def wrapper(self,*args,**kwargs):
+        args = args[:n_args]  # Qt signals such as clicked(bool) send more arguments than the slot takes
+        with self.undo_group():
+            return method(self,*args,**kwargs)
+    return wrapper
+
+
 class MultiPointWidget2(QFrame):
 
     signal_acquisition_started = Signal(bool)
@@ -1966,6 +1983,12 @@ class MultiPointWidget2(QFrame):
         self.base_path_is_set = False
         self.location_list = np.empty((0, 3), dtype=float)
         self.location_ids = np.empty((0,), dtype='<U20')
+        self._undo_stack = []   # snapshots (location_list, location_ids, selected index) for 'Undo'
+        self._undo_depth = 0    # >0 while a change is in progress (nested changes make one undo step)
+        self.checkbox_move_to_selected = QCheckBox('move to selected')
+        self.checkbox_move_to_selected.setChecked(True)
+        self.checkbox_move_to_selected.setToolTip('Checked: selecting a position moves the stage there. '
+                                                  'Unchecked: selecting only highlights the position.')
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.acquisition_in_place=False
@@ -2194,11 +2217,33 @@ class MultiPointWidget2(QFrame):
         self.towbin_widget = TowbinWidget(parent=self)
         self.btn_show_table_location_list.clicked.connect(self.show_position_editor)
 
+        # shortcuts (active in the main window while this tab is visible, and in the Positions window)
+        for w in (self, self.towbin_widget):
+            for keys, slot in ((POSITION_SHORTCUTS['next'], self._shortcut_next),
+                               (POSITION_SHORTCUTS['previous'], self._shortcut_previous),
+                               (POSITION_SHORTCUTS['undo'], self._shortcut_undo)):
+                QShortcut(QKeySequence(keys), w, activated=slot)
+
         # keep the autofocus summary next to 'Contrast AF' up to date
         self.autofocus_controller = getattr(self.multipointController, 'autofocusController', None)
         if self.autofocus_controller is not None:
             self.autofocus_controller.settings_changed.connect(self.update_af_summary)
         self.update_af_summary()
+
+    def _positions_editable(self):
+        return self.towbin_widget.isEnabled()  # disabled while an acquisition runs
+
+    def _shortcut_next(self):
+        if self._positions_editable():
+            self.next()
+
+    def _shortcut_previous(self):
+        if self._positions_editable():
+            self.previous()
+
+    def _shortcut_undo(self):
+        if self._positions_editable():
+            self.undo_positions()
 
     def show_position_editor(self):
         self.towbin_widget.show()
@@ -2250,6 +2295,12 @@ class MultiPointWidget2(QFrame):
             msg.setText("Please choose base saving directory first")
             msg.exec_()
             return
+        if pressed and not os.path.isdir(self.lineEdit_savingDir.text()):
+            self.btn_startAcquisition.setChecked(False)
+            QMessageBox.warning(self, 'Saving directory',
+                                'The saving directory does not exist:\n' + self.lineEdit_savingDir.text() +
+                                '\n\nThe experiment was not started. Please choose an existing base saving directory.')
+            return
         if pressed:
             # @@@ to do: add a widgetManger to enable and disable widget 
             # @@@ to do: emit signal to widgetManager to disable other widgets
@@ -2286,6 +2337,7 @@ class MultiPointWidget2(QFrame):
             self.multipointController.request_abort_aquisition()
             self.setEnabled_all(True)
 
+    @_undoable
     def load_last_used_locations(self):
         if self.last_used_locations is None or len(self.last_used_locations) == 0:
             return
@@ -2352,6 +2404,7 @@ class MultiPointWidget2(QFrame):
     def enable_the_start_aquisition_button(self):
         self.btn_startAcquisition.setEnabled(True)
 
+    @_undoable
     def add_location(self):
         x = self.navigationController.x_pos_mm
         y = self.navigationController.y_pos_mm
@@ -2393,6 +2446,7 @@ class MultiPointWidget2(QFrame):
             new_id = f'{name}-0'
         return new_id
 
+    @_undoable
     def remove_location(self):
         index = self.dropdown_location_list.currentIndex()
         if index >=0:
@@ -2408,29 +2462,92 @@ class MultiPointWidget2(QFrame):
                 self.navigationViewer.clear_slide()
             print(self.location_list)
 
+    def _select_position(self,index):
+        n = self.dropdown_location_list.count()
+        if n == 0:
+            return
+        index = min(max(index,0),n-1)
+        if index != self.dropdown_location_list.currentIndex():
+            self.dropdown_location_list.setCurrentIndex(index)  # -> go_to (moves only if 'move to selected')
+        else:
+            self.go_to(index)
+
     def next(self):
-        index = self.dropdown_location_list.currentIndex()
-        max_index = self.dropdown_location_list.count() - 1
-        index = min(index + 1, max_index)
-        self.dropdown_location_list.setCurrentIndex(index)
-        x = self.location_list[index,0]
-        y = self.location_list[index,1]
-        z = self.location_list[index,2]
-        self.navigationController.move_x_to(x)
-        self.navigationController.move_y_to(y)
-        self.navigationController.move_z_to(z)
+        self._select_position(self.dropdown_location_list.currentIndex() + 1)
 
     def previous(self):
-        index = self.dropdown_location_list.currentIndex()
-        index = max(index - 1, 0)
-        self.dropdown_location_list.setCurrentIndex(index)
-        x = self.location_list[index,0]
-        y = self.location_list[index,1]
-        z = self.location_list[index,2]
-        self.navigationController.move_x_to(x)
-        self.navigationController.move_y_to(y)
-        self.navigationController.move_z_to(z)
+        self._select_position(self.dropdown_location_list.currentIndex() - 1)
 
+    # ---- undo of position changes ------------------------------------------------------
+    def _snapshot(self):
+        return (self.location_list.copy(), self.location_ids.copy(), self.dropdown_location_list.currentIndex())
+
+    def push_undo(self):
+        self._undo_stack.append(self._snapshot())
+        del self._undo_stack[:-50]  # keep the last 50 steps
+        self._undo_state_changed()
+
+    def _undo_state_changed(self):
+        if hasattr(self,'towbin_widget'):
+            self.towbin_widget.update_undo_button()
+
+    @contextmanager
+    def undo_group(self):
+        """Everything changed inside the 'with' block is one undo step (no step if nothing changed)."""
+        outer = self._undo_depth == 0
+        if outer:
+            snap = self._snapshot()
+            self._undo_stack.append(snap)
+            del self._undo_stack[:-50]
+        self._undo_depth += 1
+        try:
+            yield
+        finally:
+            self._undo_depth -= 1
+            if outer:
+                if (snap[0].shape == self.location_list.shape and np.array_equal(snap[0],self.location_list)
+                        and np.array_equal(snap[1],self.location_ids) and self._undo_stack and self._undo_stack[-1] is snap):
+                    self._undo_stack.pop()
+                self._undo_state_changed()
+
+    def can_undo(self):
+        return len(self._undo_stack) > 0
+
+    def undo_positions(self):
+        """Restore the position list before the last change. Does not move the stage."""
+        if not self._undo_stack:
+            return False
+        loc, ids, index = self._undo_stack.pop()
+        self._undo_depth += 1
+        self.table_location_list.blockSignals(True)
+        self.dropdown_location_list.blockSignals(True)
+        try:
+            self.navigationViewer.clear_slide()
+            self.location_list = loc
+            self.location_ids = ids
+            self.dropdown_location_list.clear()
+            self.table_location_list.setRowCount(0)
+            for row in range(len(loc)):
+                x, y, z = loc[row]
+                self.dropdown_location_list.addItem('x: ' + str(round(x,3)) + ' mm, y: ' + str(round(y,3)) + ' mm, z: ' + str(round(1000*z,1)) + ' um')
+                self.table_location_list.insertRow(row)
+                self.table_location_list.setItem(row,0,QTableWidgetItem(str(round(x,3))))
+                self.table_location_list.setItem(row,1,QTableWidgetItem(str(round(y,3))))
+                self.table_location_list.setItem(row,2,QTableWidgetItem(str(round(1000*z,1))))
+                self.table_location_list.setItem(row,3,QTableWidgetItem(str(ids[row])))
+                self.navigationViewer.register_fov_to_image(x,y)
+            if len(loc) > 0:
+                index = min(max(index,0),len(loc)-1)
+                self.dropdown_location_list.setCurrentIndex(index)
+                self.table_location_list.selectRow(index)
+        finally:
+            self.dropdown_location_list.blockSignals(False)
+            self.table_location_list.blockSignals(False)
+            self._undo_depth -= 1
+        self._undo_state_changed()
+        return True
+
+    @_undoable
     def clear(self):
         self.location_list = np.empty((0, 3), dtype=float)
         self.location_ids = np.empty((0,), dtype=str)
@@ -2451,18 +2568,20 @@ class MultiPointWidget2(QFrame):
     def go_to(self,index):
         if index != -1:
             if index < len(self.location_list): # to avoid giving errors when adding new points
-                x = self.location_list[index,0]
-                y = self.location_list[index,1]
-                z = self.location_list[index,2]
-                self.navigationController.move_x_to(x)
-                self.navigationController.move_y_to(y)
-                self.navigationController.move_z_to(z)
+                if self.checkbox_move_to_selected.isChecked():
+                    x = self.location_list[index,0]
+                    y = self.location_list[index,1]
+                    z = self.location_list[index,2]
+                    self.navigationController.move_x_to(x)
+                    self.navigationController.move_y_to(y)
+                    self.navigationController.move_z_to(z)
                 self.table_location_list.selectRow(index)
 
     def cell_was_clicked(self,row,column):
 
         self.dropdown_location_list.setCurrentIndex(row)
 
+    @_undoable
     def cell_was_changed(self,row,column):
         x= self.location_list[row,0]
         y= self.location_list[row,1]
@@ -2526,6 +2645,7 @@ class MultiPointWidget2(QFrame):
             location_list_df['k'] = 0
             location_list_df.to_csv(file_path,index=False,header=True)
 
+    @_undoable
     def import_location_list(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Import Location List", '', "CSV Files (*.csv);;All Files (*)")
         if file_path:
