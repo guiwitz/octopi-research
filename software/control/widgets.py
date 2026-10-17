@@ -1997,14 +1997,13 @@ class MultiPointWidget2(QFrame):
 
         self.btn_export_locations = QPushButton('Export Location List')
         self.btn_import_locations = QPushButton('Import Location List')
-        self.btn_edit_positions = QPushButton('Edit positions...') # opens the position editing window
 
         # editable points table
         self.table_location_list = QTableWidget()
         self.table_location_list.setColumnCount(4)
         header_labels = ['x', 'y', 'z', 'ID']
         self.table_location_list.setHorizontalHeaderLabels(header_labels)
-        self.btn_show_table_location_list = QPushButton('Show Location List')
+        self.btn_show_table_location_list = QPushButton('Positions...') # opens the positions window
 
         self.entry_deltaX = QDoubleSpinBox()
         self.entry_deltaX.setMinimum(0) 
@@ -2109,7 +2108,6 @@ class MultiPointWidget2(QFrame):
         grid_line3point75 = QGridLayout()
         grid_line3point75.addWidget(self.btn_import_locations,0,0)
         grid_line3point75.addWidget(self.btn_export_locations,0,1)
-        grid_line3point75.addWidget(self.btn_edit_positions,0,2)
 
         grid_line2 = QGridLayout()
         grid_line2.addWidget(QLabel('dx (mm)'), 0,0)
@@ -2185,17 +2183,16 @@ class MultiPointWidget2(QFrame):
 
         self.table_location_list.cellClicked.connect(self.cell_was_clicked)
         self.table_location_list.cellChanged.connect(self.cell_was_changed)
-        self.btn_show_table_location_list.clicked.connect(self.table_location_list.show)
 
         self.dropdown_location_list.currentIndexChanged.connect(self.go_to)
 
         self.shortcut = QShortcut(QKeySequence(";"), self)
         self.shortcut.activated.connect(self.btn_add.click)
 
-        # position editing window: created once, opened with the button, closing only hides it
+        # positions window (table + editing buttons): created once, opened with the button, closing only hides it
         from .towbin_widget import TowbinWidget
         self.towbin_widget = TowbinWidget(parent=self)
-        self.btn_edit_positions.clicked.connect(self.show_position_editor)
+        self.btn_show_table_location_list.clicked.connect(self.show_position_editor)
 
         # keep the autofocus summary next to 'Contrast AF' up to date
         self.autofocus_controller = getattr(self.multipointController, 'autofocusController', None)
@@ -2343,6 +2340,8 @@ class MultiPointWidget2(QFrame):
         self.list_configurations.setEnabled(enabled)
         self.checkbox_withAutofocus.setEnabled(enabled)
         self.checkbox_save_multichannel.setEnabled(enabled)
+        if hasattr(self,'towbin_widget'):
+            self.towbin_widget.setEnabled(enabled)  # positions must not change during an acquisition
         self.checkbox_withReflectionAutofocus.setEnabled(enabled)
         if exclude_btn_startAcquisition is not True:
             self.btn_startAcquisition.setEnabled(enabled)
@@ -2496,6 +2495,21 @@ class MultiPointWidget2(QFrame):
             self.add_location()
         else:
             super().keyPressEvent(event)
+
+    def set_location(self,index,x,y,z_mm):
+        """Set position `index` (mm) in all places that hold it (array used by the acquisition, table,
+        dropdown, navigation viewer). Does not move the stage."""
+        self.navigationViewer.deregister_fov_to_image(self.location_list[index,0],self.location_list[index,1])
+        self.location_list[index] = [x,y,z_mm]  # in place: the acquisition shares this array
+        self.table_location_list.blockSignals(True)  # cellChanged would move the stage
+        try:
+            self.table_location_list.setItem(index,0,QTableWidgetItem(str(round(x,3))))
+            self.table_location_list.setItem(index,1,QTableWidgetItem(str(round(y,3))))
+            self.table_location_list.setItem(index,2,QTableWidgetItem(str(round(1000*z_mm,1))))
+        finally:
+            self.table_location_list.blockSignals(False)
+        self.navigationViewer.register_fov_to_image(x,y)
+        self.dropdown_location_list.setItemText(index,'x: ' + str(round(x,3)) + ' mm, y: ' + str(round(y,3)) + ' mm, z: ' + str(round(1000*z_mm,1)) + ' um')
 
     def _update_z(self,index,z_mm):
         self.location_list[index,2] = z_mm

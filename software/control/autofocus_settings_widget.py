@@ -6,7 +6,7 @@ them to / load them from a user-chosen file. The last used file is applied again
 """
 import os
 
-from qtpy.QtWidgets import (QFrame, QGridLayout, QLabel, QPushButton, QSpinBox, QDoubleSpinBox,
+from qtpy.QtWidgets import (QCheckBox, QFrame, QGridLayout, QLabel, QPushButton, QSpinBox, QDoubleSpinBox,
                             QComboBox, QFileDialog, QMessageBox)
 
 import control.autofocus_settings as autofocus_settings
@@ -63,6 +63,15 @@ class AutofocusSettingsWidget(QFrame):
 
         self.dropdown_channel = QComboBox()
 
+        self.dropdown_schedule = QComboBox()
+        self.dropdown_schedule.addItem('Every time point', 'every_timepoint')
+        self.dropdown_schedule.addItem('Every n time points', 'every_n')
+        self.dropdown_schedule.addItem('Every n time points, staggered over positions', 'staggered')
+        self.entry_schedule_n = QSpinBox()
+        self.entry_schedule_n.setRange(1, 100000)
+        self.entry_schedule_n.setKeyboardTracking(False)
+        self.checkbox_all_at_t0 = QCheckBox('AF at all positions at t=0')
+
         self.btn_save = QPushButton('Save settings...')
         self.btn_load = QPushButton('Load settings...')
         self.label_status = QLabel('')
@@ -80,9 +89,13 @@ class AutofocusSettingsWidget(QFrame):
         grid.addWidget(self.btn_load_custom, 1, 4)
         grid.addWidget(QLabel('Autofocus channel\n(multipoint)'), 2, 0)
         grid.addWidget(self.dropdown_channel, 2, 1, 1, 3)
-        grid.addWidget(self.btn_save, 3, 0, 1, 2)
-        grid.addWidget(self.btn_load, 3, 2, 1, 3)
-        grid.addWidget(self.label_status, 4, 0, 1, 5)
+        grid.addWidget(QLabel('AF schedule\n(multipoint)'), 3, 0)
+        grid.addWidget(self.dropdown_schedule, 3, 1, 1, 3)
+        grid.addWidget(self.entry_schedule_n, 3, 4)
+        grid.addWidget(self.checkbox_all_at_t0, 4, 1, 1, 3)
+        grid.addWidget(self.btn_save, 5, 0, 1, 2)
+        grid.addWidget(self.btn_load, 5, 2, 1, 3)
+        grid.addWidget(self.label_status, 6, 0, 1, 5)
         grid.setRowStretch(grid.rowCount(), 1)
         self.setLayout(grid)
 
@@ -92,6 +105,9 @@ class AutofocusSettingsWidget(QFrame):
         self.dropdown_measure.currentIndexChanged.connect(self._on_measure_selected)
         self.dropdown_channel.currentIndexChanged.connect(self._on_channel_selected)
         self.btn_load_custom.clicked.connect(self.load_custom_file_dialog)
+        self.dropdown_schedule.currentIndexChanged.connect(self._on_schedule_changed)
+        self.entry_schedule_n.valueChanged.connect(self._on_schedule_changed)
+        self.checkbox_all_at_t0.toggled.connect(self._on_schedule_changed)
         self.btn_save.clicked.connect(self.save_settings_dialog)
         self.btn_load.clicked.connect(self.load_settings_dialog)
 
@@ -105,7 +121,8 @@ class AutofocusSettingsWidget(QFrame):
     def refresh(self):
         """Show the controller's current settings (no signals are sent back)."""
         c = self.autofocusController
-        widgets_to_block = (self.entry_delta, self.entry_N, self.dropdown_measure, self.dropdown_channel)
+        widgets_to_block = (self.entry_delta, self.entry_N, self.dropdown_measure, self.dropdown_channel,
+                            self.dropdown_schedule, self.entry_schedule_n, self.checkbox_all_at_t0)
         for w in widgets_to_block:
             w.blockSignals(True)
         try:
@@ -128,6 +145,12 @@ class AutofocusSettingsWidget(QFrame):
                 names.append(c.af_channel)
             self.dropdown_channel.addItems(names)
             self.dropdown_channel.setCurrentText(c.af_channel)
+
+            self.dropdown_schedule.setCurrentIndex(max(0, self.dropdown_schedule.findData(c.af_schedule_mode)))
+            self.entry_schedule_n.setValue(c.af_schedule_n)
+            self.checkbox_all_at_t0.setChecked(c.af_all_at_t0)
+            self.entry_schedule_n.setEnabled(c.af_schedule_mode != 'every_timepoint')
+            self.checkbox_all_at_t0.setEnabled(c.af_schedule_mode == 'staggered')
         finally:
             for w in widgets_to_block:
                 w.blockSignals(False)
@@ -145,6 +168,11 @@ class AutofocusSettingsWidget(QFrame):
         key = self.dropdown_measure.itemData(index)
         if key is not None:
             self.autofocusController.set_focus_measure(key)
+
+    def _on_schedule_changed(self, *args):
+        self.autofocusController.set_af_schedule(mode=self.dropdown_schedule.currentData(),
+                                                 n=self.entry_schedule_n.value(),
+                                                 all_at_t0=self.checkbox_all_at_t0.isChecked())
 
     def _on_channel_selected(self, index):
         name = self.dropdown_channel.itemText(index)
@@ -238,7 +266,8 @@ class AutofocusSettingsWidget(QFrame):
             c.set_deltaZ(settings['delta_z_um'])
         if 'n_planes' in settings:
             c.set_N(settings['n_planes'])
-        c.settings_changed.emit()
+        c.set_af_schedule(mode=settings.get('af_schedule_mode'), n=settings.get('af_schedule_n'),
+                          all_at_t0=settings.get('af_all_at_t0'))  # None = keep; emits settings_changed
 
         autofocus_settings.remember_settings_file(path)
         self._status(f'Loaded {os.path.basename(path)}' + (' - ' + '; '.join(notes) if notes else ''))

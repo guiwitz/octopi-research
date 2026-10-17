@@ -177,6 +177,19 @@ def load_settings(path):
         if not 3 <= value <= 20:
             raise ValueError('n_planes must be between 3 and 20')
         clean['n_planes'] = value
+    if 'af_schedule_mode' in data:
+        if data['af_schedule_mode'] not in ('every_timepoint', 'every_n', 'staggered'):
+            raise ValueError("af_schedule_mode must be 'every_timepoint', 'every_n' or 'staggered'")
+        clean['af_schedule_mode'] = data['af_schedule_mode']
+    if 'af_schedule_n' in data:
+        value = int(data['af_schedule_n'])
+        if not 1 <= value <= 100000:
+            raise ValueError('af_schedule_n must be between 1 and 100000')
+        clean['af_schedule_n'] = value
+    if 'af_all_at_t0' in data:
+        if not isinstance(data['af_all_at_t0'], bool):
+            raise ValueError('af_all_at_t0 must be true or false')
+        clean['af_all_at_t0'] = data['af_all_at_t0']
     if not clean:
         raise ValueError('No autofocus settings found in the file')
     return clean
@@ -191,7 +204,20 @@ def summary_text(settings, registry=REGISTRY):
     dz_text = f'{dz:g}' if dz is not None else '?'
     n_text = str(n) if n is not None else '?'
     measure = registry.label(key).split('  (')[0] if key else '?'
-    return f'dZ {dz_text} um | N {n_text} | {measure}'
+    text = f'dZ {dz_text} um | N {n_text} | {measure}'
+    schedule = schedule_text(settings)
+    return text + (' | ' + schedule if schedule else '')
+
+
+def schedule_text(settings):
+    """Short description of when the autofocus runs; empty if it runs at every time point."""
+    mode = settings.get('af_schedule_mode', 'every_timepoint')
+    n = settings.get('af_schedule_n', 1)
+    if mode == 'every_n' and n > 1:
+        return f'AF every {n} tp'
+    if mode == 'staggered' and n > 1:
+        return f'AF staggered /{n}' + (', all at t=0' if settings.get('af_all_at_t0', True) else '')
+    return ''
 
 
 def tooltip_text(settings, registry=REGISTRY):
@@ -203,6 +229,15 @@ def tooltip_text(settings, registry=REGISTRY):
         lines.append(f'dZ {dz:g} um x N {n} planes = scan range {dz * n:g} um')
     lines.append('Focus measure: ' + (registry.label(settings.get('focus_measure')) if settings.get('focus_measure') else '?'))
     lines.append('Autofocus channel: ' + str(settings.get('af_channel')))
+    mode = settings.get('af_schedule_mode', 'every_timepoint')
+    n = settings.get('af_schedule_n', 1)
+    if mode == 'every_n' and n > 1:
+        lines.append(f'Runs at time points t = 0, {n}, {2 * n}, ... (all positions); t = 0 is the first time point')
+    elif mode == 'staggered' and n > 1:
+        lines.append(f'Staggered: position p runs when (p - t) is divisible by {n} (positions counted from 1, '
+                     f't = 0 is the first time point)' + ('; all positions at t = 0' if settings.get('af_all_at_t0', True) else ''))
+    else:
+        lines.append('Runs at every time point')
     return '\n'.join(lines)
 
 

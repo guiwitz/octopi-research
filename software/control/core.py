@@ -1409,6 +1409,10 @@ class AutoFocusController(QObject):
         self.crop_height = AF.CROP_HEIGHT
         self.focus_measure = FOCUS_MEASURE_OPERATOR # 'LAPE', 'GLVA' or 'CUSTOM:<file>::<function>'
         self.af_channel = MULTIPOINT_AUTOFOCUS_CHANNEL # channel used for autofocus in multipoint acquisitions
+        # when the autofocus runs during a multipoint acquisition (default = at every time point, as before)
+        self.af_schedule_mode = 'every_timepoint' # 'every_timepoint', 'every_n' or 'staggered'
+        self.af_schedule_n = 1
+        self.af_all_at_t0 = True # staggered mode: autofocus all positions at the first time point (t=0)
         self.autofocus_in_progress = False
         self.focus_map_coords = []
         self.use_focus_map = False
@@ -1431,6 +1435,34 @@ class AutoFocusController(QObject):
         self.af_channel = channel_name
         self.settings_changed.emit()
 
+    def set_af_schedule(self,mode=None,n=None,all_at_t0=None):
+        if mode is not None:
+            if mode not in ('every_timepoint','every_n','staggered'):
+                raise ValueError('unknown autofocus schedule mode: ' + str(mode))
+            self.af_schedule_mode = mode
+        if n is not None:
+            self.af_schedule_n = max(1,int(n))
+        if all_at_t0 is not None:
+            self.af_all_at_t0 = bool(all_at_t0)
+        self.settings_changed.emit()
+
+    def autofocus_scheduled(self,time_point,position_index):
+        """Is the contrast autofocus to be run for this position at this time point of a multipoint acquisition?
+
+        time_point: 0 for the first time point (folder '0'); position_index: 0 for the first position of the list.
+        every_timepoint: always.   every_n: at t = 0, n, 2n, ... for all positions.
+        staggered: position p (counted from 1) at the time points t with (p - t) divisible by n, i.e. for n=10
+        t=1: positions 1, 11, 21, ...; t=2: positions 2, 12, 22, ...; optionally all positions at t=0.
+        """
+        n = max(1,int(self.af_schedule_n))
+        if self.af_schedule_mode == 'every_n':
+            return time_point % n == 0
+        if self.af_schedule_mode == 'staggered':
+            if self.af_all_at_t0 and time_point == 0:
+                return True
+            return ((position_index + 1) - time_point) % n == 0  # time points counted from 0, positions from 1
+        return True
+
     def compute_focus_measure(self,image,name=None):
         """Focus measure of one frame; None if a custom focus measure raised an exception."""
         try:
@@ -1448,6 +1480,9 @@ class AutoFocusController(QObject):
             'af_channel': self.af_channel,
             'delta_z_um': round(self.deltaZ*1000,6) if self.deltaZ is not None else None,
             'n_planes': self.N,
+            'af_schedule_mode': self.af_schedule_mode,
+            'af_schedule_n': self.af_schedule_n,
+            'af_all_at_t0': self.af_all_at_t0,
         }
 
     def set_crop(self,crop_width,crop_height):
@@ -1902,7 +1937,7 @@ class MultiPointWorker(QObject):
                         # autofocus
                         if self.do_reflection_af == False:
                             # contrast-based AF; perform AF only if when not taking z stack or doing z stack from center
-                            if ( (self.NZ == 1) or Z_STACKING_CONFIG == 'FROM CENTER' ) and (self.do_autofocus) and (self.FOV_counter%Acquisition.NUMBER_OF_FOVS_PER_AF==0):
+                            if ( (self.NZ == 1) or Z_STACKING_CONFIG == 'FROM CENTER' ) and (self.do_autofocus) and (self.FOV_counter%Acquisition.NUMBER_OF_FOVS_PER_AF==0) and (self.autofocusController.use_focus_map or self.autofocusController.autofocus_scheduled(self.time_point,coordinate_id)):
                             # temporary: replace the above line with the line below to AF every FOV
                             # if (self.NZ == 1) and (self.do_autofocus):
                                 configuration_name_AF = self.autofocusController.af_channel
