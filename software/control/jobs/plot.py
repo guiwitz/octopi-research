@@ -79,7 +79,9 @@ def _timeline(ax, events, points, ch_color, grp_color, t_range, unit, ulabel, ti
     ax.set_xlim(t0 / unit, t1 / unit)
     step = max(1, int(np.ceil(len(order) / max_labels)))
     ax.set_yticks(range(0, len(order), step))
-    ax.set_yticklabels([(order[i].id or f'#{order[i].index}') for i in range(0, len(order), step)], fontsize=7)
+    ids = [p.id for p in order]
+    unique = len(set(ids)) == len(ids) and all(ids)
+    ax.set_yticklabels([(order[i].id if unique else f'#{order[i].index} ({order[i].id or "no ID"})') for i in range(0, len(order), step)], fontsize=7)
     for lab, i in zip(ax.get_yticklabels(), range(0, len(order), step)):
         lab.set_color(grp_color[order[i].group])
     # separators between groups
