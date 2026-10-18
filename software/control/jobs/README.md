@@ -55,7 +55,7 @@ def run_job(scope):
 | `scope.move_to(point)` | move the stage (same backlash/safety handling as the standard acquisition) |
 | `scope.autofocus(channel=None)` | contrast autofocus with the settings of the Autofocus tab; stores the focused z in the point; returns z (mm) |
 | `scope.capture("488")` | one image in a channel; saved automatically; returns the image as NumPy array. `save=False`: do not save |
-| `scope.capture_channels(["BF", "488"])` | several channels in that order; returns `{channel: image}` |
+| `scope.capture_channels(["BF LED matrix full", "488"])` | several channels in that order; returns `{channel: image}` |
 | `scope.wait(seconds)` | wait (abortable) |
 | `scope.wait_until(seconds)` | wait until this many seconds after the job start |
 | `scope.elapsed` | seconds since the job start |

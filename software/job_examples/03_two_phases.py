@@ -14,4 +14,4 @@ def run_job(scope):
     for pt in scope.points():
         scope.move_to(pt)
         scope.autofocus()
-        scope.capture_channels(["BF", "488"])
+        scope.capture_channels(["BF LED matrix full", "488"])

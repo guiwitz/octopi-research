@@ -199,7 +199,8 @@ def plot_job(result, points, channels=None, detail_range=None, interval=None, ti
     ch_used = {c: col for c, col in ch_color.items() if c in used}
     grp_color = _group_color_map(points)
     status = result.status if result.status != 'completed' else 'dry run OK'
-    head = title or f'{status}: {result.stats.get("images", 0)} images, {result.stats.get("autofocus", 0)} autofocus runs, ' \
+    err = (result.error.splitlines()[0] if result.error else '')
+    head = title or (f'JOB PROBLEM ({result.status}): {err[:160]}\nshown: what the job did before the problem' if result.status not in ('completed', 'aborted') else None) or f'{status}: {result.stats.get("images", 0)} images, {result.stats.get("autofocus", 0)} autofocus runs, ' \
                     f'{result.stats.get("timepoints", 0)} time points, estimated duration {_fmt_dur(result.duration_s)}'
     fig.suptitle(head, fontsize=11, x=0.01, ha='left', color='#d62728' if result.status not in ('completed',) else 'k')
     if not events:

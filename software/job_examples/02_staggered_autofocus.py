@@ -5,7 +5,7 @@ Position IDs are typed in the positions table of the Flexible Multipoint tab, e.
 (the group is the part before the first '-').
 """
 FLUORESCENCE = "488"
-BRIGHTFIELD = "BF"
+BRIGHTFIELD = "BF LED matrix full"
 
 
 def run_job(scope):
