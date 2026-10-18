@@ -131,6 +131,17 @@ fake_exec.answer = True
 jw.btn_start.click(); pump(0.2)
 record('job: OK starts it', len(ran) == 1 and jw.running)
 
+# abort asks for confirmation
+asked = []
+QMessageBox.question = staticmethod(lambda *a, **k: (asked.append(a[2]), QMessageBox.No)[1])
+aborts = []
+mpc.request_abort_aquisition = lambda: aborts.append(1)
+jw.btn_start.click(); pump(0.2)
+record('abort: question asked', len(asked) == 1 and 'Abort' in asked[0], str(asked))
+record('abort: answering No keeps the job running', not aborts and jw.running and jw.btn_start.isChecked() and jw.btn_start.text() == 'Abort job')
+QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+jw.btn_start.click(); pump(0.2)
+record('abort: answering Yes aborts', len(aborts) == 1)
 QDialog.exec_ = orig_exec
 print(f'\n{sum(results)} passed, {len(results) - sum(results)} failed')
 sys.stdout.flush()

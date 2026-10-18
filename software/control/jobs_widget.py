@@ -294,6 +294,12 @@ class JobsWidget(QFrame):
 
     def toggle_job(self, pressed):
         if not pressed:
+            if not self._confirm_abort():
+                if self.running:
+                    self.btn_start.setChecked(True)      # keep the job running (button stays 'Abort job')
+                return
+            if not self.running:
+                return                                   # the job ended while the question was open
             self.append_log('abort requested ...')
             self.mpc.request_abort_aquisition()
             return
@@ -332,6 +338,14 @@ class JobsWidget(QFrame):
         self.btn_pause.setText('Pause job')
         self.btn_pause.setEnabled(True)
         self.mpc.run_job(self.lineEdit_job.text().strip(), self._points())
+
+    def _confirm_abort(self):
+        """Ask before aborting a running job (not asked if SQUID_SKIP_CONFIRM is set, as in the automated tests)."""
+        if os.environ.get('SQUID_SKIP_CONFIRM') or not self.running:
+            return True
+        box = QMessageBox.question(self, 'Abort job', 'Abort the running job?\n\nImages already taken are kept, but the job cannot be continued afterwards.',
+                                   QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        return box == QMessageBox.Yes
 
     # --- pause / resume
     def toggle_pause(self):
