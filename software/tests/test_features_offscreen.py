@@ -205,10 +205,10 @@ mp.checkbox_move_to_selected.setChecked(True); mp.dropdown_location_list.setCurr
 mp.previous(); check("previous at first with move option re-moves", mp.dropdown_location_list.currentIndex()==0 and len(nav.moves)==3)
 tw.btn_next.click(); tw.btn_previous.click(); check("window buttons work", mp.dropdown_location_list.currentIndex()==0)
 from qtpy.QtWidgets import QShortcut, QLabel
-keys=sorted(set(sc.key().toString() for sc in mp.findChildren(QShortcut))-{';'}); check("shortcuts registered", keys==['Ctrl+Down','Ctrl+Left','Ctrl+Right','Ctrl+Up','Ctrl+Z','Del'], keys)
+keys=sorted(set(sc.key().toString() for sc in mp.findChildren(QShortcut))-{';'}); check("shortcuts registered", keys==['Ctrl+Alt+Down','Ctrl+Alt+Left','Ctrl+Alt+Right','Ctrl+Alt+Up','Ctrl+Z','Del'], keys)
 mp._shortcut_next(); check("shortcut next", mp.dropdown_location_list.currentIndex()==1)
 mp._shortcut_previous(); check("shortcut previous", mp.dropdown_location_list.currentIndex()==0)
-check("shortcut hint in window", any('Ctrl+Right' in l.text() and 'Ctrl+Z' in l.text() and 'Delete' in l.text() for l in tw.findChildren(QLabel)))
+check("shortcut hint in window", any('Alt Gr' in l.text() and 'Ctrl+Z' in l.text() and 'Delete' in l.text() for l in tw.findChildren(QLabel)))
 
 before=S(); mp.dropdown_location_list.setCurrentIndex(1); nav.moves.clear()
 mp.remove_location(); nav.moves.clear(); check("removed", len(mp.location_list)==3 and mp.table_location_list.rowCount()==3)
@@ -292,7 +292,7 @@ tw.btn_add.click(); check("Add button in the window", len(mp.location_list)==5 a
 mp._shortcut_add(); nav.x_pos_mm=9; mp._shortcut_add(); check("add shortcut", len(mp.location_list)==6)
 tw.btn_remove.click(); check("Remove button in the window (highlighted position)", len(mp.location_list)==5)
 reset_positions()
-check("window shortcuts registered", {sc.key().toString() for sc in tw.findChildren(QShortcut)}>={'Del',';','Ctrl+Right','Ctrl+Left','Ctrl+Up','Ctrl+Down','Ctrl+Z'})
+check("window shortcuts registered", {sc.key().toString() for sc in tw.findChildren(QShortcut)}>={'Del',';','Ctrl+Alt+Right','Ctrl+Alt+Left','Ctrl+Alt+Up','Ctrl+Alt+Down','Ctrl+Z'})
 
 # set group on ticked rows (or the highlighted ones), and the '-' check
 popups.clear(); tw.editable_text.setText('a-b'); tw.edit_id_btn.click(); check("'-' in a group name is refused", popups and list(mp.location_ids)==['A-0','A-1','B-0','B-1'])
@@ -303,6 +303,19 @@ check("set group with numbering", list(mp.location_ids)==['Z-0','A-1','B-0','Z-1
 tw.check_id_sequential.setChecked(False); tw.btn_undo.click(); mp.untick_all(); mp.table_location_list.selectRow(2); tw.editable_text.setText('Q'); tw.edit_id_btn.click()
 check("set group without ticks: highlighted row", list(mp.location_ids)==['A-0','A-1','Q','B-1'], list(mp.location_ids))
 reset_positions()
+
+# next/previous highlight exactly one row (never accumulate rows, whatever keys are held)
+from qtpy.QtCore import QItemSelectionModel, QItemSelection
+reset_positions(); mp.checkbox_move_to_selected.setChecked(False)
+sm=tb.selectionModel(); mdl=tb.model()
+for r in (0,1,2): sm.select(QItemSelection(mdl.index(r,0),mdl.index(r,3)),QItemSelectionModel.Select|QItemSelectionModel.Rows)
+check("test setup: three rows highlighted", len({i.row() for i in tb.selectedIndexes()})==3)
+mp.dropdown_location_list.blockSignals(True); mp.dropdown_location_list.setCurrentIndex(0); mp.dropdown_location_list.blockSignals(False)
+mp._shortcut_next(); rows={i.row() for i in tb.selectedIndexes()}
+check("next leaves exactly one row highlighted", rows=={1} and mp.dropdown_location_list.currentIndex()==1 and tb.currentRow()==1, rows)
+mp._shortcut_next(); mp._shortcut_next(); check("repeated next: still one row", {i.row() for i in tb.selectedIndexes()}=={3})
+mp._shortcut_previous(); check("previous: one row", {i.row() for i in tb.selectedIndexes()}=={2})
+mp.checkbox_move_to_selected.setChecked(True); reset_positions()
 
 # ---------- saving path check
 nostart=[]; mpc2.run_acquisition=lambda *a,**k: nostart.append(1)

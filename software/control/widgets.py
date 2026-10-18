@@ -1948,8 +1948,8 @@ class MultiPointWidget(QFrame):
     def enable_the_start_aquisition_button(self):
         self.btn_startAcquisition.setEnabled(True)
 
-POSITION_SHORTCUTS = {'next': 'Ctrl+Right', 'previous': 'Ctrl+Left', 'undo': 'Ctrl+Z', 'remove': 'Delete', 'add': ';'}
-POSITION_SHORTCUTS_ALT = {'next': 'Ctrl+Down', 'previous': 'Ctrl+Up'}   # same actions, for people who think of the table as a list
+POSITION_SHORTCUTS = {'next': 'Ctrl+Alt+Right', 'previous': 'Ctrl+Alt+Left', 'undo': 'Ctrl+Z', 'remove': 'Delete', 'add': ';'}
+POSITION_SHORTCUTS_ALT = {'next': 'Ctrl+Alt+Down', 'previous': 'Ctrl+Alt+Up'}   # same actions (on Windows Alt Gr = Ctrl+Alt: Alt Gr + arrow works)
 TICK_COLUMN = 4          # logical column of the tick boxes (shown first); columns 0-3 are x, y, z, group
 
 
@@ -2243,6 +2243,18 @@ class MultiPointWidget2(QFrame):
             self.autofocus_controller.settings_changed.connect(self.update_af_summary)
         self.update_af_summary()
 
+    def _select_row_only(self, row):
+        """Highlight exactly this row, whatever keys are held. (QTableWidget.selectRow toggles/extends the selection while
+        Ctrl or Shift is held; with Ctrl+arrow shortcuts that made the highlighted rows accumulate.)"""
+        t = self.table_location_list
+        m = t.model()
+        if not (0 <= row < m.rowCount()):
+            return
+        sm = t.selectionModel()
+        sm.select(QItemSelection(m.index(row, 0), m.index(row, m.columnCount() - 1)),
+                  QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+        sm.setCurrentIndex(m.index(row, 0), QItemSelectionModel.NoUpdate)
+
     def _positions_editable(self):
         return self.towbin_widget.isEnabled()  # disabled while an acquisition runs
 
@@ -2513,7 +2525,7 @@ class MultiPointWidget2(QFrame):
             self.table_location_list.setItem(self.table_location_list.rowCount()-1,1, QTableWidgetItem(str(round(y,3))))
             self.table_location_list.setItem(self.table_location_list.rowCount()-1,2, QTableWidgetItem(str(round(1000*z,1))))
             self.table_location_list.setItem(self.table_location_list.rowCount()-1,3, QTableWidgetItem(name))
-            self.table_location_list.selectRow(self.table_location_list.rowCount()-1)
+            self._select_row_only(self.table_location_list.rowCount()-1)
             self.navigationViewer.register_fov_to_image(x,y)
         else:
             print("Duplicate values not added based on x and y.")
@@ -2584,7 +2596,7 @@ class MultiPointWidget2(QFrame):
                 self.dropdown_location_list.setCurrentIndex(new)
             finally:
                 self.dropdown_location_list.blockSignals(False)
-            self.table_location_list.selectRow(new)
+            self._select_row_only(new)
         print(self.location_list)
 
     def _select_position(self,index):
@@ -2664,7 +2676,7 @@ class MultiPointWidget2(QFrame):
             if len(loc) > 0:
                 index = min(max(index,0),len(loc)-1)
                 self.dropdown_location_list.setCurrentIndex(index)
-                self.table_location_list.selectRow(index)
+                self._select_row_only(index)
         finally:
             self.dropdown_location_list.blockSignals(False)
             self.table_location_list.blockSignals(False)
@@ -2701,7 +2713,7 @@ class MultiPointWidget2(QFrame):
                     self.navigationController.move_x_to(x)
                     self.navigationController.move_y_to(y)
                     self.navigationController.move_z_to(z)
-                self.table_location_list.selectRow(index)
+                self._select_row_only(index)
 
     def cell_was_clicked(self,row,column):
         if column == TICK_COLUMN:

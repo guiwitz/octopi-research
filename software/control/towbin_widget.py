@@ -59,8 +59,7 @@ class TowbinWidget(QWidget):
         self.btn_undo.clicked.connect(self.parent.undo_positions)
         grid_nav.addWidget(self.btn_undo, 0, 4)
         grid_nav.addWidget(self.parent.checkbox_move_to_selected, 1, 0, 1, 5)
-        label_keys = QLabel(f"Shortcuts: {POSITION_SHORTCUTS['previous']} / {POSITION_SHORTCUTS_ALT['previous']} previous | "
-                            f"{POSITION_SHORTCUTS['next']} / {POSITION_SHORTCUTS_ALT['next']} next | "
+        label_keys = QLabel("Shortcuts: Alt Gr + \u2190/\u2191 previous | Alt Gr + \u2192/\u2193 next (= Ctrl+Alt + arrow) | "
                             f"{POSITION_SHORTCUTS['add']} add | {POSITION_SHORTCUTS['remove']} remove | {POSITION_SHORTCUTS['undo']} undo")
         label_keys.setStyleSheet('font-size: 8pt; color: gray;')
         grid_nav.addWidget(label_keys, 2, 0, 1, 5)
