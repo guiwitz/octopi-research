@@ -79,6 +79,8 @@ def setup():
         kind = command[1]
         if kind == 42:
             obs.setdefault('joystick_cmds', []).append(int(command[2]))
+        if kind == CMD_SET.SET_STROBE_DELAY:
+            obs.setdefault('strobe_cmds', []).append((command[3] << 24) + (command[4] << 16) + (command[5] << 8) + command[6])
         with lock:
             now = time.time()
             self._busy_until = max(getattr(self, '_busy_until', 0), now) + (0.25 if kind in MOVES else 0.01)
@@ -713,6 +715,37 @@ def s16_flir_each_image_has_its_channel_exposure(h):
     problem(v, len(frames) == 2 * 2 * 3, f'{len(frames)} images (12 expected)')
     problem(v, not wrong, 'every image has the exposure of its channel' if not wrong else f'{len(wrong)} images with a wrong exposure, e.g. {wrong[:3]} (channel, set ms, image ms)')
     report(h, v, dict(first=frames[:6]))
+
+
+@scenario('S17')
+def s17_flir_hardware_trigger_timing(h):
+    """FLIR, hardware trigger: the microcontroller gets the camera's strobe delay (measured rolling-shutter readout),
+    also after the pixel format changes; a hardware-triggered acquisition delivers its images."""
+    from control._def import TriggerMode
+    v = []
+    if not h.flir:
+        problem(v, True, 'only meaningful with --camera flir (skipped)')
+        report(h, v)
+    cam, live = h.win.camera, h.win.liveController
+    h.obs['strobe_cmds'] = []
+    live.set_trigger_mode(TriggerMode.HARDWARE)
+    first = list(h.obs['strobe_cmds'])
+    problem(v, first and first[-1] == int(cam.strobe_delay_us), f'strobe delay sent when switching to hardware trigger: {first} (camera {int(cam.strobe_delay_us)} us)')
+    old_constant = int(cam.exposure_delay_us + 10 * cam.pixel_size_byte * (3036 - 1))
+    problem(v, cam.readout_us is not None and cam.strobe_delay_us < old_constant, f'measured strobe delay {cam.strobe_delay_us / 1000:.1f} ms (IMX226 constants would give {old_constant / 1000:.1f} ms)')
+    before = int(cam.strobe_delay_us)
+    cam.set_pixel_format('MONO8' if cam.pixel_format != 'MONO8' else 'MONO16')
+    live.set_microscope_mode(live.currentConfiguration)
+    after = int(cam.strobe_delay_us)
+    problem(v, after != before and h.obs['strobe_cmds'][-1:] == [after], f'after a pixel format change the new strobe delay is sent: {before} -> {after} us, sent {h.obs["strobe_cmds"]}')
+    setup_flexible(h, n_pos=2, nt=1, channels=2)
+    h.obs['frames'] = []
+    click_start_stop(h)
+    ok = wait_finished(h, 1, 60)
+    frames = h.obs['frames']
+    problem(v, ok and len(frames) == 4 and all(f[2] is not None for f in frames), f'hardware-triggered acquisition: {len(frames)} images, {sum(f[2] is None for f in frames)} missing')
+    live.set_trigger_mode(TriggerMode.SOFTWARE)
+    report(h, v, dict(frames=frames))
 
 
 # ------------------------------------------------------------------------------------------------------------------

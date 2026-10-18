@@ -488,11 +488,14 @@ class Camera(object):
         self.pixel_size_byte = 1
 
         # below are values for IMX226 (MER2-1220-32U3M) - to make configurable 
+        # (towbinlab: only used as a fallback; the rolling-shutter readout is now measured on the camera itself,
+        #  see _update_readout_timing - for the IMX178 these values made the hardware-trigger exposure far too long)
         self.row_period_us = 10
         self.row_numbers = 3036
         self.exposure_delay_us_8bit = 650
         self.exposure_delay_us = self.exposure_delay_us_8bit*self.pixel_size_byte
-        self.strobe_delay_us = self.exposure_delay_us + self.row_period_us*self.pixel_size_byte*(self.row_numbers-1)
+        self.readout_us = None # measured readout of the current ROI / bit depth (None: use the constants above)
+        self.strobe_delay_us = int(self.exposure_delay_us + self._readout_time_us())
 
         self.pixel_format = None # use the default pixel format
 
@@ -679,8 +682,40 @@ class Camera(object):
             # set the camera exposure time such that the active exposure time (illumination on time) is the desired value
             self.exposure_time = exposure_time
             # add an additional 500 us so that the illumination can fully turn off before rows start to end exposure
-            camera_exposure_time = self.exposure_delay_us + self.exposure_time*1000 + self.row_period_us*self.pixel_size_byte*(self.row_numbers-1) + 500 # add an additional 500 us so that the illumination can fully turn off before rows start to end exposure
+            camera_exposure_time = self.exposure_delay_us + self.exposure_time*1000 + self._readout_time_us() + 500 # add an additional 500 us so that the illumination can fully turn off before rows start to end exposure
             node_exposure_time.SetValue(camera_exposure_time)
+
+    def _readout_time_us(self):
+        """Time from the first to the last row starting its exposure (rolling shutter)."""
+        if self.readout_us is not None:
+            return self.readout_us
+        return self.row_period_us*self.pixel_size_byte*(self.row_numbers-1)
+
+    def _update_readout_timing(self):
+        """towbinlab: measure the rolling-shutter readout of the current ROI and bit depth on the camera: with a short
+        exposure the maximum frame rate is limited by the readout, so readout <= 1 / max frame rate. Using 1 / max frame
+        rate errs on the safe side (slightly longer than the readout: never a partly lit image in hardware-trigger mode).
+        Falls back to the old constants if the camera does not offer the nodes. Call while not streaming."""
+        try:
+            nodemap = self.camera.GetNodeMap()
+            node_exposure = PySpin.CFloatPtr(nodemap.GetNode('ExposureTime'))
+            node_rate = PySpin.CFloatPtr(nodemap.GetNode('AcquisitionFrameRate'))
+            if not (PySpin.IsReadable(node_exposure) and PySpin.IsWritable(node_exposure) and PySpin.IsReadable(node_rate)):
+                raise ValueError('ExposureTime / AcquisitionFrameRate not available')
+            old = node_exposure.GetValue()
+            node_exposure.SetValue(max(node_exposure.GetMin(), 100.0)) # short exposure: the frame rate is limited by the readout
+            max_rate = node_rate.GetMax()
+            node_exposure.SetValue(old)
+            if not max_rate or max_rate <= 0:
+                raise ValueError('no maximum frame rate')
+            self.readout_us = 1e6 / max_rate
+        except Exception as e:
+            print('FLIR: readout time could not be measured (' + str(e) + '); using the default constants')
+            self.readout_us = None
+        self.exposure_delay_us = self.exposure_delay_us_8bit*self.pixel_size_byte
+        self.strobe_delay_us = int(self.exposure_delay_us + self._readout_time_us())
+        print('FLIR: rolling-shutter readout ' + str(round(self._readout_time_us() / 1000, 2)) + ' ms, strobe delay ' + str(round(self.strobe_delay_us / 1000, 2)) + ' ms')
+        return self.readout_us
 
     def update_camera_exposure_time(self):
         self.set_exposure_time(self.exposure_time)
@@ -945,12 +980,12 @@ class Camera(object):
         else:
             print("pixel format is not writable")
 
+        # update the exposure delay and strobe delay (towbinlab: readout measured for the new bit depth)
+        self._update_readout_timing()
+        self.update_camera_exposure_time()
+
         if was_streaming:
            self.start_streaming()
-
-        # update the exposure delay and strobe delay
-        self.exposure_delay_us = self.exposure_delay_us_8bit*self.pixel_size_byte
-        self.strobe_delay_us = self.exposure_delay_us + self.row_period_us*self.pixel_size_byte*(self.row_numbers-1)
 
     def set_continuous_acquisition(self):
         self.nodemap = self.camera.GetNodeMap()
@@ -1154,6 +1189,11 @@ class Camera(object):
                 print("OffsetY is not implemented or not writable")
 
         
+        # towbinlab: the readout depends on the number of rows
+        if self.camera is not None and (width is not None or height is not None):
+            self._update_readout_timing()
+            self.update_camera_exposure_time()
+
         # restart streaming if it was previously on
         if was_streaming == True:
             self.start_streaming()

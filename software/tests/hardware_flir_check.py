@@ -18,7 +18,8 @@ Checks:
      carry the exposure set for it, or the one of the previous channel? (the 'exposure of channel n-1' bug)
   4. live <-> acquisition switches (callback on/off) many times: no error, no stale frame afterwards
   5. no trigger: read_frame returns None after its timeout, and raises after 3 failures in a row
-  6. hardware trigger mode settings (exposure includes the rolling-shutter readout); no trigger pulses are sent
+  6. rolling-shutter readout measured on the camera (8 and 16 bit) and the resulting hardware-trigger timing
+     (strobe delay, camera exposure); no trigger pulses are sent
 """
 import os
 import sys
@@ -214,13 +215,28 @@ def main():
     img, row = snap(cam, 10, 'after timeouts')
     check('camera works again after the timeouts', img is not None)
 
-    # 6. hardware trigger settings (no pulses are sent)
+    # 6. hardware trigger settings (no pulses are sent) and the measured rolling-shutter readout
+    nmap = cam.camera.GetNodeMap()
+    for name in ('SensorShutterMode', 'AdcBitDepth', 'PixelFormat'):
+        try:
+            say(f'{name}: ' + PySpin.CEnumerationPtr(nmap.GetNode(name)).GetCurrentEntry().GetSymbolic())
+        except Exception:
+            pass
+    old_const = lambda c: c.row_period_us * c.pixel_size_byte * (c.row_numbers - 1)
+    for fmt in ([a.pixel_format] if a.quick else ['MONO8', a.pixel_format]):
+        cam.set_pixel_format(fmt)
+        r = cam.readout_us
+        check(f'{fmt}: rolling-shutter readout measured on the camera', r is not None,
+              f'{r / 1000:.2f} ms (IMX226 constants: {old_const(cam) / 1000:.2f} ms)' if r is not None else 'fallback to the IMX226 constants')
+        frames.append(dict(test='readout', set_exposure_ms=None, got_image=None, total_s=None, camera_exposure_ms=None,
+                           camera_frame_id=None, dtype=fmt, shape=None, mean=r))
     cam.set_hardware_triggered_acquisition()
     cam.set_exposure_time(10)
     hw_exp = PySpin.CFloatPtr(cam.camera.GetNodeMap().GetNode('ExposureTime')).GetValue()
     src = PySpin.CEnumerationPtr(cam.camera.GetNodeMap().GetNode('TriggerSource')).GetCurrentEntry().GetSymbolic()
     check('hardware trigger: source Line2', src == 'Line2', src)
-    say(f'hardware trigger: camera exposure for 10 ms illumination = {hw_exp / 1000:.1f} ms (includes the rolling-shutter readout)')
+    say(f'hardware trigger ({cam.pixel_format}): strobe delay {cam.strobe_delay_us / 1000:.2f} ms, camera exposure for 10 ms '
+        f'illumination = {hw_exp / 1000:.1f} ms (light starts after the strobe delay, when all rows are exposing)')
     cam.set_software_triggered_acquisition()
 
     try:

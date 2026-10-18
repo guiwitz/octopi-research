@@ -71,13 +71,14 @@ class ValueNode(Node):
     def SetValue(self, v, *a):
         if not self.writable:
             raise SpinnakerException(f'node {self.name} not writable', -2006)
-        if self.vmin is not None and v < self.vmin or self.vmax is not None and v > self.vmax:
+        vmax = self.GetMax()
+        if self.vmin is not None and v < self.vmin or vmax is not None and v > vmax:
             raise SpinnakerException(f'{self.name}: value {v} out of range [{self.vmin}, {self.vmax}]', -2002)
         self.value = type(self.value)(v) if not isinstance(self.value, bool) else bool(v)
         self._changed()
 
     def GetMin(self): return self.vmin
-    def GetMax(self): return self.vmax
+    def GetMax(self): return self.vmax() if callable(self.vmax) else self.vmax
     def GetInc(self): return self.inc
 
 
@@ -274,7 +275,7 @@ class FakeCamera:
               self.n_offy, self.n_trigger_software,
               IntegerNode('WidthMax', SENSOR_W, writable=False), IntegerNode('HeightMax', SENSOR_H, writable=False),
               IntegerNode('SensorWidth', SENSOR_W, writable=False), IntegerNode('SensorHeight', SENSOR_H, writable=False),
-              BooleanNode('AcquisitionFrameRateEnable', False), FloatNode('AcquisitionFrameRate', 30.0, 1.0, 59.6),
+              BooleanNode('AcquisitionFrameRateEnable', False), FloatNode('AcquisitionFrameRate', 30.0, 1.0, self._max_frame_rate),
               IntegerNode('DeviceLinkThroughputLimit', 380000000, 10000000, 380000000),
               BooleanNode('GammaEnable', True), BooleanNode('ReverseX', False), BooleanNode('ReverseY', False),
               EnumNode('LineSelector', ['Line0', 'Line1', 'Line2', 'Line3'], 'Line0'),
@@ -372,6 +373,15 @@ class FakeCamera:
             self._log('unregister')
 
     # --- triggers
+    def sensor_readout_s(self):
+        """IMX178-like rolling-shutter readout of the current ROI: 16.8 ms (8 bit) / 33.6 ms (>8 bit ADC) for 2048 rows."""
+        full = 1 / 59.6 if self.n_pixel_format.symbolic == 'Mono8' else 2 / 59.6
+        return full * self.n_height.value / SENSOR_H
+
+    def _max_frame_rate(self):
+        """as on the camera: limited by exposure and by readout (both overlap: the larger one counts)"""
+        return 1.0 / max(self.sensor_readout_s(), self.n_exposure.value / 1e6 + 1e-4)
+
     def _exposure_s(self):
         return self.n_exposure.value / 1e6
 

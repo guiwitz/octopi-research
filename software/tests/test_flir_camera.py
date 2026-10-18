@@ -174,6 +174,49 @@ def test_two_threads_use_the_camera():
     assert fake.n_triggers > 5          # extra triggers from the other thread pile up in the buffer: wrong images
 
 
+def test_readout_measured_for_imx178_not_imx226_constants():
+    """Hardware trigger, rolling shutter: the light must wait until the last row exposes (strobe delay) and the camera
+    exposure must cover light + readout. The readout is measured on the camera (1 / max frame rate at short exposure)
+    instead of the IMX226 constants (3036 rows x 10 us x bytes per pixel)."""
+    cam, fake = new_camera('MONO16')
+    true_readout_us = fake.sensor_readout_s() * 1e6
+    old_constant_us = 10 * 2 * (3036 - 1)
+    assert cam.readout_us is not None, 'readout was not measured'
+    assert cam.readout_us >= true_readout_us - 1, (cam.readout_us, true_readout_us)    # never shorter than the sensor
+    assert cam.readout_us < old_constant_us, (cam.readout_us, old_constant_us)
+    cam.set_hardware_triggered_acquisition()
+    cam.set_exposure_time(10)
+    expected = cam.exposure_delay_us + 10000 + cam.readout_us + 500
+    assert abs(fake.n_exposure.value - expected) < 1, (fake.n_exposure.value, expected)
+    assert cam.strobe_delay_us == int(cam.exposure_delay_us + cam.readout_us)
+    print(f'    MONO16 full frame: readout {cam.readout_us / 1000:.1f} ms (old constants {old_constant_us / 1000:.1f} ms), '
+          f'camera exposure for 10 ms light {fake.n_exposure.value / 1000:.1f} ms')
+
+
+def test_readout_follows_bit_depth_and_roi():
+    cam, fake = new_camera('MONO16')
+    r16 = cam.readout_us
+    cam.set_pixel_format('MONO8')
+    r8 = cam.readout_us
+    assert abs(r8 - r16 / 2) < r16 * 0.02, (r8, r16)
+    cam.set_ROI(0, 0, 3072, 1024)
+    assert abs(cam.readout_us - r8 / 2) < r8 * 0.02, (cam.readout_us, r8)
+    assert cam.readout_us >= fake.sensor_readout_s() * 1e6 - 1
+
+
+def test_readout_fallback_when_camera_has_no_frame_rate_node():
+    fake = fake_pyspin.reset()
+    del fake.nodemap.nodes['AcquisitionFrameRate']
+    del fake.nodemap.nodes['AcquisitionFrameRateEnable']
+    cam = cf.Camera(sn=None)
+    try:
+        cam.open()
+    except Exception:
+        pass                       # open() itself sets the frame rate; the fallback below is what matters
+    assert cam._update_readout_timing() is None
+    assert cam._readout_time_us() == cam.row_period_us * cam.pixel_size_byte * (cam.row_numbers - 1)
+
+
 if __name__ == '__main__':
     fails = 0
     for n, f in list(globals().items()):

@@ -645,7 +645,8 @@ class LiveController(QObject):
                 self._stop_triggerred_acquisition()
             # self.camera.reset_camera_acquisition_counter()
             self.camera.set_hardware_triggered_acquisition()
-            self.microcontroller.set_strobe_delay_us(self.camera.strobe_delay_us)
+            self.microcontroller.set_strobe_delay_us(int(self.camera.strobe_delay_us))
+            self._strobe_delay_sent = int(self.camera.strobe_delay_us)
             if self.is_live and self.use_internal_timer_for_hardware_trigger:
                 self._start_triggerred_acquisition()
         if mode == TriggerMode.CONTINUOUS: 
@@ -674,6 +675,7 @@ class LiveController(QObject):
         # set camera exposure time and analog gain
         self.camera.set_exposure_time(self.currentConfiguration.exposure_time)
         self.camera.set_analog_gain(self.currentConfiguration.analog_gain)
+        self._update_strobe_delay()
 
         # set illumination
         if self.control_illumination:
@@ -684,6 +686,20 @@ class LiveController(QObject):
             if self.control_illumination:
                 self.turn_on_illumination()
             self.timer_trigger.start()
+
+    def _update_strobe_delay(self):
+        """towbinlab: in hardware-trigger mode the microcontroller waits strobe_delay_us after the trigger before it
+        switches the light on. The camera's value changes with pixel format and ROI (measured rolling-shutter
+        readout); before, it was only sent when the trigger mode was switched, so it could be stale."""
+        if self.trigger_mode != TriggerMode.HARDWARE:
+            return
+        try:
+            delay = int(self.camera.strobe_delay_us)
+        except (AttributeError, TypeError, ValueError):
+            return
+        if delay != getattr(self, '_strobe_delay_sent', None):
+            self.microcontroller.set_strobe_delay_us(delay)
+            self._strobe_delay_sent = delay
 
     def get_trigger_mode(self):
         return self.trigger_mode
