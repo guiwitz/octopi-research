@@ -5,6 +5,30 @@ positions and time points, channels, autofocus, waiting). It never controls hard
 through the high-level `scope` object, which uses the same tested movement, autofocus and imaging code as the
 standard acquisition. The standard acquisition (Flexible Multipoint tab) is unchanged.
 
+## Documenting a job (shown when the file is opened)
+
+When you select a job file in the JOBs tab, the log (and the terminal) shows its documentation. Write it like this:
+
+```python
+"""One-line title of the job."""
+
+# ---- settings: edit these ----
+CHANNELS = ["BF LED matrix full", "488"]
+N_TIMEPOINTS = 12
+
+def run_job(scope):
+    """WHAT IT DOES: ... (what is imaged, in which order, how often)
+
+    YOU PROVIDE:
+      - Positions: what has to be defined in the Flexible Multipoint tab (IDs / groups)
+      - Settings at the top of the file, and what they mean
+    """
+    ...
+```
+
+Shown: the one-line title (module docstring), the docstring of `run_job`, and all UPPER_CASE settings of the file with their
+current values. Files without a docstring get a reminder to add one. The three files in `job_examples/` follow this pattern.
+
 ## Live view while a job runs
 
 The JOBs tab shows the state of a running job (updated twice per second; no matplotlib needed):

@@ -25,8 +25,7 @@ class JobResult:
     events: list = field(default_factory=list)      # planned operations (dry run with record=True), see plot.py
 
 
-def load_job(path):
-    """Import the job file and return its run_job function."""
+def _load_module(path):
     if not os.path.isfile(path):
         raise JobError(f'job file not found: {path}')
     name = 'squid_job_' + str(abs(hash(os.path.abspath(path))))
@@ -38,10 +37,51 @@ def load_job(path):
         raise JobError(f'syntax error in {os.path.basename(path)}, line {e.lineno}: {e.msg}')
     except Exception as e:
         raise JobError(f'error while loading {os.path.basename(path)}: {e!r}\n' + _user_traceback(path))
+    return module
+
+
+def load_job(path):
+    """Import the job file and return its run_job function."""
+    module = _load_module(path)
     fn = getattr(module, 'run_job', None)
     if not callable(fn):
         raise JobError(f'{os.path.basename(path)} must define  def run_job(scope):')
     return fn
+
+
+def job_documentation(path):
+    """Text shown when a job file is opened in the JOBs tab: the docstring of run_job (what the job does and what the
+    user has to provide), the one-line title (module docstring) and the settings (UPPER_CASE names) of the file."""
+    import inspect
+    name = os.path.basename(path)
+    try:
+        module = _load_module(path)
+    except JobError as e:
+        return f'=== {name} ===\nThe job file could not be read:\n{e}'
+    fn = getattr(module, 'run_job', None)
+    lines = [f'=== {name} ===']
+    title = inspect.getdoc(module)
+    if title:
+        lines.append(title)
+    if not callable(fn):
+        lines.append('WARNING: the file does not define  def run_job(scope):')
+    else:
+        doc = inspect.getdoc(fn)
+        if doc:
+            lines.append('')
+            lines.append(doc)
+        else:
+            lines.append('')
+            lines.append('(no description: add a docstring to run_job(scope) that says what the job does and what the user has to provide)')
+    settings = [(k, v) for k, v in vars(module).items()
+                if k.isupper() and not k.startswith('_') and not callable(v) and not inspect.ismodule(v)]
+    if settings:
+        lines.append('')
+        lines.append('Settings in this file (edit the file to change them):')
+        for k, v in settings:
+            r = repr(v)
+            lines.append(f'  {k} = {r if len(r) <= 100 else r[:97] + "..."}')
+    return '\n'.join(lines)
 
 
 def _user_traceback(path):

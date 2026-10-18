@@ -14,7 +14,7 @@ from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog,
                             QMessageBox, QPlainTextEdit, QDialog, QDoubleSpinBox)
 
-from control.jobs import make_points, dry_run, describe, JobError
+from control.jobs import make_points, dry_run, describe, job_documentation, JobError
 from control.jobs_live import LiveJobView
 
 
@@ -119,6 +119,7 @@ class JobsWidget(QFrame):
         self.setLayout(layout)
 
         self.btn_select_job.clicked.connect(self.select_job)
+        self.lineEdit_job.editingFinished.connect(self._job_path_edited)
         self.btn_example.clicked.connect(self.new_from_example)
         self.btn_savingDir.clicked.connect(self.select_saving_dir)
         self.btn_check.clicked.connect(self.check_job)
@@ -184,12 +185,30 @@ class JobsWidget(QFrame):
         QMessageBox.warning(self, title, text)
 
     # --- buttons
+    def show_documentation(self):
+        """Print what the job does and what the user has to provide (docstring of run_job) in the log and the terminal."""
+        path = self.lineEdit_job.text().strip()
+        if not path:
+            return None
+        self._doc_shown_for = path
+        text = job_documentation(path)
+        self.log.appendPlainText(text + '\n')
+        print(text + '\n')
+        return text
+
+    def _job_path_edited(self):
+        path = self.lineEdit_job.text().strip()
+        if path and path != getattr(self, '_doc_shown_for', None) and os.path.isfile(path):
+            self._save_cache()
+            self.show_documentation()
+
     def select_job(self):
         start = os.path.dirname(self.lineEdit_job.text()) or EXAMPLE_DIR
         path, _ = QFileDialog.getOpenFileName(self, 'Select job file', start, 'Python files (*.py);;All files (*)')
         if path:
             self.lineEdit_job.setText(path)
             self._save_cache()
+            self.show_documentation()
             self.check_job()
 
     def new_from_example(self):
@@ -206,6 +225,7 @@ class JobsWidget(QFrame):
             self.lineEdit_job.setText(dst)
             self._save_cache()
             self.append_log(f'copied {os.path.basename(src)} to {dst}; edit it with any text editor, then press "Check job".')
+            self.show_documentation()
 
     def select_saving_dir(self):
         d = QFileDialog.getExistingDirectory(self, 'Select folder')

@@ -397,6 +397,35 @@ def test_observer_errors_do_not_break_the_job():
     assert res.status == 'completed' and res.stats['images'] == 1
 
 
+def test_job_documentation():
+    from control.jobs import job_documentation
+    job = make_job(textwrap.dedent("""
+        \"\"\"Title line.\"\"\"
+        CHANNELS = ['488']
+        N = 3
+        _private = 1
+        def helper(): pass
+        def run_job(scope):
+            \"\"\"WHAT IT DOES: nothing much.
+
+            YOU PROVIDE: positions.
+            \"\"\"
+    """))
+    t = job_documentation(job)
+    assert 'Title line.' in t and 'WHAT IT DOES: nothing much.' in t and 'YOU PROVIDE: positions.' in t
+    assert "CHANNELS = ['488']" in t and 'helper' not in t and '_private' not in t
+    assert 'no description' in job_documentation(make_job('def run_job(scope):\n    pass\n'))
+    assert 'must define' in job_documentation(make_job('X = 1\n')) or 'WARNING' in job_documentation(make_job('X = 1\n'))
+    assert 'could not be read' in job_documentation(make_job('def run_job(scope)\n    pass\n'))
+    assert 'could not be read' in job_documentation('/nonexistent/job.py')
+    # all shipped examples document themselves
+    ex = os.path.join(SOFTWARE_DIR, 'job_examples')
+    for f in sorted(os.listdir(ex)):
+        if f.endswith('.py') and f[0].isdigit() and not f.startswith('01a'):
+            txt = job_documentation(os.path.join(ex, f))
+            assert 'WHAT IT DOES' in txt and 'YOU PROVIDE' in txt, f
+
+
 if __name__ == '__main__':
     fails = 0
     for name, fn in sorted(globals().items()):

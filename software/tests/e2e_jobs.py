@@ -170,6 +170,8 @@ def main():
         jw.lineEdit_job.setText(job1)
         res = jw.check_job()
         record('dry run of job 1 completes', res is not None and res.status == 'completed', str(res and res.error))
+        doc = jw.show_documentation()
+        record('opening a job shows its documentation', doc is not None and '=== job1.py' in doc, str(doc)[:80])
         plan = jw.show_plan()
         record('job plan graph opens', plan is not None and plan.status == 'completed' and len(getattr(jw, 'plan_dialog').canvas.figure.axes) >= 5)
         jw.plan_dialog.close()
