@@ -77,6 +77,8 @@ def setup():
 
     def send_command(self, command):
         kind = command[1]
+        if kind == 42:
+            obs.setdefault('joystick_cmds', []).append(int(command[2]))
         with lock:
             now = time.time()
             self._busy_until = max(getattr(self, '_busy_until', 0), now) + (0.25 if kind in MOVES else 0.01)
@@ -275,7 +277,7 @@ def problem(verdicts, ok, text):
 # ------------------------------------------------------------------------------------------------------------------
 @scenario('S1')
 def s1_restart_immediately_after_stop(h):
-    """Stop in the middle of a scan and press Start again immediately (the button is usable at once)."""
+    """Stop in the middle of a scan and press Start again immediately (while the old run is still stopping)."""
     setup_flexible(h, n_pos=6, nt=2, dt=0)
     click_start_stop(h)
     pump(h, 1.5)
@@ -284,14 +286,17 @@ def s1_restart_immediately_after_stop(h):
     s_after_stop['old_worker_running'] = h.obs['workers'] > 0
     s_after_stop['start_usable'] = (not h.mp.btn_startAcquisition.isChecked()) and h.mp.btn_startAcquisition.isEnabled()
     pump(h, 0.05)
-    click_start_stop(h)               # start again
-    ok = wait_finished(h, 2, 60)
+    click_start_stop(h)               # try to start again
+    ok = wait_finished(h, 1, 60)
+    pump(h, 1.0)
     v = []
-    problem(v, not (s_after_stop['start_usable'] and s_after_stop['old_worker_running']), 'after Stop, Start is usable again before the old acquisition has ended' if (s_after_stop['start_usable'] and s_after_stop['old_worker_running']) else 'Start is blocked until the old acquisition has ended')
+    usable = s_after_stop['start_usable'] and s_after_stop['old_worker_running']
+    problem(v, not usable, 'after Stop, Start is usable again before the old acquisition has ended' if usable else 'Start is locked until the old acquisition has ended')
     problem(v, h.obs['max_workers'] <= 1, f"acquisition workers running at the same time: {h.obs['max_workers']}")
     problem(v, h.obs['replaced_running_thread'] == 0, 'Start replaced a still running acquisition thread ("QThread: Destroyed while thread is still running" -> crash)' if h.obs['replaced_running_thread'] else 'no running thread was replaced')
-    problem(v, ok, 'both runs ended')
-    report(h, v, dict(after_stop=s_after_stop, end=gui_state(h)))
+    end = gui_state(h)
+    problem(v, ok and not end['start_checked'] and h.mp.btn_startAcquisition.isEnabled(), 'the stopped run ended and Start is usable again afterwards' if ok else 'the stopped run did not end')
+    report(h, v, dict(after_stop=s_after_stop, end=end))
 
 
 @scenario('S2')
@@ -385,23 +390,27 @@ def s5_camera_read_raises(h):
 
 @scenario('S5b')
 def s5b_camera_error_then_stop_and_start(h):
-    """After a camera read error the user presses Stop, then Start again (what one does when the GUI seems stuck)."""
+    """After a camera read error: is the GUI released (or does the user have to press Stop), and can a new run start?"""
     setup_flexible(h, n_pos=3, nt=1)
     h.fault['read_raise_at'] = h.fault['reads'] + 3
     click_start_stop(h)
-    pump(h, 6)
-    stuck = gui_state(h)
-    click_start_stop(h)            # Stop
-    pump(h, 3)
-    after_stop = gui_state(h)
-    click_start_stop(h)            # Start again
-    ok = wait_finished(h, 1, 30)
+    wait_finished(h, 1, 10)
+    pump(h, 1.0)
+    after_error = gui_state(h)
+    err = getattr(h.mpc, 'last_acquisition_error', None)
+    stuck = after_error['start_checked']
+    if stuck:
+        click_start_stop(h)        # what a user does: Stop ...
+        pump(h, 3)
+    n0 = h.obs['finished_signals']
+    click_start_stop(h)            # ... and Start again
+    ok = wait_finished(h, n0 + 1, 30)
     v = []
-    problem(v, not stuck['start_checked'], 'GUI left in the "running" state after the camera error (locked tabs/stage, live without images)')
-    problem(v, not stuck['illumination_on'], 'illumination left ON after the camera error')
-    problem(v, after_stop['tabs_enabled'], 'Stop does not unlock the GUI (the "finished" signal never comes)')
-    problem(v, ok, 'a new acquisition can be started and finishes')
-    report(h, v, dict(stuck=stuck, after_stop=after_stop))
+    problem(v, not stuck, 'GUI left in the "running" state after the camera error' if stuck else 'GUI released after the camera error (no Stop needed)')
+    problem(v, not after_error['illumination_on'], 'illumination left ON after the camera error' if after_error['illumination_on'] else 'illumination off after the camera error')
+    problem(v, bool(err), 'the user is told why the acquisition stopped' if err else 'no message to the user')
+    problem(v, ok, 'a new acquisition can be started and finishes' if ok else 'a new acquisition could not be run')
+    report(h, v, dict(after_error=after_error, error=err))
 
 
 @scenario('S6')
@@ -466,31 +475,51 @@ def s9_stop_during_autofocus(h):
 
 @scenario('S10')
 def s10_user_actions_during_acquisition(h):
-    """While an acquisition runs: are the Autofocus button, the Live button, the positions Next/Previous (Alt Gr + arrow)
-    and the Positions window still usable, and do they move the stage / trigger the camera from the GUI thread?"""
+    """While an acquisition runs, a user clicks / types / scrolls (real Qt input events): Live, Autofocus, positions
+    Next (button and Alt Gr + arrow), exposure field, Positions window. Nothing may reach the hardware; Stop must work."""
+    from qtpy.QtTest import QTest
+    from qtpy.QtCore import Qt, QPoint
+    from qtpy.QtGui import QWheelEvent
     setup_flexible(h, n_pos=4, nt=3, dt=0)
     mp, win = h.mp, h.win
-    mp.checkbox_move_to_selected.setChecked(True) if hasattr(mp, 'checkbox_move_to_selected') else None
+    if hasattr(mp, 'checkbox_move_to_selected'):
+        mp.checkbox_move_to_selected.setChecked(True)
+    win.activateWindow()
     click_start_stop(h)
     pump(h, 1.0)
-    enabled = dict(af_button=win.autofocusWidget.btn_autofocus.isEnabled() and win.autofocusWidget.btn_autofocus.isVisibleTo(win),
-                   live_button=win.liveControlWidget.btn_live.isEnabled(),
-                   flexible_tab_enabled=win.recordTabWidget.isTabEnabled(win.recordTabWidget.indexOf(mp)),
-                   positions_window_next=mp.towbin_widget.isEnabled() if hasattr(mp, 'towbin_widget') else None)
-    g0, af0 = h.obs['gui_moves_during_acq'], h.obs['af_terminated']
-    mp.next(); pump(h, 0.3); mp.previous(); pump(h, 0.3)
-    moves_next = h.obs['gui_moves_during_acq'] - g0
-    win.autofocusWidget.btn_autofocus.click(); pump(h, 1.5)
-    win.liveControlWidget.btn_live.click(); pump(h, 1.0); win.liveControlWidget.btn_live.click(); pump(h, 0.2)
-    click_start_stop(h)
-    wait_finished(h, 1, 40)
+    g0, t0 = h.obs['gui_moves_during_acq'], h.obs['gui_triggers_during_acq']
+    live_before = win.liveController.is_live
+    # mouse clicks
+    QTest.mouseClick(win.liveControlWidget.btn_live, Qt.LeftButton); pump(h, 0.8)
+    QTest.mouseClick(win.autofocusWidget.btn_autofocus, Qt.LeftButton); pump(h, 0.5)
+    for name in ('btn_next', 'btn_next_location', 'btn_next_position'):
+        b = getattr(mp, name, None) or getattr(getattr(mp, 'towbin_widget', None), name, None)
+        if b is not None:
+            QTest.mouseClick(b, Qt.LeftButton); pump(h, 0.3)
+    # keyboard shortcut and typing
+    QTest.keyClick(win, Qt.Key_Right, Qt.ControlModifier | Qt.AltModifier); pump(h, 0.3)
+    QTest.keyClick(mp.table_location_list, Qt.Key_Delete); pump(h, 0.3)
+    n_positions = len(mp.location_list)
+    exp = win.liveControlWidget.entry_exposureTime
+    v0 = exp.value()
+    exp.setFocus(); QTest.keyClick(exp, Qt.Key_Up); pump(h, 0.2)
+    exp_changed = exp.value() != v0
     v = []
-    problem(v, moves_next == 0, f'Next/Previous (Alt Gr + arrow, Positions window) moved the stage during the acquisition: {moves_next} move commands from the GUI')
-    problem(v, not enabled['af_button'], 'Autofocus button ' + ('USABLE' if enabled['af_button'] else 'locked') + ' during the acquisition')
-    problem(v, not enabled['live_button'], 'Live button ' + ('USABLE during the acquisition: live triggers the camera and switches the illumination in parallel to the acquisition' if enabled['live_button'] else 'locked during the acquisition'))
+    problem(v, win.liveController.is_live == live_before, 'Live button click during the acquisition ' + ('was ignored' if win.liveController.is_live == live_before else 'STARTED LIVE'))
+    problem(v, h.obs['gui_moves_during_acq'] == g0, f"stage moves from the GUI during the acquisition: {h.obs['gui_moves_during_acq'] - g0}")
+    problem(v, h.obs['gui_triggers_during_acq'] == t0, f"camera triggers from the GUI during the acquisition: {h.obs['gui_triggers_during_acq'] - t0}")
     problem(v, h.obs['concurrent_camera_reads'] == 0, f"camera read by two threads at the same time: {h.obs['concurrent_camera_reads']}")
-    problem(v, h.obs['gui_triggers_during_acq'] == 0, f"camera triggers from the GUI thread during the acquisition: {h.obs['gui_triggers_during_acq']}")
-    report(h, v, dict(enabled=enabled, end=gui_state(h)))
+    problem(v, not exp_changed, 'exposure field ' + ('CHANGED by the keyboard' if exp_changed else 'could not be changed'))
+    problem(v, n_positions == 4, f'positions after pressing Delete in the table: {n_positions} (4 expected)')
+    # Stop with a real mouse click must still work
+    QTest.mouseClick(mp.btn_startAcquisition, Qt.LeftButton)
+    ok = wait_finished(h, 1, 40)
+    problem(v, ok, 'Stop (real mouse click) ended the acquisition' if ok else 'Stop click did not end the acquisition')
+    pump(h, 0.5)
+    exp.setFocus(); QTest.keyClick(exp, Qt.Key_Up); pump(h, 0.2)
+    problem(v, exp.value() != v0, 'after the acquisition the controls work again' if exp.value() != v0 else 'controls still locked after the acquisition')
+    lock = getattr(win, 'inputLock', None)
+    report(h, v, dict(blocked_inputs=getattr(lock, 'blocked_count', None), end=gui_state(h)))
 
 
 @scenario('S11')
@@ -544,8 +573,66 @@ def s13_job_stop_restart(h):
     wait_finished(h, 2 if restarted else 1, 40)
     v = []
     problem(v, h.obs['max_workers'] <= 1, f"JOBs: workers at the same time after abort + immediate start: {h.obs['max_workers']}")
-    problem(v, h.obs['replaced_running_thread'] == 0, 'JOBs: Start replaced a running acquisition thread')
+    problem(v, h.obs['replaced_running_thread'] == 0, 'JOBs: Start replaced a running acquisition thread' if h.obs['replaced_running_thread'] else 'JOBs: Start is locked until the aborted job has ended')
     report(h, v, dict(after_abort=s, restarted_while_old_running=restarted))
+
+
+@scenario('S14')
+def s14_job_pause_unlocks_input(h):
+    """JOBs: the controls are locked while the job runs, usable while it is paused, locked again after resume."""
+    from qtpy.QtTest import QTest
+    from qtpy.QtCore import Qt
+    mp, jw, win = h.mp, h.win.jobsWidget, h.win
+    setup_flexible(h, n_pos=2, nt=1)
+    job = os.path.join(h.save, 'jp.py')
+    open(job, 'w').write('def run_job(scope):\n    for t in scope.timepoints(200, interval=1):\n        for p in scope.points():\n            scope.move_to(p)\n            scope.capture(scope.channels[0])\n')
+    win.recordTabWidget.setCurrentWidget(jw)
+    jw.lineEdit_job.setText(job)
+    jw.lineEdit_savingDir.setText(h.save)
+    QTest.mouseClick(jw.btn_start, Qt.LeftButton)
+    pump(h, 2.0)
+    exp = win.liveControlWidget.entry_exposureTime
+
+    def try_change():
+        v0 = exp.value()
+        exp.setFocus(); QTest.keyClick(exp, Qt.Key_Up); pump(h, 0.2)
+        changed = exp.value() != v0
+        exp.setValue(v0)
+        return changed
+    running_change = try_change()
+    QTest.mouseClick(jw.btn_pause, Qt.LeftButton)
+    t_end = time.time() + 20
+    while time.time() < t_end and not jw.paused:
+        pump(h, 0.1)
+    paused_change = try_change() if jw.paused else None
+    QTest.mouseClick(jw.btn_pause, Qt.LeftButton)        # resume
+    pump(h, 1.0)
+    resumed_change = try_change()
+    QTest.mouseClick(jw.btn_start, Qt.LeftButton)        # abort (confirmation skipped in tests)
+    ok = wait_finished(h, 1, 40)
+    v = []
+    problem(v, not running_change, 'while the job runs the exposure field ' + ('CAN be changed' if running_change else 'is locked'))
+    problem(v, paused_change is True, 'while the job is paused the exposure field ' + ('can be changed' if paused_change else 'is NOT usable' if paused_change is False else '(job did not pause)'))
+    problem(v, not resumed_change, 'after resume the exposure field ' + ('CAN be changed' if resumed_change else 'is locked again'))
+    problem(v, ok, 'job aborted with a real click on Abort' if ok else 'Abort click did not end the job')
+    report(h, v)
+
+
+@scenario('S15')
+def s15_joystick_disabled_during_acquisition(h):
+    """The microcontroller is told to ignore joystick and focus wheel during an acquisition (towbinlab firmware command 42)."""
+    setup_flexible(h, n_pos=2, nt=1)
+    h.obs['joystick_cmds'] = []
+    click_start_stop(h)
+    pump(h, 0.3)
+    during = list(h.obs['joystick_cmds'])
+    ok = wait_finished(h, 1, 30)
+    pump(h, 0.3)
+    after = list(h.obs['joystick_cmds'])
+    v = []
+    problem(v, during[:1] == [0], 'joystick disabled at the start: ' + str(during))
+    problem(v, ok and after[-1:] == [1], 'joystick enabled again at the end: ' + str(after))
+    report(h, v)
 
 
 # ------------------------------------------------------------------------------------------------------------------
