@@ -137,6 +137,7 @@ class CMD_SET:
     SEND_HARDWARE_TRIGGER = 30
     SET_STROBE_DELAY = 31
     SET_PIN_LEVEL = 41
+    SET_JOYSTICK_ENABLED = 42 # towbinlab firmware addition; ignored by older firmware
     INITIALIZE = 254
     RESET = 255
 

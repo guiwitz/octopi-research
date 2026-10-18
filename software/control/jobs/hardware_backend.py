@@ -55,6 +55,7 @@ class HardwareBackend(Backend):
         return new
 
     def on_pause(self):
+        self._joystick(True)          # the stage may be moved by hand while paused
         try:
             self.w.signal_job_message.emit('job paused: you can now change the positions and move the stage; press "Resume job" to continue')
         except Exception:
@@ -69,6 +70,16 @@ class HardwareBackend(Backend):
         except Exception:
             pass
         self._last_xy = None
+        self._joystick(False)
+
+    def _joystick(self, enabled):
+        try:
+            from control.core import LOCK_JOYSTICK_DURING_ACQUISITION
+            if LOCK_JOYSTICK_DURING_ACQUISITION:
+                self.mcu.set_joystick_enabled(enabled)
+                self.w.wait_till_operation_is_completed()
+        except Exception as e:
+            print('joystick lock not available: ' + str(e))
 
     def log(self, message):
         print('[job] ' + message)

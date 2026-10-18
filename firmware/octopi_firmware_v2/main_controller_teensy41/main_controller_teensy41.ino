@@ -65,6 +65,7 @@ static const int SET_PID_ARGUMENTS = 29;
 static const int SEND_HARDWARE_TRIGGER = 30;
 static const int SET_STROBE_DELAY = 31;
 static const int SET_PIN_LEVEL = 41;
+static const int SET_JOYSTICK_ENABLED = 42; // towbinlab: 0 = ignore joystick and focus wheel (during acquisitions), 1 = use them
 static const int INITIALIZE = 254;
 static const int RESET = 255;
 
@@ -300,6 +301,7 @@ elapsedMicros us_since_last_check_limit;
 PacketSerial joystick_packetSerial;
 static const int JOYSTICK_MSG_LENGTH = 10;
 bool flag_read_joystick = false;
+bool joystick_enabled = true;  // towbinlab: set by SET_JOYSTICK_ENABLED
 
 // joystick xy
 int16_t joystick_delta_x = 0;
@@ -336,12 +338,20 @@ void onJoystickPacketReceived(const uint8_t* buffer, size_t size)
   }
   else
   {
-    focusPosition = focusPosition + ( int32_t(uint32_t(buffer[0]) * 16777216 + uint32_t(buffer[1]) * 65536 + uint32_t(buffer[2]) * 256 + uint32_t(buffer[3])) - focuswheel_pos );
+    // towbinlab: while disabled the wheel is followed (no jump when it is enabled again) but z does not move
+    if (joystick_enabled)
+      focusPosition = focusPosition + ( int32_t(uint32_t(buffer[0]) * 16777216 + uint32_t(buffer[1]) * 65536 + uint32_t(buffer[2]) * 256 + uint32_t(buffer[3])) - focuswheel_pos );
     focuswheel_pos = int32_t(uint32_t(buffer[0]) * 16777216 + uint32_t(buffer[1]) * 65536 + uint32_t(buffer[2]) * 256 + uint32_t(buffer[3]));
   }
 
   joystick_delta_x = JOYSTICK_SIGN_X * int16_t( uint16_t(buffer[4]) * 256 + uint16_t(buffer[5]) );
   joystick_delta_y = JOYSTICK_SIGN_Y * int16_t( uint16_t(buffer[6]) * 256 + uint16_t(buffer[7]) );
+  if (!joystick_enabled)
+  {
+    // towbinlab: joystick ignored (the stage is stopped by the "joystick at rest" branch of the main loop)
+    joystick_delta_x = 0;
+    joystick_delta_y = 0;
+  }
   btns = buffer[8];
 
   // temporary
@@ -1459,6 +1469,13 @@ void loop() {
             int pin = buffer_rx[2];
             bool level = buffer_rx[3];
             digitalWrite(pin, level);
+            break;
+          }
+        case SET_JOYSTICK_ENABLED:
+          {
+            // towbinlab: the software disables joystick and focus wheel while an acquisition runs: touching them during
+            // a commanded move made the move never "complete" (z follows the focus wheel), which hung or crashed the software
+            joystick_enabled = buffer_rx[2] != 0;
             break;
           }
         case CONFIGURE_STAGE_PID:
