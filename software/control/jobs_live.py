@@ -308,6 +308,42 @@ if _QT:
                         p.drawText(QRectF(2 + k * (bw + gap), top, bw, h), Qt.AlignCenter, str(key + 1 if self.one_based else key))
             p.end()
 
+    class _FitLabel(QLabel):
+        """One-line bold label whose font is as large as fits the current width (at most `max_extra_pt` points above the
+        normal GUI font, never smaller than the normal font minus 2 pt)."""
+
+        def __init__(self, max_extra_pt=8, parent=None):
+            super().__init__('', parent)
+            self._base = self.font().pointSizeF() if self.font().pointSizeF() > 0 else 9.0
+            self._max_extra = max_extra_pt
+            self.setAlignment(Qt.AlignCenter)
+            self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)      # never widens the control panel
+            self._fit()
+
+        def setText(self, text):
+            if text != self.text():
+                super().setText(text)
+                self._fit()
+
+        def resizeEvent(self, ev):
+            super().resizeEvent(ev)
+            self._fit()
+
+        def _fit(self):
+            from qtpy.QtGui import QFontMetrics
+            text, avail = self.text(), max(20, self.width() - 12)
+            size = self._base + self._max_extra
+            f = self.font()
+            f.setBold(True)
+            while True:
+                f.setPointSizeF(size)
+                if size <= self._base - 2 or (QFontMetrics(f).horizontalAdvance(text) if hasattr(QFontMetrics, 'horizontalAdvance') else QFontMetrics(f).width(text)) <= avail:
+                    break
+                size -= 0.5
+            if abs(self.font().pointSizeF() - size) > 1e-6 or not self.font().bold():
+                self.setFont(f)
+            self.setMinimumHeight(QFontMetrics(f).height() + 4)
+
     class LiveJobView(QFrame):
         """Status of the running job; feed it with on_message() (connected to MultiPointController.signal_job_status)."""
 
@@ -315,15 +351,12 @@ if _QT:
             super().__init__(parent)
             self.model = JobProgress()
             self.label_head = QLabel('No job running')
-            f = self.label_head.font(); f.setPointSize(f.pointSize() + 3); f.setBold(True)
+            f = self.label_head.font(); f.setBold(True)      # same size as the rest of the GUI: it must fit the (fixed width) control panel
             self.label_head.setFont(f)
             self.label_head.setWordWrap(True)
             self.bar_countdown = QProgressBar(); self.bar_countdown.setTextVisible(False); self.bar_countdown.setFixedHeight(8)
             self.bar_overall = QProgressBar(); self.bar_overall.setFormat('images %v / %m'); self.bar_overall.setFixedHeight(16)
-            self.label_count = QLabel('')
-            fc = self.label_count.font(); fc.setPointSize(fc.pointSize() + 12); fc.setBold(True)
-            self.label_count.setFont(fc)
-            self.label_count.setAlignment(Qt.AlignCenter)
+            self.label_count = _FitLabel(max_extra_pt=8)
             self.label_count.setVisible(False)
             self.label_details = QLabel('')
             self.label_details.setWordWrap(True)

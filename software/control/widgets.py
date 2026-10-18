@@ -1888,6 +1888,10 @@ class MultiPointWidget(QFrame):
             msg.exec_()
             return
         if pressed:
+            from control.acq_summary import confirm_start
+            if not confirm_start(self, 'multipoint acquisition', self.multipointController, [item.text() for item in self.list_configurations.selectedItems()]):
+                self.btn_startAcquisition.setChecked(False)
+                return
             # @@@ to do: add a widgetManger to enable and disable widget 
             # @@@ to do: emit signal to widgetManager to disable other widgets
             self.setEnabled_all(False)
@@ -2401,6 +2405,10 @@ class MultiPointWidget2(QFrame):
                                 '\n\nThe experiment was not started. Please choose an existing base saving directory.')
             return
         if pressed:
+            from control.acq_summary import confirm_start
+            if not confirm_start(self, 'multipoint acquisition', self.multipointController, [item.text() for item in self.list_configurations.selectedItems()]):
+                self.btn_startAcquisition.setChecked(False)
+                return
             # @@@ to do: add a widgetManger to enable and disable widget 
             # @@@ to do: emit signal to widgetManager to disable other widgets
 

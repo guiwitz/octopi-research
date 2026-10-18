@@ -8,6 +8,7 @@ import os, sys, json, types, tempfile
 HERE=os.path.dirname(os.path.abspath(__file__)); SW=os.path.dirname(HERE)
 os.chdir(SW)  # configuration*.ini and cache/ are read relative to the software folder
 os.environ["QT_QPA_PLATFORM"]="offscreen"
+os.environ["SQUID_SKIP_CONFIRM"]="1"  # no confirmation window before acquisitions
 sys.path.insert(0,SW)
 from unittest.mock import MagicMock
 for m in ["napari","napari.utils","napari.utils.colormaps"]:

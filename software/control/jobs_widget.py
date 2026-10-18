@@ -308,6 +308,12 @@ class JobsWidget(QFrame):
             self._warn('Job', 'The job cannot be started:\n\n' + (res.error if res is not None and res.error else 'see the message in the JOBs tab'))
             return
         used = list(res.stats.get('per_channel', {}))
+        from control.acq_summary import confirm_start
+        if not confirm_start(self, 'job', self.mpc, used or [c.name for c in self.configurationManager.configurations],
+                             extra=f'{len(self._points())} positions; the job will take an estimated {res.duration_s / 60:.0f} min and take {res.stats.get("images", 0)} images.'):
+            self.btn_start.setChecked(False)
+            self.label_status.setText('Job not started (cancelled).')
+            return
         self._save_cache()
         # same preparation as a standard acquisition
         self.mpc.set_base_path(saving_dir)

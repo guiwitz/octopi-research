@@ -46,6 +46,7 @@ def main():
     os.chdir(SOFTWARE_DIR)
     sys.path.insert(0, SOFTWARE_DIR)
     os.environ['QT_API'] = 'pyqt5'
+    os.environ['SQUID_SKIP_CONFIRM'] = '1'      # no confirmation window (automated run)
     if args.simulation and os.environ.get('SQUID_E2E_OFFSCREEN'):
         os.environ['QT_QPA_PLATFORM'] = 'offscreen'
         from unittest.mock import MagicMock

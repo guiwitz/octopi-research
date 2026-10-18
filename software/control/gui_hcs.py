@@ -391,9 +391,11 @@ class OctopiGUI(QMainWindow):
             self.dock_wellSelection.setFixedHeight(self.dock_wellSelection.minimumSizeHint().height())
             dock_controlPanel = dock.Dock('Controls', autoOrientation = False)
             # dock_controlPanel.showTitleBar()
-            dock_controlPanel.addWidget(self.centralWidget)
+            from control.resizable_panel import ResizableControlPanel
+            self.controlPanel = ResizableControlPanel(self.centralWidget)   # scroll area: the divider to the image display can be dragged
+            dock_controlPanel.addWidget(self.controlPanel)
             dock_controlPanel.setStretch(x=1,y=None)
-            dock_controlPanel.setFixedWidth(dock_controlPanel.minimumSizeHint().width())
+            self._control_panel_width = self.controlPanel.sizeHint().width()
             main_dockArea = dock.DockArea()
             main_dockArea.addDock(dock_display)
             main_dockArea.addDock(self.dock_wellSelection,'bottom')
@@ -401,6 +403,8 @@ class OctopiGUI(QMainWindow):
                 self.dock_wellSelection.setVisible(False) # well selector belongs to the wellplate tab
             main_dockArea.addDock(dock_controlPanel,'right')
             self.setCentralWidget(main_dockArea)
+            self.main_dockArea = main_dockArea
+            QTimer.singleShot(0, self.init_control_panel_width)
             desktopWidget = QDesktopWidget()
             height_min = 0.9*desktopWidget.height()
             width_min = 0.96*desktopWidget.width()
@@ -693,6 +697,18 @@ class OctopiGUI(QMainWindow):
         if self.recordTabWidget.currentWidget() is self.multiPointWidget and self.wellSelectionWidget.format != 0: # was: current_index == 0 (wellplate tab)
             self.dock_wellSelection.setVisible(not acquisition_started)
         
+    def init_control_panel_width(self, width=None):
+        """Initial split between image display and controls: the controls get their natural width (the divider can then be dragged)."""
+        try:
+            width = width or self._control_panel_width
+            top = self.main_dockArea.topContainer
+            total = sum(top.sizes())
+            if total > width:
+                top.setSizes([total - width, width])
+        except Exception:
+            import traceback
+            traceback.print_exc()
+
     def toggleJobPause(self, paused):
         """JOBs: while a job is paused the stage controls and the Flexible Multipoint tab can be used to adjust positions;
         the other acquisition tabs stay locked. On resume everything is locked again."""
