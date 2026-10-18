@@ -9,7 +9,7 @@ What is made realistic (test-only patches, no change to the software):
   * the simulated microcontroller is busy for a while after every command (moves 0.25 s, other commands 10 ms),
     instead of finishing instantly;
   * the simulated camera needs exposure + 30 ms to deliver a frame;
-  * faults can be injected: a camera read that raises (as the Daheng driver does on a 1 s timeout) or returns None.
+  * faults can be injected: a camera read that raises (as the FLIR/PySpin driver does when GetNextImage(1000) times out) or returns None.
 Observed: crash (exit code), hang (no 'acquisition finished' within the time limit), number of acquisition workers
 running at the same time, a running QThread being replaced, illumination left on while the stage moves, stage moves /
 camera triggers coming from the GUI thread while an acquisition runs, leaked threads, GUI state after the run.
@@ -119,7 +119,7 @@ def setup():
             fault['reads'] += 1
             n = fault['reads']
             if fault['read_raise_at'] is not None and n == fault['read_raise_at']:
-                raise AttributeError("'NoneType' object has no attribute 'get_numpy_array'  (injected: camera timeout as in gxipy)")
+                raise RuntimeError("Spinnaker: Failed waiting for EventData on NEW_BUFFER_DATA event. [-1011]  (injected: camera timeout as in FLIR GetNextImage)")
             if fault['read_none_at'] is not None and n == fault['read_none_at']:
                 return None
             return orig_read(self)
@@ -373,7 +373,7 @@ def s4_live_on_then_cycles(h):
 
 @scenario('S5')
 def s5_camera_read_raises(h):
-    """The camera read fails once (Daheng driver: get_image() times out -> None -> AttributeError)."""
+    """The camera read fails once (FLIR: GetNextImage(1000) times out -> SpinnakerException)."""
     setup_flexible(h, n_pos=3, nt=1)
     h.fault['read_raise_at'] = h.fault['reads'] + 3
     click_start_stop(h)
@@ -495,13 +495,14 @@ def s10_user_actions_during_acquisition(h):
 
 @scenario('S11')
 def s11_long_exposure(h):
-    """Exposure 1500 ms (longer than the Daheng get_image() default timeout of 1000 ms)."""
-    import control.camera as cam_mod
-    import inspect
-    src = inspect.getsource(cam_mod.Camera.read_frame)
+    """Exposure >= ~1 s: does the camera driver wait long enough for the frame? (source check; PySpin is not installed here)"""
     v = []
-    problem(v, 'timeout' in src, 'Daheng Camera.read_frame passes a timeout to get_image() that covers the exposure time (default is 1000 ms)')
-    report(h, v, dict(read_frame_source=src.strip().splitlines()[1].strip()))
+    src = open(os.path.join(SW, 'control', 'camera_flir.py'), encoding='utf-8', errors='replace').read()
+    fixed = 'GetNextImage(1000)' in src
+    problem(v, not fixed, 'FLIR read_frame waits a fixed 1000 ms (GetNextImage(1000)): exposures of about 1 s or more always time out -> exception -> stuck acquisition' if fixed else 'FLIR read_frame timeout depends on the exposure')
+    zeros = 'np.zeros((self.Width,self.Height))' in src
+    problem(v, not zeros, 'FLIR read_frame returns np.zeros((Width, Height)) for an incomplete frame: black float64 image with swapped axes is processed and saved as if it were data' if zeros else 'incomplete frames handled')
+    report(h, v)
 
 
 @scenario('S12')
