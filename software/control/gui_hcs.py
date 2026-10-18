@@ -454,6 +454,20 @@ class OctopiGUI(QMainWindow):
             self.jobsWidget.signal_acquisition_started.connect(self.navigationWidget.toggle_navigation_controls)
             self.jobsWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
             self.jobsWidget.signal_job_paused.connect(self.toggleJobPause)
+        # stability: tell the user when an acquisition ended because of an error (it used to hang silently)
+        self.multipointController.signal_acquisition_error.connect(self.show_acquisition_error)
+        # stability: lock mouse / keyboard input while an acquisition runs (lifted while a JOB is paused)
+        from control.input_lock import InputLock
+        self.inputLock = InputLock(self._input_locked_windows, self._input_allowed_widgets,
+                                   status=lambda text: self.statusBar().showMessage(text, 4000), parent=self)
+        self.label_acquisition_running = QLabel('  ACQUISITION RUNNING - controls locked (Stop / Pause available)  ')
+        self.label_acquisition_running.setStyleSheet('color: white; background-color: #c0392b; font-weight: bold;')
+        self.label_acquisition_running.setVisible(False)
+        self.statusBar().addPermanentWidget(self.label_acquisition_running)
+        self.multipointController.acquisitionStarted.connect(self._on_acquisition_started_lock)
+        self.multipointController.acquisitionFinished.connect(self._on_acquisition_finished_lock)
+        if ENABLE_FLEXIBLE_MULTIPOINT:
+            self.jobsWidget.signal_job_paused.connect(self._on_job_paused_lock)
 
         # exposure/gain edits in the live control widget are applied directly to the camera
         # (previously relayed through the hidden spin boxes of the removed camera settings widget)
@@ -697,6 +711,45 @@ class OctopiGUI(QMainWindow):
         if self.recordTabWidget.currentWidget() is self.multiPointWidget and self.wellSelectionWidget.format != 0: # was: current_index == 0 (wellplate tab)
             self.dock_wellSelection.setVisible(not acquisition_started)
         
+    # --- input lock during acquisitions (control/input_lock.py)
+    def _input_locked_windows(self):
+        wins = [self]
+        try:
+            wins.append(self.multiPointWidget2.towbin_widget)   # Positions window
+        except AttributeError:
+            pass
+        return wins
+
+    def _input_allowed_widgets(self):
+        allowed = [getattr(self, 'imageDisplayTabs', None)]
+        for w in ('multiPointWidget', 'multiPointWidget2'):
+            allowed.append(getattr(getattr(self, w, None), 'btn_startAcquisition', None))
+        jw = getattr(self, 'jobsWidget', None)
+        if jw is not None:
+            allowed += [jw.btn_start, jw.btn_pause, jw.log]
+        return allowed
+
+    def _on_acquisition_started_lock(self):
+        self.inputLock.acquisition_started()
+        self.label_acquisition_running.setText('  ACQUISITION RUNNING - controls locked (Stop / Pause available)  ')
+        self.label_acquisition_running.setVisible(self.inputLock.enabled)
+
+    def _on_acquisition_finished_lock(self):
+        self.inputLock.acquisition_finished()
+        self.label_acquisition_running.setVisible(False)
+
+    def _on_job_paused_lock(self, paused):
+        self.inputLock.set_paused(paused)
+        self.label_acquisition_running.setText('  JOB PAUSED - positions and stage can be changed  ' if paused else
+                                               '  ACQUISITION RUNNING - controls locked (Stop / Pause available)  ')
+
+    def show_acquisition_error(self, message):
+        """Non-modal, so an unattended computer is not blocked by it."""
+        box = QMessageBox(QMessageBox.Warning, 'Acquisition stopped', message, QMessageBox.Ok, self)
+        box.setModal(False)
+        box.show()
+        self._acquisition_error_box = box
+
     def init_control_panel_width(self, width=None):
         """Initial split between image display and controls: the controls get their natural width (the divider can then be dragged)."""
         try:
@@ -721,6 +774,23 @@ class OctopiGUI(QMainWindow):
             self.toggleAcquisitionStart(True)     # locks every tab but the current one (the JOBs tab, where Resume was pressed)
 
     def closeEvent(self, event):
+        # stability: closing during an acquisition left the worker running (moving the stage and reading the camera while
+        # the program shut them down) and the processing threads kept the Python process alive (camera/port stay busy)
+        mpc = self.multipointController
+        if mpc.acquisition_running():
+            if not os.environ.get('SQUID_SKIP_CONFIRM'):
+                answer = QMessageBox.question(self, 'Acquisition running', 'An acquisition is running.\n\nStop it and close the program?',
+                                              QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                if answer != QMessageBox.Yes:
+                    event.ignore()
+                    return
+            mpc.request_abort_aquisition()
+            mpc.job_pause_requested = False
+            t0 = time.time()
+            while mpc.acquisition_running() and time.time() - t0 < 120:
+                QApplication.processEvents()
+                time.sleep(0.02)
+            QApplication.processEvents()
         self.navigationController.cache_current_position()
 
         if USE_ZABER_EMISSION_FILTER_WHEEL:
