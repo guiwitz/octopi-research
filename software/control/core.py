@@ -2726,6 +2726,8 @@ class MultiPointController(QObject):
 
     def acquisition_running(self):
         """stability: True while the acquisition thread of the previous run has not ended yet."""
+        if getattr(self, '_acquisition_done', True):
+            return False # the worker has finished; its thread may still be shutting down (it is kept in _old_threads)
         t = self.__dict__.get('thread')
         try:
             return isinstance(t, QThread) and t.isRunning()
@@ -2831,6 +2833,7 @@ class MultiPointController(QObject):
         self._old_threads = [t for t in self._old_threads if not t.isFinished()]
         self._set_joystick_enabled(False) # stability: joystick / focus wheel off during the acquisition (needs the towbinlab firmware)
         self.thread = QThread()
+        self._acquisition_done = False
         # create a worker object
         self.processingHandler.start_processing()
         self.processingHandler.start_uploading()
@@ -2875,6 +2878,7 @@ class MultiPointController(QObject):
         self.signal_acquisition_error.emit(message)
 
     def _on_acquisition_completed(self):
+        self._acquisition_done = True
         self._set_joystick_enabled(True)
         # restore the previous selected mode
         if self.gen_focus_map:

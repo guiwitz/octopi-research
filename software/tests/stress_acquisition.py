@@ -108,7 +108,25 @@ def setup():
         setattr(core.NavigationController, name, wrapm)
 
     # --- camera: exposure time + transfer, fault injection, concurrent use
-    Cam = cam_mod.Camera_Simulation
+    h.flir = os.environ.get('SQUID_STRESS_CAMERA', '').lower() == 'flir'
+    if h.flir:
+        # the real FLIR driver (control/camera_flir.py) on a fake Spinnaker SDK (tests/fake_pyspin.py)
+        sys.path.insert(0, os.path.join(SW, 'tests'))
+        import fake_pyspin
+        sys.modules['PySpin'] = fake_pyspin
+        import control.camera_flir as cf
+        h.fake_sdk = fake_pyspin
+        h.fake_cam = fake_pyspin.reset()
+        Cam = cf.Camera
+        orig_hw = Sim.send_hardware_trigger
+
+        def send_hardware_trigger(self, *a, **k):
+            r = orig_hw(self, *a, **k)
+            h.fake_cam.hardware_trigger('Line2')   # the trigger line of the microcontroller goes to the camera
+            return r
+        Sim.send_hardware_trigger = send_hardware_trigger
+    else:
+        Cam = cam_mod.Camera_Simulation
     orig_read, orig_trig = Cam.read_frame, Cam.send_trigger
     inside = [0]
 
@@ -117,9 +135,25 @@ def setup():
         try:
             if inside[0] > 1:
                 obs['concurrent_camera_reads'] += 1
-            time.sleep((getattr(self, 'exposure_time', 10) or 10) / 1000.0 + 0.03)
             fault['reads'] += 1
             n = fault['reads']
+            if h.flir:
+                fc = h.fake_cam
+                if fault['read_raise_at'] is not None and n == fault['read_raise_at']:
+                    with fc.lock:              # camera stops delivering: this frame and the next two are lost
+                        fc.pending.clear()
+                        fc.buffer.clear()
+                    fc.fault['drop_triggers'] = 2
+                if fault['read_none_at'] is not None and n == fault['read_none_at']:
+                    fc.fault['incomplete_frames'] = 1
+                img = orig_read(self)
+                try:
+                    cfg = h.win.liveController.currentConfiguration
+                    obs.setdefault('frames', []).append((cfg.name, float(cfg.exposure_time), None if img is None else int(img[0, 1])))
+                except Exception:
+                    pass
+                return img
+            time.sleep((getattr(self, 'exposure_time', 10) or 10) / 1000.0 + 0.03)
             if fault['read_raise_at'] is not None and n == fault['read_raise_at']:
                 raise RuntimeError("Spinnaker: Failed waiting for EventData on NEW_BUFFER_DATA event. [-1011]  (injected: camera timeout as in FLIR GetNextImage)")
             if fault['read_none_at'] is not None and n == fault['read_none_at']:
@@ -155,7 +189,7 @@ def setup():
         t = getattr(self, 'thread', None)
         if isinstance(t, h.QThread):
             try:
-                if t.isRunning():
+                if t.isRunning() and not getattr(self, '_acquisition_done', False):   # worker still active
                     obs['replaced_running_thread'] += 1
                     print('OBS: run_acquisition replaces a QThread that is still running', flush=True)
             except RuntimeError:
@@ -189,13 +223,33 @@ def setup():
     QMessageBox.warning = staticmethod(lambda *a, **k: obs['popups'].append(str(a[2]) if len(a) > 2 else ''))
     QMessageBox.information = staticmethod(lambda *a, **k: obs['popups'].append(str(a[2]) if len(a) > 2 else ''))
 
+    # never touch the user's channel_configurations.xml: the GUI saves every exposure/gain/intensity edit into it.
+    # The tests use a temporary copy of the Squid1 channel list (tests/fixtures).
+    import shutil
+    h.channel_xml = os.path.join(tempfile.mkdtemp(prefix='stress_cfg_'), 'channel_configurations.xml')
+    shutil.copy(os.path.join(SW, 'tests', 'fixtures', 'squid1_channel_configurations.xml'), h.channel_xml)
+    orig_cm_init = core.ConfigurationManager.__init__
+
+    def cm_init(self, filename='channel_configurations.xml', *a, **k):
+        if os.path.basename(str(filename)) == 'channel_configurations.xml':
+            filename = h.channel_xml
+        return orig_cm_init(self, filename, *a, **k)
+    core.ConfigurationManager.__init__ = cm_init
+
     import control.gui_hcs as gui
+    if h.flir:
+        def flir_camera(**kw):
+            c = cf.Camera(sn=None, **kw)
+            c.open()
+            return c
+        gui.camera.Camera_Simulation = flir_camera
     h.app = QApplication([])
     h.win = gui.OctopiGUI(is_simulation=True)
     h.win.show()
     h.mp, h.mpc = h.win.multiPointWidget2, h.win.multipointController
     h.mpc.acquisitionFinished.connect(lambda: obs.__setitem__('finished_signals', obs['finished_signals'] + 1))
     h.save = tempfile.mkdtemp(prefix='stress_')
+    print('OBS: camera = ' + ('FLIR driver on fake PySpin' if h.flir else 'Camera_Simulation'), flush=True)
     print('OBS: sys.excepthook is ' + ('the default' if sys.excepthook is sys.__excepthook__ else 'custom: ' + repr(sys.excepthook)), flush=True)
     pump(h, 0.5)
     return h
@@ -635,6 +689,32 @@ def s15_joystick_disabled_during_acquisition(h):
     report(h, v)
 
 
+@scenario('S16')
+def s16_flir_each_image_has_its_channel_exposure(h):
+    """FLIR driver: in a multi-channel acquisition every image comes with the exposure of its own channel
+    (the frame carries the exposure the camera had when it was triggered)."""
+    v = []
+    if not h.flir:
+        problem(v, True, 'only meaningful with --camera flir (skipped)')
+        report(h, v)
+    setup_flexible(h, n_pos=2, nt=2, channels=3)
+    cfgs = [h.mpc.configurationManager.configurations[i] for i in range(3)]
+    live = h.win.liveControlWidget
+    for c, e in zip(cfgs, (12, 22, 100)):         # set the exposures as a user does: select the channel, type the value
+        live.dropdown_modeSelection.setCurrentText(c.name)
+        live.entry_exposureTime.setValue(e)
+    pump(h, 0.2)
+    h.obs['frames'] = []
+    click_start_stop(h)
+    ok = wait_finished(h, 1, 60)
+    frames = [f for f in h.obs['frames'] if f[0] in [c.name for c in cfgs]]
+    wrong = [f for f in frames if f[2] is None or abs(f[2] - round(f[1])) > 0]
+    problem(v, ok, 'acquisition finished')
+    problem(v, len(frames) == 2 * 2 * 3, f'{len(frames)} images (12 expected)')
+    problem(v, not wrong, 'every image has the exposure of its channel' if not wrong else f'{len(wrong)} images with a wrong exposure, e.g. {wrong[:3]} (channel, set ms, image ms)')
+    report(h, v, dict(first=frames[:6]))
+
+
 # ------------------------------------------------------------------------------------------------------------------
 def run_one_inprocess(name):
     fn, _ = SCENARIOS[name]
@@ -653,7 +733,11 @@ def main():
     ap.add_argument('--scenario')
     ap.add_argument('--only')
     ap.add_argument('--out', default=None)
+    ap.add_argument('--camera', choices=['sim', 'flir'], default=None,
+                    help="flir: run the real FLIR driver (control/camera_flir.py) on the fake Spinnaker SDK tests/fake_pyspin.py")
     a = ap.parse_args()
+    if a.camera:
+        os.environ['SQUID_STRESS_CAMERA'] = a.camera
     if a.scenario:
         run_one_inprocess(a.scenario)
         return

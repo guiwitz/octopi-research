@@ -10,15 +10,10 @@ SW = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, SW)
 
 
-class SpinnakerException(Exception):
-    pass
-
-
-fake = types.ModuleType('PySpin')
-fake.SpinnakerException = SpinnakerException
-fake.ImageEventHandler = object
-fake.__getattr__ = lambda name: (lambda *a, **k: None)   # any other PySpin name used at import time
-sys.modules.setdefault('PySpin', fake)
+sys.path.insert(0, os.path.join(SW, 'tests'))
+import fake_pyspin  # noqa: E402  (shared fake PySpin, see tests/fake_pyspin.py)
+sys.modules['PySpin'] = fake_pyspin
+SpinnakerException = fake_pyspin.SpinnakerException
 import control.camera_flir as cf  # noqa: E402
 
 
