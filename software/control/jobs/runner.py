@@ -68,7 +68,7 @@ def _exposure_warning(exposures):
     return None
 
 
-def run_job(job_path, points, backend, experiment_dir=None, clock=None, save_images=True, max_events=None, meta=None, record=False):
+def run_job(job_path, points, backend, experiment_dir=None, clock=None, save_images=True, max_events=None, meta=None, record=False, observer=None):
     """Run the job file with the given backend. Never raises for problems in the job: returns a JobResult.
     points: list of Point (see api.make_points)."""
     res = JobResult()
@@ -77,7 +77,7 @@ def run_job(job_path, points, backend, experiment_dir=None, clock=None, save_ima
     started = datetime.datetime.now()
     try:
         fn = load_job(job_path)
-        scope = Scope(backend, points, experiment_dir=experiment_dir, clock=clock, save_images=save_images, max_events=max_events, record=record)
+        scope = Scope(backend, points, experiment_dir=experiment_dir, clock=clock, save_images=save_images, max_events=max_events, record=record, observer=observer)
         if experiment_dir is not None:
             shutil.copy2(job_path, os.path.join(experiment_dir, 'job.py'))
             _write_positions(os.path.join(experiment_dir, 'positions_initial.csv'), points)
@@ -119,6 +119,11 @@ def run_job(job_path, points, backend, experiment_dir=None, clock=None, save_ima
                 except Exception as e:
                     res.warnings.append(f'could not write metadata: {e!r}')
             scope._close()
+        if observer is not None:
+            try:
+                observer(dict(type='finished', status=res.status, error=res.error, t=res.duration_s))
+            except Exception:
+                pass
     return res
 
 

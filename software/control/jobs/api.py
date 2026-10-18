@@ -160,7 +160,7 @@ class Backend:
 class Scope:
     """What a job script sees. See control/jobs/README.md for the full description."""
 
-    def __init__(self, backend, points, experiment_dir=None, clock=None, save_images=True, max_events=None, record=False):
+    def __init__(self, backend, points, experiment_dir=None, clock=None, save_images=True, max_events=None, record=False, observer=None):
         self._backend = backend
         self._points = list(points)
         self._dir = experiment_dir
@@ -169,6 +169,7 @@ class Scope:
         self._max_events = max_events
         self._events = 0
         self.events = [] if record else None     # plan of the job for the graphical preview (dry run)
+        self._observer = observer                # live view: called with small dicts (see _notify); must never break the job
         self._t0 = self._clock.now()
         self._tp = None
         self._current_point = None
@@ -241,12 +242,28 @@ class Scope:
         self.stats['warnings'].append(message)
         self.log('WARNING: ' + message)
 
+    def _notify(self, msg):
+        """Tell the live view (if any) what is going on. Messages are plain dicts with 'type' and 't' (job time, s)."""
+        if self._observer is not None:
+            msg.setdefault('t', self.elapsed)
+            try:
+                self._observer(msg)
+            except Exception:
+                pass
+
+    def _state(self, state, **kw):
+        if self._observer is not None:
+            self._notify(dict(type='state', state=state, tp=self._tp.index if self._tp is not None else None, **kw))
+
     def _rec(self, kind, t0, t1=None, **kw):
-        if self.events is not None:
+        if self.events is not None or self._observer is not None:
             pt = kw.pop('point', None)
-            self.events.append(dict(kind=kind, t0=t0, t1=self.elapsed if t1 is None else t1,
-                                    point=pt.index if pt is not None else None,
-                                    tp=self._tp.index if self._tp is not None else None, **kw))
+            ev = dict(kind=kind, t0=t0, t1=self.elapsed if t1 is None else t1,
+                      point=pt.index if pt is not None else None,
+                      tp=self._tp.index if self._tp is not None else None, **kw)
+            if self.events is not None:
+                self.events.append(ev)
+            self._notify(dict(type='done', **ev))
 
     def _tick(self):
         self.check_abort()
@@ -275,6 +292,7 @@ class Scope:
         if seconds < 0:
             raise JobError('wait(seconds): seconds must be >= 0')
         t0 = self.elapsed
+        self._state('waiting', until=t0 + seconds, reason='wait')
         if not self._clock.wait_until(self._clock.now() + seconds, self._backend.abort_requested):
             raise JobAborted()
         self._rec('wait', t0)
@@ -283,6 +301,7 @@ class Scope:
         """Wait until `elapsed_seconds` have passed since the start of the job (returns at once if already later)."""
         self._tick()
         t0 = self.elapsed
+        self._state('waiting', until=max(t0, elapsed_seconds), reason='wait_until')
         if not self._clock.wait_until(self._t0 + elapsed_seconds, self._backend.abort_requested):
             raise JobAborted()
         self._rec('wait', t0)
@@ -299,6 +318,7 @@ class Scope:
             if i > 0 and interval:
                 planned = prev_start + interval
                 t_w0 = self.elapsed
+                self._state('waiting', until=planned, reason='interval', next_tp=i)
                 if not self._clock.wait_until(self._t0 + planned, self._backend.abort_requested):
                     raise JobAborted()
                 self._rec('wait', t_w0)
@@ -307,6 +327,8 @@ class Scope:
             tp = TimePoint(i, start, late)
             self._tp = tp
             self._rec('timepoint', start, start, late=late, planned=planned)
+            self._notify(dict(type='timepoint', index=i, start=start, late=late, planned=planned, n=n, interval=interval,
+                              next_start=(start + interval) if interval else None))
             self.stats['timepoints'] += 1
             if late > 0.5:
                 self.stats['late_timepoints'] += 1
@@ -327,6 +349,7 @@ class Scope:
         if not isinstance(point, Point):
             raise JobError(f'move_to needs a Point from scope.points(), got {point!r}')
         t0 = self.elapsed
+        self._state('moving', point=point.index)
         self._backend.move_to(point.x, point.y, point.z)
         self._rec('move', t0, point=point)
         self._current_point = point
@@ -341,6 +364,7 @@ class Scope:
         ch = self._resolve_channel(channel) if channel else None
         z_before = self._backend.position()[2]
         t_start = self.elapsed
+        self._state('autofocus', point=self._current_point.index if self._current_point else None)
         z_after = self._backend.autofocus(ch)
         pt = self._current_point
         if pt is not None and pt.z_initial is not None and abs(z_after - pt.z_initial) > AF_MAX_Z_DRIFT_MM:
@@ -363,6 +387,7 @@ class Scope:
         self._tick()
         ch = self._resolve_channel(channel)
         t_cap = self.elapsed
+        self._state('capturing', point=self._current_point.index if self._current_point else None, channel=ch)
         image, info = self._backend.capture(ch)
         info = dict(info or {})
         pt, tp = self._current_point, self._tp

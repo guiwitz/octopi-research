@@ -5,6 +5,19 @@ positions and time points, channels, autofocus, waiting). It never controls hard
 through the high-level `scope` object, which uses the same tested movement, autofocus and imaging code as the
 standard acquisition. The standard acquisition (Flexible Multipoint tab) is unchanged.
 
+## Live view while a job runs
+
+The JOBs tab shows the state of a running job (updated twice per second; no matplotlib needed):
+
+- a **status line**: what the scope is doing now (moving to / imaging position X channel Y / autofocus / waiting), with a
+  **countdown** and clock time while it waits for the next time point (or in `scope.wait()`), and a thin bar that fills up during the wait,
+- the **time point** that is running, how long it has been running, when the next one is planned (or that it will start immediately because the pass takes longer than the interval), time points that started late,
+- **images done / planned** (from the check run) and an **estimated end** (planned duration plus the delay already accumulated),
+- a row of boxes for **all time points** (done / now / waiting to start / upcoming, orange foot = started late) and a row of boxes for the **positions of the current time point** (imaged / now / pending, red mark = autofocus done).
+
+"Planned" values come from the dry run that is done when you press *Start job*; a job whose number of images depends on image
+content can differ. The view does not influence the job: if it ever fails, the job continues.
+
 ## Checking a job graphically
 
 *Show job plan (graph)* in the JOBs tab (or `python -m control.jobs.plot job.py positions.csv --channels BF,488 --out plan.png`

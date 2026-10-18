@@ -1672,6 +1672,7 @@ class MultiPointWorker(QObject):
 
     signal_update_stats = Signal(object)
     signal_job_message = Signal(str)   # JOBs: progress messages of a job script
+    signal_job_status = Signal(object) # JOBs: live status (dicts, see control/jobs_live.py)
 
     def __init__(self,multiPointController):
         QObject.__init__(self)
@@ -1744,7 +1745,7 @@ class MultiPointWorker(QObject):
         try:
             result = run_job(mpc.job_file, mpc.job_points, HardwareBackend(self),
                              experiment_dir=os.path.join(self.base_path,self.experiment_ID),
-                             meta=dict(experiment_id=self.experiment_ID))
+                             meta=dict(experiment_id=self.experiment_ID), observer=self.signal_job_status.emit)
             mpc.job_result = result
             self.signal_job_message.emit('job ' + result.status + (': ' + result.error.splitlines()[0] if result.error else ''))
         except BaseException:
@@ -2495,6 +2496,7 @@ class MultiPointController(QObject):
     napari_layers_init = Signal(int, int, object, bool)
     signal_z_piezo_um = Signal(float)
     signal_job_message = Signal(str)   # JOBs: progress messages of a job script
+    signal_job_status = Signal(object) # JOBs: live status (dicts, see control/jobs_live.py)
 
     def __init__(self,camera,navigationController,liveController,autofocusController,configurationManager,usb_spectrometer=None,scanCoordinates=None,parent=None):
         QObject.__init__(self)
@@ -2733,6 +2735,7 @@ class MultiPointController(QObject):
         self.multiPointWorker.spectrum_to_display.connect(self.slot_spectrum_to_display)
         self.multiPointWorker.signal_current_configuration.connect(self.slot_current_configuration,type=Qt.BlockingQueuedConnection)
         self.multiPointWorker.signal_job_message.connect(self.signal_job_message)
+        self.multiPointWorker.signal_job_status.connect(self.signal_job_status)
         self.multiPointWorker.signal_register_current_fov.connect(self.slot_register_current_fov)
         self.multiPointWorker.napari_layers_init.connect(self.slot_napari_layers_init)
         self.multiPointWorker.napari_layers_update.connect(self.slot_napari_layers_update)

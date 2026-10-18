@@ -343,6 +343,60 @@ def test_plan_figure_for_late_failed_and_empty_jobs():
     assert os.path.getsize(out) > 10000
 
 
+def test_live_progress_model():
+    from control.jobs_live import JobProgress, fmt_s
+    job = make_job(textwrap.dedent("""
+        def run_job(scope):
+            for t in scope.timepoints(3, interval=100):
+                for p in scope.points():
+                    scope.move_to(p)
+                    scope.capture('488')
+                scope.wait(5)
+    """))
+    P = pts(2)
+    plan = dry_run(job, P, CHANNELS, record=True)
+    assert plan.status == 'completed', plan.error
+    clock = SimClock()
+    model = JobProgress(clock=clock.now)
+    model.start(plan.events, plan.duration_s, P)
+    assert model.n_tp == 3 and model.plan_total_images == 6
+    seen = []
+
+    def observer(msg):
+        model.update(msg)
+        if msg['type'] == 'state':
+            seen.append((model.headline()[0], model.tp_boxes(), model.position_boxes(), model.overall_fraction()))
+    res = run_job(job, P, TestBackend(clock), clock=clock, save_images=False, observer=observer)
+    assert res.status == 'completed' and model.status == 'completed' and model.active is False
+    heads = [h for h, *_ in seen]
+    assert any(h.startswith('Waiting - time point 2/3 starts in') for h in heads), heads
+    assert any(h.startswith('Waiting (scope.wait)') for h in heads)
+    assert any(h.startswith('Imaging position #1') for h in heads)
+    # while waiting for time point 2 (index 1) box 0 is done, box 1 'waiting', box 2 upcoming
+    wait_states = [b for h, b, *_ in seen if h.startswith('Waiting - time point 2/3')]
+    assert [st for _, st in wait_states[0]] == ['done', 'waiting', 'upcoming']
+    # positions of the current time point: first state of time point 0 has both pending/current
+    assert model.images_done == 6 and model.overall_fraction() == 1.0
+    assert 'completed' in model.headline()[0]
+    assert fmt_s(3725) == '1 h 02 min 05 s' and fmt_s(65) == '1 min 05 s'
+    # countdown is extrapolated between messages
+    model2 = JobProgress(clock=clock.now)
+    model2.start(plan.events, plan.duration_s, P)
+    model2.update(dict(type='state', state='waiting', until=100.0, reason='interval', next_tp=1, t=40.0))
+    clock.t += 10
+    assert abs(model2.headline()[1] - 50.0) < 1e-6
+
+
+def test_observer_errors_do_not_break_the_job():
+    job = make_job('def run_job(scope):\n    scope.move_to(scope.points()[0])\n    scope.capture("488")\n')
+
+    def bad(msg):
+        raise RuntimeError('observer bug')
+    clock = SimClock()
+    res = run_job(job, pts(1), TestBackend(clock), clock=clock, save_images=False, observer=bad)
+    assert res.status == 'completed' and res.stats['images'] == 1
+
+
 if __name__ == '__main__':
     fails = 0
     for name, fn in sorted(globals().items()):

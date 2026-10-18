@@ -198,6 +198,10 @@ def main():
                 record('job 1 image readable (OME-TIFF)', a.ndim == 2 and a.size > 0, str(a.shape))
             except Exception as e:
                 record('job 1 image readable (OME-TIFF)', False, repr(e))
+        lm = jw.live.model
+        record('live view: job 1 finished state', lm.status == 'completed' and not lm.active, str(lm.status))
+        record('live view: images counted', lm.images_done == exp_images and lm.plan_total_images == exp_images, f'{lm.images_done}/{lm.plan_total_images}')
+        record('live view: all time points done', [st for _, st in lm.tp_boxes()] == ['done'] * 3, str(lm.tp_boxes()))
         record('illumination off after job 1', not win.liveController.illumination_on)
         record('start button reset after job 1', (not jw.btn_start.isChecked()) and jw.btn_start.text() == 'Start job')
 
@@ -215,6 +219,7 @@ def main():
             meta = json.load(open(os.path.join(d2, 'job_meta.json')))
             record('job 2 status aborted', meta['status'] == 'aborted', meta['status'])
             record('job 2 took some images', len(rows(d2, 'images')) > 0)
+        record('live view: aborted state', jw.live.model.status == 'aborted', str(jw.live.model.status))
         record('illumination off after abort', not win.liveController.illumination_on)
         record('stage controls usable after abort', not nav.microcontroller.is_busy())
 

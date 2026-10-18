@@ -15,6 +15,7 @@ from qtpy.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
                             QMessageBox, QPlainTextEdit, QDialog, QDoubleSpinBox)
 
 from control.jobs import make_points, dry_run, describe, JobError
+from control.jobs_live import LiveJobView
 
 
 class PlanDialog(QDialog):
@@ -80,6 +81,7 @@ class JobsWidget(QFrame):
         self._build()
         self._load_cache()
         self.mpc.signal_job_message.connect(self.append_log)
+        self.mpc.signal_job_status.connect(self.live.on_message)
         self.mpc.acquisitionFinished.connect(self.acquisition_is_finished)
 
     # --- layout
@@ -101,6 +103,7 @@ class JobsWidget(QFrame):
         self.btn_start.setCheckable(True)
         self.btn_start.setStyleSheet('background-color: #C2C2FF')
         self.label_status = QLabel('')
+        self.live = LiveJobView()
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(5000)
@@ -112,7 +115,7 @@ class JobsWidget(QFrame):
         row3 = QHBoxLayout(); row3.addWidget(self.btn_check); row3.addWidget(self.btn_plan); row3.addWidget(self.btn_start)
         layout = QVBoxLayout()
         layout.addLayout(row1); layout.addLayout(row2); layout.addWidget(self.label_points)
-        layout.addLayout(row3); layout.addWidget(self.label_status); layout.addWidget(self.log, 1)
+        layout.addLayout(row3); layout.addWidget(self.label_status); layout.addWidget(self.live); layout.addWidget(self.log, 1)
         self.setLayout(layout)
 
         self.btn_select_job.clicked.connect(self.select_job)
@@ -220,7 +223,8 @@ class JobsWidget(QFrame):
         if not pts:
             return self._say('No positions: define them in the Flexible Multipoint tab first (the JOBs tab uses that position list).')
         try:
-            res = dry_run(path, pts, self._channel_infos())
+            res = dry_run(path, pts, self._channel_infos(), record=True)
+            self._last_plan = (res, pts)
         except Exception:
             return self._say('Internal error in the job check:\n' + traceback.format_exc())
         self.log.appendPlainText('--- check of ' + os.path.basename(path) + ' ---\n' + describe(res))
@@ -286,6 +290,7 @@ class JobsWidget(QFrame):
         self.signal_acquisition_started.emit(True)
         self.label_status.setText('Job running ...')
         self.append_log(f'--- job started, experiment folder {self.mpc.experiment_ID} ---')
+        self.live.begin(res.events, res.duration_s, self._points())
         self.mpc.run_job(self.lineEdit_job.text().strip(), self._points())
 
     def acquisition_is_finished(self):
@@ -293,6 +298,8 @@ class JobsWidget(QFrame):
             return          # a standard acquisition of another tab finished
         self.running = False
         res = self.mpc.job_result
+        if self.live.model.active:            # the runner ended without a final message (crash)
+            self.live.on_message(dict(type='finished', status=res.status if res is not None else 'failed', error=res.error if res is not None else 'see the console'))
         self.btn_start.setChecked(False)
         self.btn_start.setText('Start job')
         self._set_controls_enabled(True)
