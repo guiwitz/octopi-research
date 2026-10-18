@@ -4,7 +4,7 @@
 FLUORESCENCE = "488"                  # imaged at every position and time point
 BRIGHTFIELD = "BF LED matrix full"    # imaged only every BF_EVERY-th time point
 BF_EVERY = 4
-GROUPS = ("A", "B")                   # position groups to image (part of the position ID before the first "-")
+GROUPS = ("A", "B")                   # position groups to image (part of the "group" column of the positions table before the first "-")
 AF_EVERY = 5                          # every position is refocused at every AF_EVERY-th time point (staggered)
 N_TIMEPOINTS = 48
 INTERVAL_S = 1800                     # 30 min between time-point starts
@@ -17,8 +17,8 @@ def run_job(scope):
     is refocused regularly but the autofocus time is spread out. The focused z is remembered for later visits.
 
     YOU PROVIDE:
-      - Positions in the Flexible Multipoint tab, with IDs that start with the group name, e.g. A-0, A-1, ..., B-0, B-1, ...
-        (the group is the part of the ID before the first "-"). Groups not listed in GROUPS are ignored.
+      - Positions in the Flexible Multipoint tab, with the group set in the "group" column, e.g. A-0, A-1, ..., B-0, B-1, ...
+        (the group is the part of that cell before the first "-"; use the Positions window: Set group(s) + "add number"). Groups not listed in GROUPS are ignored.
       - Settings at the top of this file (channels, groups, how often, number of time points, interval).
       - The autofocus uses the settings of the Autofocus tab (focus measure, number of planes, step).
     """

@@ -1948,7 +1948,9 @@ class MultiPointWidget(QFrame):
     def enable_the_start_aquisition_button(self):
         self.btn_startAcquisition.setEnabled(True)
 
-POSITION_SHORTCUTS = {'next': 'Alt+Right', 'previous': 'Alt+Left', 'undo': 'Ctrl+Z'}
+POSITION_SHORTCUTS = {'next': 'Ctrl+Right', 'previous': 'Ctrl+Left', 'undo': 'Ctrl+Z', 'remove': 'Delete', 'add': ';'}
+POSITION_SHORTCUTS_ALT = {'next': 'Ctrl+Down', 'previous': 'Ctrl+Up'}   # same actions, for people who think of the table as a list
+TICK_COLUMN = 4          # logical column of the tick boxes (shown first); columns 0-3 are x, y, z, group
 
 
 def _undoable(method):
@@ -2023,9 +2025,16 @@ class MultiPointWidget2(QFrame):
 
         # editable points table
         self.table_location_list = QTableWidget()
-        self.table_location_list.setColumnCount(4)
-        header_labels = ['x', 'y', 'z', 'ID']
+        self.table_location_list.setColumnCount(5)
+        header_labels = ['x', 'y', 'z', 'group', '\u2713']   # the cell of 'group' holds e.g. 'A' or 'A-3' (group = part before the first '-')
         self.table_location_list.setHorizontalHeaderLabels(header_labels)
+        header = self.table_location_list.horizontalHeader()
+        header.moveSection(TICK_COLUMN, 0)                    # tick boxes are shown first; the logical columns stay x, y, z, group, tick
+        header.setSectionResizeMode(TICK_COLUMN, QHeaderView.Fixed)
+        self.table_location_list.setColumnWidth(TICK_COLUMN, 34)
+        self.table_location_list.setToolTip('Tick positions to act on several at once (Remove, Set group, Offset ticked positions). '
+                                            'Without ticks these act on the highlighted position.')
+        self.table_location_list.model().rowsInserted.connect(self._init_tick_items)
         self.btn_show_table_location_list = QPushButton('Positions...') # opens the positions window
 
         self.entry_deltaX = QDoubleSpinBox()
@@ -2205,7 +2214,7 @@ class MultiPointWidget2(QFrame):
         self.btn_import_locations.clicked.connect(self.import_location_list)
 
         self.table_location_list.cellClicked.connect(self.cell_was_clicked)
-        self.table_location_list.cellChanged.connect(self.cell_was_changed)
+        self.table_location_list.cellChanged.connect(self._cell_changed)
 
         self.dropdown_location_list.currentIndexChanged.connect(self.go_to)
 
@@ -2221,8 +2230,12 @@ class MultiPointWidget2(QFrame):
         for w in (self, self.towbin_widget):
             for keys, slot in ((POSITION_SHORTCUTS['next'], self._shortcut_next),
                                (POSITION_SHORTCUTS['previous'], self._shortcut_previous),
-                               (POSITION_SHORTCUTS['undo'], self._shortcut_undo)):
+                               (POSITION_SHORTCUTS_ALT['next'], self._shortcut_next),
+                               (POSITION_SHORTCUTS_ALT['previous'], self._shortcut_previous),
+                               (POSITION_SHORTCUTS['undo'], self._shortcut_undo),
+                               (POSITION_SHORTCUTS['remove'], self._shortcut_remove)):
                 QShortcut(QKeySequence(keys), w, activated=slot)
+        QShortcut(QKeySequence(POSITION_SHORTCUTS['add']), self.towbin_widget, activated=self._shortcut_add)
 
         # keep the autofocus summary next to 'Contrast AF' up to date
         self.autofocus_controller = getattr(self.multipointController, 'autofocusController', None)
@@ -2244,6 +2257,80 @@ class MultiPointWidget2(QFrame):
     def _shortcut_undo(self):
         if self._positions_editable():
             self.undo_positions()
+
+    def _shortcut_remove(self):
+        if self._positions_editable():
+            self.remove_location()
+
+    def _shortcut_add(self):
+        if self._positions_editable():
+            self.add_location()
+
+    # ---- tick boxes (multi-selection of positions) ---------------------------------------
+    def _init_tick_items(self, parent, first, last):
+        """Every new table row gets an (unticked) tick item in TICK_COLUMN; no matter which code inserted the row."""
+        t = self.table_location_list
+        was_blocked = t.blockSignals(True)       # must not look like a cell edit (and keep an outer block intact)
+        try:
+            for r in range(first, last + 1):
+                if t.item(r, TICK_COLUMN) is None:
+                    it = QTableWidgetItem()
+                    it.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+                    it.setCheckState(Qt.Unchecked)
+                    t.setItem(r, TICK_COLUMN, it)
+        finally:
+            t.blockSignals(was_blocked)
+
+    def _cell_changed(self, row, column):
+        if column == TICK_COLUMN:
+            return                 # ticking a box does not change a position
+        self.cell_was_changed(row, column)
+
+    def ticked_rows(self):
+        t = self.table_location_list
+        return [r for r in range(t.rowCount()) if t.item(r, TICK_COLUMN) is not None and t.item(r, TICK_COLUMN).checkState() == Qt.Checked]
+
+    def set_ticks(self, rows):
+        """Tick exactly the given rows."""
+        rows = set(rows)
+        t = self.table_location_list
+        was_blocked = t.blockSignals(True)
+        try:
+            for r in range(t.rowCount()):
+                it = t.item(r, TICK_COLUMN)
+                if it is not None:
+                    it.setCheckState(Qt.Checked if r in rows else Qt.Unchecked)
+        finally:
+            t.blockSignals(was_blocked)
+        self.table_location_list.viewport().update()
+        if hasattr(self, 'towbin_widget'):
+            self.towbin_widget.update_tick_label()
+
+    def tick_all(self):
+        self.set_ticks(range(self.table_location_list.rowCount()))
+
+    def untick_all(self):
+        self.set_ticks([])
+
+    def tick_group_of_current(self):
+        """Tick all positions with the same group as the highlighted position."""
+        i = self.dropdown_location_list.currentIndex()
+        if 0 <= i < len(self.location_ids):
+            g = str(self.location_ids[i]).split('-')[0]
+            self.set_ticks([r for r in range(len(self.location_ids)) if str(self.location_ids[r]).split('-')[0] == g])
+
+    def highlighted_rows(self):
+        rows = sorted({ind.row() for ind in self.table_location_list.selectedIndexes()})
+        if not rows and self.dropdown_location_list.currentIndex() >= 0:
+            rows = [self.dropdown_location_list.currentIndex()]
+        return rows
+
+    def rows_to_act_on(self):
+        """The positions that Remove / Set group / Offset-ticked act on: the ticked ones, or (no ticks) the highlighted ones."""
+        return self.ticked_rows() or self.highlighted_rows()
+
+    def _confirm(self, text):
+        return QMessageBox.question(self, 'Positions', text, QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes
 
     def show_position_editor(self):
         self.towbin_widget.show()
@@ -2448,19 +2535,57 @@ class MultiPointWidget2(QFrame):
 
     @_undoable
     def remove_location(self):
-        index = self.dropdown_location_list.currentIndex()
-        if index >=0:
-            self.dropdown_location_list.removeItem(index)
-            self.table_location_list.removeRow(index)
-            x = self.location_list[index,0]
-            y = self.location_list[index,1]
-            z = self.location_list[index,2]
-            self.navigationViewer.deregister_fov_to_image(x,y)
-            self.location_list = np.delete(self.location_list, index, axis=0)
-            self.location_ids = np.delete(self.location_ids, index, axis=0)
-            if len(self.location_list) == 0:
-                self.navigationViewer.clear_slide()
-            print(self.location_list)
+        """Remove the ticked positions, or (no ticks) the highlighted position. More than one asks for confirmation."""
+        ticked = self.ticked_rows()
+        rows = ticked or ([self.dropdown_location_list.currentIndex()] if self.dropdown_location_list.currentIndex() >= 0 else [])
+        if not rows:
+            return
+        if len(rows) == 1:
+            self._remove_single(rows[0])
+            return
+        if not self._confirm(f'Remove {len(rows)} positions?'):
+            return
+        self._remove_rows(rows)
+
+    def _remove_single(self, index):
+        self.dropdown_location_list.removeItem(index)
+        self.table_location_list.removeRow(index)
+        x = self.location_list[index,0]
+        y = self.location_list[index,1]
+        z = self.location_list[index,2]
+        self.navigationViewer.deregister_fov_to_image(x,y)
+        self.location_list = np.delete(self.location_list, index, axis=0)
+        self.location_ids = np.delete(self.location_ids, index, axis=0)
+        if len(self.location_list) == 0:
+            self.navigationViewer.clear_slide()
+        print(self.location_list)
+
+    def _remove_rows(self, rows):
+        """Remove several positions at once. Does not move the stage."""
+        rows = sorted(set(rows), reverse=True)
+        self.dropdown_location_list.blockSignals(True)
+        try:
+            for r in rows:
+                self.navigationViewer.deregister_fov_to_image(self.location_list[r,0], self.location_list[r,1])
+                self.dropdown_location_list.removeItem(r)
+                self.table_location_list.removeRow(r)
+        finally:
+            self.dropdown_location_list.blockSignals(False)
+        keep = [i for i in range(len(self.location_list)) if i not in rows]
+        self.location_list = self.location_list[keep]
+        self.location_ids = self.location_ids[keep]
+        n = len(self.location_list)
+        if n == 0:
+            self.navigationViewer.clear_slide()
+        else:
+            new = min(rows[-1], n - 1)
+            self.dropdown_location_list.blockSignals(True)
+            try:
+                self.dropdown_location_list.setCurrentIndex(new)
+            finally:
+                self.dropdown_location_list.blockSignals(False)
+            self.table_location_list.selectRow(new)
+        print(self.location_list)
 
     def _select_position(self,index):
         n = self.dropdown_location_list.count()
@@ -2480,7 +2605,7 @@ class MultiPointWidget2(QFrame):
 
     # ---- undo of position changes ------------------------------------------------------
     def _snapshot(self):
-        return (self.location_list.copy(), self.location_ids.copy(), self.dropdown_location_list.currentIndex())
+        return (self.location_list.copy(), self.location_ids.copy(), self.dropdown_location_list.currentIndex(), tuple(self.ticked_rows()))
 
     def push_undo(self):
         self._undo_stack.append(self._snapshot())
@@ -2517,7 +2642,7 @@ class MultiPointWidget2(QFrame):
         """Restore the position list before the last change. Does not move the stage."""
         if not self._undo_stack:
             return False
-        loc, ids, index = self._undo_stack.pop()
+        loc, ids, index, ticks = self._undo_stack.pop()
         self._undo_depth += 1
         self.table_location_list.blockSignals(True)
         self.dropdown_location_list.blockSignals(True)
@@ -2544,6 +2669,7 @@ class MultiPointWidget2(QFrame):
             self.dropdown_location_list.blockSignals(False)
             self.table_location_list.blockSignals(False)
             self._undo_depth -= 1
+        self.set_ticks([r for r in ticks if r < len(loc)])
         self._undo_state_changed()
         return True
 
@@ -2578,7 +2704,8 @@ class MultiPointWidget2(QFrame):
                 self.table_location_list.selectRow(index)
 
     def cell_was_clicked(self,row,column):
-
+        if column == TICK_COLUMN:
+            return          # clicking a tick box must not move the stage
         self.dropdown_location_list.setCurrentIndex(row)
 
     @_undoable

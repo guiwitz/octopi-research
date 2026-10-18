@@ -205,10 +205,10 @@ mp.checkbox_move_to_selected.setChecked(True); mp.dropdown_location_list.setCurr
 mp.previous(); check("previous at first with move option re-moves", mp.dropdown_location_list.currentIndex()==0 and len(nav.moves)==3)
 tw.btn_next.click(); tw.btn_previous.click(); check("window buttons work", mp.dropdown_location_list.currentIndex()==0)
 from qtpy.QtWidgets import QShortcut, QLabel
-keys=sorted(set(sc.key().toString() for sc in mp.findChildren(QShortcut))-{';'}); check("shortcuts registered", keys==['Alt+Left','Alt+Right','Ctrl+Z'], keys)
+keys=sorted(set(sc.key().toString() for sc in mp.findChildren(QShortcut))-{';'}); check("shortcuts registered", keys==['Ctrl+Down','Ctrl+Left','Ctrl+Right','Ctrl+Up','Ctrl+Z','Del'], keys)
 mp._shortcut_next(); check("shortcut next", mp.dropdown_location_list.currentIndex()==1)
 mp._shortcut_previous(); check("shortcut previous", mp.dropdown_location_list.currentIndex()==0)
-check("shortcut hint in window", any('Alt+Right' in l.text() and 'Ctrl+Z' in l.text() for l in tw.findChildren(QLabel)))
+check("shortcut hint in window", any('Ctrl+Right' in l.text() and 'Ctrl+Z' in l.text() and 'Delete' in l.text() for l in tw.findChildren(QLabel)))
 
 before=S(); mp.dropdown_location_list.setCurrentIndex(1); nav.moves.clear()
 mp.remove_location(); nav.moves.clear(); check("removed", len(mp.location_list)==3 and mp.table_location_list.rowCount()==3)
@@ -239,6 +239,70 @@ mp.btn_clear.click(); check("Clear button works", len(mp.location_list)==0)
 tw.btn_undo.click(); check("undo Clear", np.array_equal(S()[0],b4[0]) and mp.table_location_list.item(2,3).text()=='B-0', (S(), b4, mp.table_location_list.rowCount()))
 mp.btn_next.click(); mp.btn_previous.click(); check("main next/previous buttons", True)
 mp._undo_stack.clear()
+
+# ---------- tick boxes, Add/Remove in the Positions window, Delete shortcut, offset of ticked positions, 'group'
+from qtpy.QtCore import Qt
+QMessageBox.question=staticmethod(lambda *a,**k: QMessageBox.Yes)
+TICK=widgets.TICK_COLUMN
+tb=mp.table_location_list
+hdr=[tb.horizontalHeaderItem(i).text() for i in range(4)]
+check("column renamed to 'group'", hdr==['x','y','z','group'], hdr)
+check("tick column is shown first", tb.horizontalHeader().visualIndex(TICK)==0)
+check("every row has a tick item", all(tb.item(r,TICK) is not None for r in range(tb.rowCount())))
+mp.checkbox_move_to_selected.setChecked(True)
+def reset_positions():
+    if len(mp.location_list)>4: mp._remove_rows(range(4,len(mp.location_list)))
+    for r,(x,y,z) in enumerate([(1,1,.1),(2,1,.1),(3,1,.2),(4,1,.2)]): mp.set_location(r,x,y,z)
+    mp.location_ids=np.array(['A-0','A-1','B-0','B-1'],dtype='<U20'); mp._undo_stack.clear(); mp._undo_state_changed()
+    mp.untick_all(); mp.dropdown_location_list.blockSignals(True); mp.dropdown_location_list.setCurrentIndex(0); mp.dropdown_location_list.blockSignals(False); nav.moves.clear()
+reset_positions()
+steps=len(mp._undo_stack)
+tb.item(1,TICK).setCheckState(Qt.Checked)
+check("ticking changes nothing and does not move the stage", mp.ticked_rows()==[1] and nav.moves==[] and len(mp._undo_stack)==steps and np.allclose(mp.location_list[:,0],[1,2,3,4]))
+mp.cell_was_clicked(2,TICK); check("clicking a tick box does not move or select", nav.moves==[] and mp.dropdown_location_list.currentIndex()==0)
+mp.cell_was_clicked(2,0); check("clicking a normal cell still selects and moves", mp.dropdown_location_list.currentIndex()==2 and len(nav.moves)==3)
+reset_positions()
+tw.btn_tick_all.click(); check("tick all", mp.ticked_rows()==[0,1,2,3] and '4 ticked' in tw.label_ticked.text(), tw.label_ticked.text())
+tw.btn_tick_none.click(); check("tick none", mp.ticked_rows()==[] and 'none ticked' in tw.label_ticked.text())
+mp.dropdown_location_list.blockSignals(True); mp.dropdown_location_list.setCurrentIndex(2); mp.dropdown_location_list.blockSignals(False)
+tw.btn_tick_group.click(); check("tick group of highlighted", mp.ticked_rows()==[2,3], mp.ticked_rows())
+
+# offset ticked positions (reference = highlighted position 0, moved to the current coordinates)
+reset_positions(); mp.set_ticks([2,3]); nav.x_pos_mm,nav.y_pos_mm,nav.z_pos_mm=1.5,1.2,0.15; tw.check_offset_z.setChecked(True)
+tw.btn_offset_ticked.click()
+exp=np.array([[1.5,1.2,0.15],[2,1,0.1],[3.5,1.2,0.25],[4.5,1.2,0.25]])
+check("offset ticked: reference moved, ticked shifted, others untouched", np.allclose(mp.location_list,exp), mp.location_list)
+check("offset ticked is one undo step and does not move the stage", len(mp._undo_stack)==1 and nav.moves==[])
+reset_positions(); tw.btn_offset_ticked.click(); check("offset ticked without ticks: message, no change", np.allclose(mp.location_list[:,0],[1,2,3,4]) and 'Tick' in tw.label_status.text(), tw.label_status.text())
+check("the three offset buttons are in one box", tw.btn_offset_all.parent() is tw.btn_offset_group.parent() is tw.btn_offset_ticked.parent() is tw.check_offset_z.parent() and tw.btn_offset_all.parent().title().startswith('Offset positions'))
+
+# remove: several ticked / highlighted only / Delete shortcut / Add+Remove buttons in the window
+reset_positions(); mp.set_ticks([1,2]); mp.dropdown_location_list.blockSignals(True); mp.dropdown_location_list.setCurrentIndex(0); mp.dropdown_location_list.blockSignals(False)
+tw.btn_remove.click()
+check("remove ticked", list(mp.location_ids)==['A-0','B-1'] and tb.rowCount()==2 and mp.dropdown_location_list.count()==2 and len(mp.location_list)==2, list(mp.location_ids))
+check("multi remove keeps table/ids in step and does not move the stage", tb.item(1,3).text()=='B-1' and nav.moves==[], nav.moves)
+tw.btn_undo.click(); check("undo restores removed positions and the ticks", list(mp.location_ids)==['A-0','A-1','B-0','B-1'] and tb.rowCount()==4 and mp.ticked_rows()==[1,2], (list(mp.location_ids), mp.ticked_rows()))
+r=[]; QMessageBox.question=staticmethod(lambda *a,**k: (r.append(1),QMessageBox.No)[1]); mp.remove_location()
+check("declined multi remove changes nothing", r and tb.rowCount()==4); QMessageBox.question=staticmethod(lambda *a,**k: QMessageBox.Yes)
+reset_positions(); mp.dropdown_location_list.blockSignals(True); mp.dropdown_location_list.setCurrentIndex(3); mp.dropdown_location_list.blockSignals(False)
+mp._shortcut_remove(); check("Delete shortcut removes the highlighted position", list(mp.location_ids)==['A-0','A-1','B-0'] and tb.rowCount()==3, list(mp.location_ids))
+tw.btn_undo.click(); check("undo of Delete", tb.rowCount()==4)
+mp.scanCoordinates=None; nav.x_pos_mm,nav.y_pos_mm,nav.z_pos_mm=8,8,0.3
+tw.btn_add.click(); check("Add button in the window", len(mp.location_list)==5 and tb.rowCount()==5 and tb.item(4,TICK) is not None)
+mp._shortcut_add(); nav.x_pos_mm=9; mp._shortcut_add(); check("add shortcut", len(mp.location_list)==6)
+tw.btn_remove.click(); check("Remove button in the window (highlighted position)", len(mp.location_list)==5)
+reset_positions()
+check("window shortcuts registered", {sc.key().toString() for sc in tw.findChildren(QShortcut)}>={'Del',';','Ctrl+Right','Ctrl+Left','Ctrl+Up','Ctrl+Down','Ctrl+Z'})
+
+# set group on ticked rows (or the highlighted ones), and the '-' check
+popups.clear(); tw.editable_text.setText('a-b'); tw.edit_id_btn.click(); check("'-' in a group name is refused", popups and list(mp.location_ids)==['A-0','A-1','B-0','B-1'])
+mp.set_ticks([0,3]); tw.editable_text.setText('Z'); tw.check_id_sequential.setChecked(False); tw.edit_id_btn.click()
+check("set group on ticked rows", list(mp.location_ids)==['Z','A-1','B-0','Z'], list(mp.location_ids))
+tw.btn_undo.click(); tw.check_id_sequential.setChecked(True); tw.edit_id_btn.click()
+check("set group with numbering", list(mp.location_ids)==['Z-0','A-1','B-0','Z-1'], list(mp.location_ids))
+tw.check_id_sequential.setChecked(False); tw.btn_undo.click(); mp.untick_all(); mp.table_location_list.selectRow(2); tw.editable_text.setText('Q'); tw.edit_id_btn.click()
+check("set group without ticks: highlighted row", list(mp.location_ids)==['A-0','A-1','Q','B-1'], list(mp.location_ids))
+reset_positions()
 
 # ---------- saving path check
 nostart=[]; mpc2.run_acquisition=lambda *a,**k: nostart.append(1)

@@ -12,7 +12,7 @@ def run_job(scope):
     the next time point starts immediately (none is skipped).
 
     YOU PROVIDE:
-      - Positions: define them in the Flexible Multipoint tab (IDs are optional for this job).
+      - Positions: define them in the Flexible Multipoint tab (groups are optional for this job).
       - Settings at the top of this file: CHANNELS, N_TIMEPOINTS, INTERVAL_S.
       - Channel names: the full name from the channel configuration, or a part that matches exactly one channel
         (e.g. "488"). "BF" alone matches several channels and is refused.

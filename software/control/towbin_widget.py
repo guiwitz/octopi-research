@@ -4,7 +4,7 @@ Opened with the 'Positions...' button next to the location list. It contains the
 (owned by the Flexible Multipoint widget, only shown here) and the buttons to edit it. Closing the
 window only hides it (nothing is lost) and it can be opened again; it has no settings of its own.
 """
-from qtpy.QtWidgets import (QWidget, QPushButton, QVBoxLayout, QLabel,
+from qtpy.QtWidgets import (QWidget, QPushButton, QVBoxLayout, QLabel, QGroupBox, QHBoxLayout,
                             QLineEdit, QCheckBox, QGridLayout, QMessageBox, QTableWidgetItem)
 
 from qtpy.QtCore import Qt
@@ -37,25 +37,56 @@ class TowbinWidget(QWidget):
         # the position table lives here (reparented from the Flexible Multipoint widget)
         self.layout.addWidget(self.parent.table_location_list, 1)
 
-        from control.widgets import POSITION_SHORTCUTS
+        from control.widgets import POSITION_SHORTCUTS, POSITION_SHORTCUTS_ALT
         grid_nav = QGridLayout()
         self.layout.addLayout(grid_nav)
+        self.btn_add = QPushButton("Add")
+        self.btn_add.setToolTip("Add the current stage position to the list")
+        self.btn_add.clicked.connect(self.parent.add_location)
+        grid_nav.addWidget(self.btn_add, 0, 0)
+        self.btn_remove = QPushButton("Remove")
+        self.btn_remove.setToolTip("Remove the ticked positions, or (no ticks) the highlighted position")
+        self.btn_remove.clicked.connect(self.parent.remove_location)
+        grid_nav.addWidget(self.btn_remove, 0, 1)
         self.btn_previous = QPushButton("Previous position")
         self.btn_previous.clicked.connect(self.parent.previous)
-        grid_nav.addWidget(self.btn_previous, 0, 0)
+        grid_nav.addWidget(self.btn_previous, 0, 2)
         self.btn_next = QPushButton("Next position")
         self.btn_next.clicked.connect(self.parent.next)
-        grid_nav.addWidget(self.btn_next, 0, 1)
+        grid_nav.addWidget(self.btn_next, 0, 3)
         self.btn_undo = QPushButton("Undo")
         self.btn_undo.setToolTip("Undo the last change of the position list (add, remove, edit, offset, ...)")
         self.btn_undo.clicked.connect(self.parent.undo_positions)
-        grid_nav.addWidget(self.btn_undo, 0, 2)
-        grid_nav.addWidget(self.parent.checkbox_move_to_selected, 1, 0, 1, 3)
-        label_keys = QLabel(f"Shortcuts: {POSITION_SHORTCUTS['previous']} previous | "
-                            f"{POSITION_SHORTCUTS['next']} next | {POSITION_SHORTCUTS['undo']} undo")
+        grid_nav.addWidget(self.btn_undo, 0, 4)
+        grid_nav.addWidget(self.parent.checkbox_move_to_selected, 1, 0, 1, 5)
+        label_keys = QLabel(f"Shortcuts: {POSITION_SHORTCUTS['previous']} / {POSITION_SHORTCUTS_ALT['previous']} previous | "
+                            f"{POSITION_SHORTCUTS['next']} / {POSITION_SHORTCUTS_ALT['next']} next | "
+                            f"{POSITION_SHORTCUTS['add']} add | {POSITION_SHORTCUTS['remove']} remove | {POSITION_SHORTCUTS['undo']} undo")
         label_keys.setStyleSheet('font-size: 8pt; color: gray;')
-        grid_nav.addWidget(label_keys, 2, 0, 1, 3)
+        grid_nav.addWidget(label_keys, 2, 0, 1, 5)
         self.update_undo_button()
+
+        # tick boxes: select several positions
+        row_ticks = QHBoxLayout()
+        self.layout.addLayout(row_ticks)
+        row_ticks.addWidget(QLabel("Tick:"))
+        self.btn_tick_all = QPushButton("all")
+        self.btn_tick_all.clicked.connect(lambda *_: self.parent.tick_all())
+        row_ticks.addWidget(self.btn_tick_all)
+        self.btn_tick_none = QPushButton("none")
+        self.btn_tick_none.clicked.connect(lambda *_: self.parent.untick_all())
+        row_ticks.addWidget(self.btn_tick_none)
+        self.btn_tick_group = QPushButton("group of highlighted")
+        self.btn_tick_group.clicked.connect(lambda *_: self.parent.tick_group_of_current())
+        row_ticks.addWidget(self.btn_tick_group)
+        self.label_ticked = QLabel("")
+        self.label_ticked.setStyleSheet('font-size: 8pt; color: gray;')
+        row_ticks.addWidget(self.label_ticked, 1)
+        table = self.parent.table_location_list
+        table.cellChanged.connect(lambda *_: self.update_tick_label())
+        table.model().rowsInserted.connect(lambda *_: self.update_tick_label())
+        table.model().rowsRemoved.connect(lambda *_: self.update_tick_label())
+        self.update_tick_label()
 
         grid_edit_points_id = QGridLayout()
         self.layout.addLayout(grid_edit_points_id)
@@ -63,11 +94,14 @@ class TowbinWidget(QWidget):
         self.editable_text = QLineEdit()
         grid_edit_points_id.addWidget(self.editable_text)
 
-        self.edit_id_btn = QPushButton("Edit ID(s)")
+        self.editable_text.setPlaceholderText("group name, e.g. A (without '-')")
+        self.edit_id_btn = QPushButton("Set group(s)")
+        self.edit_id_btn.setToolTip("Set the group of the ticked positions (or, without ticks, of the highlighted rows)")
         self.edit_id_btn.clicked.connect(self.edit_id_selected_location)
         grid_edit_points_id.addWidget(self.edit_id_btn)
 
-        self.check_id_sequential = QCheckBox("ID Sequential")
+        self.check_id_sequential = QCheckBox("add number (A-0, A-1, ...)")
+        self.check_id_sequential.setToolTip("Number the positions within the group: A-0, A-1, A-2, ... in table order")
         grid_edit_points_id.addWidget(self.check_id_sequential)
 
         grid_shift_points = QGridLayout()
@@ -80,24 +114,36 @@ class TowbinWidget(QWidget):
         self.btn_copy_z = QPushButton("Copy Z to all")
         grid_shift_points.addWidget(self.btn_copy_z)
         self.btn_copy_z.clicked.connect(self.copy_z_to_all)
-        self.btn_copy_z_to_same_id = QPushButton("Copy Z to group ID")
+        self.btn_copy_z_to_same_id = QPushButton("Copy Z to group")
         self.btn_copy_z_to_same_id.clicked.connect(self.copy_z_to_same_id)
         grid_shift_points.addWidget(self.btn_copy_z_to_same_id)
 
-        grid_offset = QGridLayout()
-        self.layout.addLayout(grid_offset)
+        # the three offset buttons and 'also shift Z' belong together: one framed box
+        box_offset = QGroupBox("Offset positions")
+        box_offset.setStyleSheet("QGroupBox { border: 1px solid #707070; border-radius: 4px; margin-top: 10px; } "
+                                 "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }")
+        grid_offset = QGridLayout(box_offset)
+        self.layout.addWidget(box_offset)
         self.btn_offset_all = QPushButton("Offset all positions")
-        self.btn_offset_all.setToolTip("Move the selected position to the current stage coordinates and shift all "
+        self.btn_offset_all.setToolTip("Move the highlighted position to the current stage coordinates and shift all "
                                        "other positions by the same amount (current - saved).")
         self.btn_offset_all.clicked.connect(self.offset_all)
         grid_offset.addWidget(self.btn_offset_all, 0, 0)
-        self.btn_offset_group = QPushButton("Offset all positions of group ID")
-        self.btn_offset_group.setToolTip("Same, but only for positions with the same group ID as the selected one.")
+        self.btn_offset_group = QPushButton("Offset positions of the same group")
+        self.btn_offset_group.setToolTip("Same, but only for positions in the same group as the highlighted one.")
         self.btn_offset_group.clicked.connect(self.offset_group)
         grid_offset.addWidget(self.btn_offset_group, 0, 1)
+        self.btn_offset_ticked = QPushButton("Offset ticked positions")
+        self.btn_offset_ticked.setToolTip("Same, but only for the ticked positions (the highlighted reference position is moved as well).")
+        self.btn_offset_ticked.clicked.connect(self.offset_ticked)
+        grid_offset.addWidget(self.btn_offset_ticked, 0, 2)
         self.check_offset_z = QCheckBox("also shift Z")
         self.check_offset_z.setChecked(True)
         grid_offset.addWidget(self.check_offset_z, 1, 0)
+        label_offset = QLabel("Reference = the highlighted position: it is moved to the current stage coordinates, the others are shifted by the same amount.")
+        label_offset.setStyleSheet('font-size: 8pt; color: gray;')
+        label_offset.setWordWrap(True)
+        grid_offset.addWidget(label_offset, 1, 1, 1, 2)
         self.label_status = QLabel("")
         self.label_status.setStyleSheet('font-size: 8pt; color: gray;')
         self.label_status.setWordWrap(True)
@@ -108,22 +154,23 @@ class TowbinWidget(QWidget):
     def update_undo_button(self):
         self.btn_undo.setEnabled(self.parent.can_undo())
 
+    def update_tick_label(self):
+        n = len(self.parent.ticked_rows())
+        self.label_ticked.setText(f"{n} ticked" if n else "none ticked: actions use the highlighted position")
+
     def close_widget(self):
         self.close()
 
     @_undo_step
     def edit_id_selected_location(self):
-        """Edit the ID of the selected locations in the table. If the checkbox
-        is checked, the ID will be sequential."""
-        
-        if '-' in self.editable_text.text():
-            msg = QMessageBox()
-            msg.setText("Please avoid the character '-' in the ID")
-            msg.exec_()
+        """Set the group of the ticked positions (or the highlighted rows if none is ticked). If the checkbox
+        is checked, the positions are numbered: A-0, A-1, ... in table order."""
 
-        selected_items = self.parent.table_location_list.selectedItems()
-        rows_to_edit = set([s.row() for s in selected_items])
-        for ind, row in enumerate(rows_to_edit):
+        if '-' in self.editable_text.text():
+            QMessageBox.warning(self, 'Group name', "Please avoid the character '-' in the group name "
+                                "(the group is the part before the first '-').")
+            return
+        for ind, row in enumerate(sorted(self.parent.rows_to_act_on())):
             item = self.parent.table_location_list.item(row, 3)
             if self.check_id_sequential.isChecked():
                 item.setText(f'{self.editable_text.text()}-{ind}')
@@ -196,7 +243,10 @@ class TowbinWidget(QWidget):
     def offset_group(self):
         self._offset(group_only=True)
 
-    def _offset(self, group_only):
+    def offset_ticked(self):
+        self._offset(ticked_only=True)
+
+    def _offset(self, group_only=False, ticked_only=False):
         """Set the selected position to the current stage coordinates and shift the other
         positions (all, or those with the same group ID) by the same delta (current - saved)."""
         p = self.parent
@@ -211,12 +261,18 @@ class TowbinWidget(QWidget):
         delta = [current[0] - saved[0], current[1] - saved[1], (current[2] - saved[2]) if use_z else 0.0]
 
         group = str(p.location_ids[row]).split('-')[0]
-        if group_only:
+        if ticked_only:
+            ticked = p.ticked_rows()
+            if not ticked:
+                self._status("Tick the positions to shift first (tick boxes in the first column of the table).")
+                return
+            rows = sorted(set(ticked) | {row})
+        elif group_only:
             rows = [r for r in range(p.location_list.shape[0]) if str(p.location_ids[r]).split('-')[0] == group]
         else:
             rows = list(range(p.location_list.shape[0]))
 
-        what = f"{len(rows)} position(s)" + (f" of group '{group}'" if group_only else "")
+        what = f"{len(rows)} position(s)" + (f" of group '{group}'" if group_only else (" (ticked + the reference)" if ticked_only else ""))
         text = (f"Selected position {row} is moved to the current coordinates and {what} are shifted by\n"
                 f"dx = {delta[0]:+.4f} mm, dy = {delta[1]:+.4f} mm, dz = {delta[2] * 1000:+.1f} um.\n\nContinue?")
         if QMessageBox.question(self, 'Offset positions', text,

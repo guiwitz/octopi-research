@@ -169,7 +169,7 @@ class JobsWidget(QFrame):
         if pts:
             self.label_points.setText(f'{len(pts)} positions from the Flexible Multipoint tab; groups: ' + ', '.join(f'{g} ({n})' for g, n in groups.items()))
         else:
-            self.label_points.setText('No positions yet: define them in the Flexible Multipoint tab (the group is the part of the ID before the first "-").')
+            self.label_points.setText('No positions yet: define them in the Flexible Multipoint tab (the group is the part of the "group" column before the first "-").')
 
     def _channel_infos(self):
         return {c.name: dict(exposure_ms=c.exposure_time, gain=c.analog_gain, intensity=c.illumination_intensity)

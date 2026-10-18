@@ -1,7 +1,7 @@
 """Two phases: dense time lapse of group A, then one overview of all positions (example job)."""
 
 # ---- settings: edit these ------------------------------------------------------------------
-GROUP_TIMELAPSE = "A"                          # group imaged in phase 1 (part of the position ID before the first "-")
+GROUP_TIMELAPSE = "A"                          # group imaged in phase 1 (part of the "group" column of the positions table before the first "-")
 TIMELAPSE_CHANNEL = "488"
 N_TIMEPOINTS, INTERVAL_S = 12, 300             # phase 1: 12 time points, one every 5 min
 OVERVIEW_AT_S = 2 * 3600                       # phase 2 starts this many seconds after the start of the job
@@ -15,7 +15,7 @@ def run_job(scope):
     Shows scope.wait_until() and that images come back as NumPy arrays (decisions can depend on image content).
 
     YOU PROVIDE:
-      - Positions in the Flexible Multipoint tab; the positions of the time-lapse group need IDs starting with
+      - Positions in the Flexible Multipoint tab; the positions of the time-lapse group need a group cell starting with
         GROUP_TIMELAPSE + "-", e.g. A-0, A-1 (the other positions can have any other group).
       - Settings at the top of this file (group, channels, number/interval of time points, start time of phase 2).
     """
