@@ -1887,6 +1887,10 @@ class MultiPointWidget(QFrame):
             msg.setText("Please select at least one imaging channel first")
             msg.exec_()
             return
+        if pressed and self.multipointController.acquisition_running():
+            self.btn_startAcquisition.setChecked(False)
+            QMessageBox.warning(self, 'Acquisition', 'The previous acquisition is still stopping. Please wait until it has ended.')
+            return
         if pressed:
             from control.acq_summary import confirm_start
             if not confirm_start(self, 'multipoint acquisition', self.multipointController, [item.text() for item in self.list_configurations.selectedItems()]):
@@ -1920,11 +1924,16 @@ class MultiPointWidget(QFrame):
             self.multipointController.run_acquisition()
         else:
             self.multipointController.request_abort_aquisition()
-            self.setEnabled_all(True)
+            # stability: keep Start locked until the acquisition has really ended (acquisition_is_finished);
+            # pressing Start while the old one was still stopping crashed the program
+            self.btn_startAcquisition.setEnabled(False)
+            self.btn_startAcquisition.setText('Stopping ...')
 
     def acquisition_is_finished(self):
         self.signal_acquisition_started.emit(False)
         self.btn_startAcquisition.setChecked(False)
+        self.btn_startAcquisition.setText('Start Acquisition')
+        self.btn_startAcquisition.setEnabled(True)
         self.setEnabled_all(True)
 
     def setEnabled_all(self,enabled,exclude_btn_startAcquisition=True):
@@ -2404,6 +2413,10 @@ class MultiPointWidget2(QFrame):
                                 'The saving directory does not exist:\n' + self.lineEdit_savingDir.text() +
                                 '\n\nThe experiment was not started. Please choose an existing base saving directory.')
             return
+        if pressed and self.multipointController.acquisition_running():
+            self.btn_startAcquisition.setChecked(False)
+            QMessageBox.warning(self, 'Acquisition', 'The previous acquisition is still stopping. Please wait until it has ended.')
+            return
         if pressed:
             from control.acq_summary import confirm_start
             if not confirm_start(self, 'multipoint acquisition', self.multipointController, [item.text() for item in self.list_configurations.selectedItems()]):
@@ -2442,7 +2455,10 @@ class MultiPointWidget2(QFrame):
             self.multipointController.run_acquisition(self.location_list)
         else:
             self.multipointController.request_abort_aquisition()
-            self.setEnabled_all(True)
+            # stability: keep Start locked until the acquisition has really ended (acquisition_is_finished);
+            # pressing Start while the old one was still stopping crashed the program
+            self.btn_startAcquisition.setEnabled(False)
+            self.btn_startAcquisition.setText('Stopping ...')
 
     @_undoable
     def load_last_used_locations(self):
@@ -2482,6 +2498,8 @@ class MultiPointWidget2(QFrame):
             self.acquisition_in_place = False
         self.signal_acquisition_started.emit(False)
         self.btn_startAcquisition.setChecked(False)
+        self.btn_startAcquisition.setText('Start Acquisition')
+        self.btn_startAcquisition.setEnabled(True)
         self.setEnabled_all(True)
 
     def setEnabled_all(self,enabled,exclude_btn_startAcquisition=True):

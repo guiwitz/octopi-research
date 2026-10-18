@@ -302,6 +302,14 @@ class JobsWidget(QFrame):
                 return                                   # the job ended while the question was open
             self.append_log('abort requested ...')
             self.mpc.request_abort_aquisition()
+            # stability: no new start until the job has really ended (Start during the stop crashed the program)
+            self.btn_start.setEnabled(False)
+            self.btn_start.setText('Aborting ...')
+            self.btn_pause.setEnabled(False)
+            return
+        if self.running or self.mpc.acquisition_running():
+            self.btn_start.setChecked(False)
+            self._warn('Job', 'The previous acquisition is still running or stopping. Please wait until it has ended.')
             return
         saving_dir = self.lineEdit_savingDir.text().strip()
         if not saving_dir or not os.path.isdir(saving_dir):
@@ -402,6 +410,7 @@ class JobsWidget(QFrame):
             self.live.on_message(dict(type='finished', status=res.status if res is not None else 'failed', error=res.error if res is not None else 'see the console'))
         self.btn_start.setChecked(False)
         self.btn_start.setText('Start job')
+        self.btn_start.setEnabled(True)
         self._set_controls_enabled(True)
         self.signal_acquisition_started.emit(False)
         if res is not None:

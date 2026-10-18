@@ -1013,19 +1013,42 @@ class Camera(object):
         else:
         	print('trigger not sent - camera is not streaming')
 
+    MAX_FAILED_READS = 3 # stability: after this many failed reads in a row read_frame raises (the acquisition stops with a message)
+
+    def _read_failed(self, reason):
+        """stability: a failed read returns None (the acquisition skips that image and switches the light off) instead
+        of a black np.zeros((Width, Height)) image that was saved as data; several failures in a row raise."""
+        self._failed_reads = getattr(self, '_failed_reads', 0) + 1
+        print('*** FLIR camera: no image (' + reason + '), failure ' + str(self._failed_reads) + ' in a row')
+        if self._failed_reads >= self.MAX_FAILED_READS:
+            self._failed_reads = 0
+            raise RuntimeError('FLIR camera delivered no image ' + str(self.MAX_FAILED_READS) + ' times in a row (last: ' + reason + ')')
+        return None
+
     def read_frame(self):
         if not self.camera.IsStreaming():
             print("Cannot read frame, camera not streaming")
-            return np.zeros((self.Width,self.Height))
+            return self._read_failed('camera not streaming')
         callback_was_enabled = False
         if self.callback_is_enabled: # need to disable callback to read stream manually
             callback_was_enabled = True
             self.disable_callback()
-        raw_image = self.camera.GetNextImage(1000)
+        # stability: the timeout was a fixed 1000 ms, so exposures of about 1 s or more always timed out
+        # (in hardware trigger mode the camera exposure also includes the rolling-shutter readout)
+        timeout_ms = int(1000 + 1.5*float(getattr(self, 'exposure_time', 0) or 0))
+        try:
+            raw_image = self.camera.GetNextImage(timeout_ms)
+        except PySpin.SpinnakerException as ex:
+            if callback_was_enabled:
+                self.enable_callback()
+            return self._read_failed('GetNextImage(' + str(timeout_ms) + ' ms): ' + str(ex))
         if raw_image.IsIncomplete():
             print('Image incomplete with image status %d ...' % raw_image.GetImageStatus())
             raw_image.Release()
-            return np.zeros((self.Width,self.Height))
+            if callback_was_enabled:
+                self.enable_callback()
+            return self._read_failed('incomplete image')
+        self._failed_reads = 0
 
         if self.is_color and 'mono' not in self.pixel_format.lower():
             if "10" in self.pixel_format or "12" in self.pixel_format or "14" in self.pixel_format or "16" in self.pixel_format:

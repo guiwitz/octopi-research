@@ -145,7 +145,7 @@ r.dropdown_pixel_format.setCurrentText('MONO16'); check("camera mode", cam.pixel
 # ---------- Flexible Multipoint widget (with mocks)
 import control.widgets as widgets
 af4,_,_=make_controller(); af4.set_deltaZ(1.524); af4.set_N(10)
-mpc2=MagicMock(); mpc2.autofocusController=af4
+mpc2=MagicMock(); mpc2.autofocusController=af4; mpc2.acquisition_running=lambda: False  # no acquisition running
 mp=widgets.MultiPointWidget2(MagicMock(),MagicMock(),mpc2,CfgMgr())
 check("save-as-multichannel checkbox in tab", mp.checkbox_save_multichannel.text()=='save as multichannel' and mp.checkbox_save_multichannel.isChecked())
 check("AF summary shown", mp.label_af_summary.text()=='dZ 1.524 um | N 10 | LAPE', mp.label_af_summary.text())

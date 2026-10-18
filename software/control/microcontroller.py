@@ -623,6 +623,15 @@ class Microcontroller():
     def turn_off_AF_laser(self):
         self.set_pin_level(MCU_PINS.AF_LASER,0)
 
+    def set_joystick_enabled(self,enabled):
+        """towbinlab: enable/disable the joystick and the focus wheel (firmware command SET_JOYSTICK_ENABLED; a firmware
+        without it ignores the command)."""
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_JOYSTICK_ENABLED
+        cmd[2] = 1 if enabled else 0
+        self.send_command(cmd)
+        self.joystick_enabled = bool(enabled)
+
     def send_command(self,command):
         self._cmd_id = (self._cmd_id + 1)%256
         command[0] = self._cmd_id
@@ -644,6 +653,7 @@ class Microcontroller():
         while self.terminate_reading_received_packet_thread == False:
             # wait to receive data
             if self.serial.in_waiting==0:
+                time.sleep(0.0005) # stability: do not spin at 100% CPU (it competed for the GIL with GUI and acquisition)
                 continue
             if self.serial.in_waiting % self.rx_buffer_length != 0:
                 continue
@@ -686,8 +696,11 @@ class Microcontroller():
             elif self._cmd_execution_status == CMD_EXECUTION_STATUS.CMD_CHECKSUM_ERROR:
                 print('! cmd checksum error, resending command')
                 if self.retry > 10:
-                    print('!! resending command failed for more than 10 times, the program will exit')
-                    sys.exit(1)
+                    # stability: sys.exit here only ended this reader thread silently (then nothing completed any more)
+                    print('!! resending command failed for more than 10 times - check the USB connection of the microcontroller')
+                    self.retry = 0
+                    self.link_error = True
+                    self.resend_last_command()
                 else:
                     self.resend_last_command()
             # print('command id ' + str(self._cmd_id) + '; mcu command ' + str(self._cmd_id_mcu) + ' status: ' + str(msg[1]) )
@@ -729,8 +742,10 @@ class Microcontroller():
         while self.is_busy():
             time.sleep(0.02)
             if time.time() - timestamp_start > TIMEOUT_LIMIT_S:
-                print('Error - microcontroller timeout, the program will exit')
-                sys.exit(1)
+                # stability: this used to sys.exit(1) - the program vanished without cleanup (light on, camera open)
+                print('Error - microcontroller timeout (' + str(TIMEOUT_LIMIT_S) + ' s): the last command did not complete')
+                raise TimeoutError('microcontroller did not complete the last command within ' + str(TIMEOUT_LIMIT_S) + ' s '
+                                   '(joystick or focus wheel touched during a move?)')
 
     def _int_to_payload(self,signed_int,number_of_bytes):
         if signed_int >= 0:
@@ -1152,6 +1167,15 @@ class Microcontroller_Simulation():
     def turn_off_AF_laser(self):
         self.set_pin_level(MCU_PINS.AF_LASER,0)
 
+    def set_joystick_enabled(self,enabled):
+        """towbinlab: enable/disable the joystick and the focus wheel (firmware command SET_JOYSTICK_ENABLED; a firmware
+        without it ignores the command)."""
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_JOYSTICK_ENABLED
+        cmd[2] = 1 if enabled else 0
+        self.send_command(cmd)
+        self.joystick_enabled = bool(enabled)
+
     def send_command(self,command):
         self._cmd_id = (self._cmd_id + 1)%256
         command[0] = self._cmd_id
@@ -1176,8 +1200,10 @@ class Microcontroller_Simulation():
         while self.is_busy():
             time.sleep(0.02)
             if time.time() - timestamp_start > TIMEOUT_LIMIT_S:
-                print('Error - microcontroller timeout, the program will exit')
-                sys.exit(1)
+                # stability: this used to sys.exit(1) - the program vanished without cleanup (light on, camera open)
+                print('Error - microcontroller timeout (' + str(TIMEOUT_LIMIT_S) + ' s): the last command did not complete')
+                raise TimeoutError('microcontroller did not complete the last command within ' + str(TIMEOUT_LIMIT_S) + ' s '
+                                   '(joystick or focus wheel touched during a move?)')
 
     def set_dac80508_scaling_factor_for_illumination(self, illumination_intensity_factor):
         if illumination_intensity_factor > 1:

@@ -45,6 +45,16 @@ import imageio as iio
 
 import subprocess
 
+# stability (see tests/stress_acquisition.py)
+MCU_WAIT_WARN_S = 20    # warn if the microcontroller has not finished a command after this time
+MCU_WAIT_ABORT_S = 5    # when Stop was pressed: give up waiting for a command after this time
+MCU_WAIT_LIMIT_S = 120  # never wait longer than this for one command (no stage move takes that long)
+LOCK_JOYSTICK_DURING_ACQUISITION = True # send SET_JOYSTICK_ENABLED 0/1 at start/end (and pause/resume of JOBs)
+
+
+class AcquisitionStopped(Exception):
+    """The acquisition was ended early for a known reason (message is shown to the user)."""
+
 
 class ObjectiveStore:
     def __init__(self, objectives_dict=OBJECTIVES, default_objective=DEFAULT_OBJECTIVE):
@@ -1282,12 +1292,27 @@ class AutofocusWorker(QObject):
         self.crop_height = self.autofocusController.crop_height
 
     def run(self):
-        self.run_autofocus()
-        self.finished.emit()
+        # stability: always emit finished (else autofocus_in_progress stays True and a multipoint acquisition waits forever)
+        try:
+            self.run_autofocus()
+        except BaseException:
+            import traceback
+            traceback.print_exc()
+            print('*** autofocus failed (see above); z is left where it is')
+            self.autofocusController.last_error = traceback.format_exc().strip().splitlines()[-1]
+            try:
+                self.liveController.turn_off_illumination()
+            except BaseException:
+                pass
+        finally:
+            self.finished.emit()
 
     def wait_till_operation_is_completed(self):
+        t0 = time.time()
         while self.microcontroller.is_busy():
             time.sleep(SLEEP_TIME_S)
+            if time.time() - t0 > MCU_WAIT_LIMIT_S:
+                raise AcquisitionStopped('autofocus: the stage did not finish a move within ' + str(int(MCU_WAIT_LIMIT_S)) + ' s')
 
     def run_autofocus(self):
         # @@@ to add: increase gain, decrease exposure time
@@ -1332,6 +1357,8 @@ class AutofocusWorker(QObject):
                     self.microcontroller.send_hardware_trigger(control_illumination=True,illumination_on_time_us=self.camera.exposure_time*1000)
                     image = self.camera.read_frame()
             if image is None:
+                if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+                    self.liveController.turn_off_illumination() # stability: do not leave the light on
                 continue
             # tunr of the illumination if using software trigger
             if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
@@ -1523,12 +1550,18 @@ class AutoFocusController(QObject):
         # create a QThread object
         try:
             if self.thread.isRunning():
-                print('*** autofocus thread is still running ***')
-                self.thread.terminate()
-                self.thread.wait()
-                print('*** autofocus threaded manually stopped ***')
-        except:
+                # stability: do not terminate() it (a running autofocus may hold the camera or the serial port).
+                # Usually the previous autofocus has finished and only its thread is still shutting down (its quit()
+                # is queued to a thread that is busy): stop that thread directly and wait for it.
+                self.thread.quit()
+                if not self.thread.wait(15000):
+                    print('*** autofocus is still running, the new request is ignored ***')
+                    return
+        except (RuntimeError, AttributeError):
             pass
+        old = self.__dict__.get('thread')
+        if isinstance(old, QThread):
+            self._old_threads = [t for t in getattr(self, '_old_threads', []) if not t.isFinished()] + [old]
         self.thread = QThread()
         # create a worker object
         self.autofocusWorker = AutofocusWorker(self)
@@ -1673,6 +1706,7 @@ class MultiPointWorker(QObject):
     signal_update_stats = Signal(object)
     signal_job_message = Signal(str)   # JOBs: progress messages of a job script
     signal_job_status = Signal(object) # JOBs: live status (dicts, see control/jobs_live.py)
+    signal_acquisition_error = Signal(str) # stability: an error ended the acquisition (message for the user)
 
     def __init__(self,multiPointController):
         QObject.__init__(self)
@@ -1756,9 +1790,44 @@ class MultiPointWorker(QObject):
         self.processingHandler.upload_queue.join()
         elapsed_time = time.perf_counter_ns()-self.start_time
         print("Time taken for job: "+str(elapsed_time/10**9))
-        self.finished.emit()
+        self._emit_finished()
 
     def run(self):
+        """Stability wrapper: whatever happens in the acquisition (camera read error, microcontroller timeout, ...)
+        the illumination is switched off and 'finished' is emitted, so the GUI is released and the controller can
+        clean up. Before, an exception left the GUI in the 'running' state with the light on, and Stop + Start then
+        crashed the program (see tests/stress_acquisition.py)."""
+        self._finished_emitted = False
+        try:
+            self._run_acquisition()
+        except BaseException as e: # also SystemExit (microcontroller timeout calls sys.exit)
+            import traceback
+            traceback.print_exc()
+            if isinstance(e, AcquisitionStopped):
+                message = str(e)
+            else:
+                message = 'The acquisition stopped because of an error:\n' + type(e).__name__ + ': ' + str(e)
+            print('*** ' + message.replace('\n',' '))
+            try:
+                self.liveController.turn_off_illumination()
+            except BaseException:
+                traceback.print_exc()
+            try:
+                self.navigationController.enable_joystick_button_action = True
+            except BaseException:
+                pass
+            try:
+                self.signal_acquisition_error.emit(message)
+            except BaseException:
+                pass
+            if not self._finished_emitted:
+                self.finished.emit()
+
+    def _emit_finished(self):
+        self._finished_emitted = True
+        self.finished.emit()
+
+    def _run_acquisition(self):
 
         if getattr(self.multiPointController,'job_file',None):
             self.run_job_script()
@@ -1817,11 +1886,25 @@ class MultiPointWorker(QObject):
         self.processingHandler.upload_queue.join()
         elapsed_time = time.perf_counter_ns()-self.start_time
         print("Time taken for acquisition/processing: "+str(elapsed_time/10**9))
-        self.finished.emit()
+        self._emit_finished()
 
     def wait_till_operation_is_completed(self):
+        t0 = time.time()
+        warned = False
         while self.microcontroller.is_busy():
             time.sleep(SLEEP_TIME_S)
+            waited = time.time() - t0
+            if waited > MCU_WAIT_WARN_S and not warned:
+                warned = True
+                print('*** the microcontroller has not finished the last command for ' + str(int(waited)) + ' s '
+                      '(joystick or focus wheel touched during a move?)')
+            if self.multiPointController.abort_acqusition_requested and waited > MCU_WAIT_ABORT_S:
+                raise AcquisitionStopped('The acquisition was stopped while the stage had not finished its last move '
+                                         '(the joystick or focus wheel may have been touched). Check the stage position.')
+            if waited > MCU_WAIT_LIMIT_S:
+                raise AcquisitionStopped('The stage did not finish a move within ' + str(int(MCU_WAIT_LIMIT_S)) + ' s '
+                                         '(the joystick or focus wheel may have been touched during the acquisition). '
+                                         'The acquisition was stopped; check the stage position.')
 
     def run_single_time_point(self):
         start = time.time()
@@ -2085,6 +2168,8 @@ class MultiPointWorker(QObject):
                                     
                                     if image is None:
                                         print('self.camera.read_frame() returned None')
+                                        if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+                                            self.liveController.turn_off_illumination() # stability: do not leave the light on
                                         continue
                                     # tunr of the illumination if using software trigger
                                     if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
@@ -2194,6 +2279,8 @@ class MultiPointWorker(QObject):
                                             image = self.camera.read_frame()
                                             if image is None:
                                                 print('self.camera.read_frame() returned None')
+                                                if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+                                                    self.liveController.turn_off_illumination() # stability: do not leave the light on
                                                 continue
 
                                             # turn off the illumination if using software trigger
@@ -2497,6 +2584,8 @@ class MultiPointController(QObject):
     signal_z_piezo_um = Signal(float)
     signal_job_message = Signal(str)   # JOBs: progress messages of a job script
     signal_job_status = Signal(object) # JOBs: live status (dicts, see control/jobs_live.py)
+    signal_acquisition_error = Signal(str) # stability: an acquisition ended because of an error (message for the user)
+    acquisitionStarted = Signal()      # stability: emitted when an acquisition thread is started (input lock)
 
     def __init__(self,camera,navigationController,liveController,autofocusController,configurationManager,usb_spectrometer=None,scanCoordinates=None,parent=None):
         QObject.__init__(self)
@@ -2550,6 +2639,8 @@ class MultiPointController(QObject):
         self.job_result = None
         self.job_pause_requested = False # JOBs: True while the running job should be paused (set from the GUI)
         self.job_new_positions = None # JOBs: positions (x,y,z list) read from the table at resume
+        self._old_threads = [] # stability: keep finished-but-not-yet-stopped acquisition threads alive until they end
+        self.last_acquisition_error = None
 
     def set_NX(self,N):
         self.NX = N
@@ -2633,7 +2724,21 @@ class MultiPointController(QObject):
         self.job_result = None
         self.run_acquisition(np.array([[p.x,p.y,p.z] for p in points],dtype=float),_job=True)
 
+    def acquisition_running(self):
+        """stability: True while the acquisition thread of the previous run has not ended yet."""
+        t = self.__dict__.get('thread')
+        try:
+            return isinstance(t, QThread) and t.isRunning()
+        except RuntimeError: # already deleted
+            return False
+
     def run_acquisition(self, location_list=None, _job=False): # @@@ to do: change name to run_experiment
+        if self.acquisition_running():
+            # stability: starting a second acquisition while the first one is still ending would run two workers on
+            # the same hardware and destroy a running QThread ("QThread: Destroyed while thread is still running")
+            print('*** an acquisition is still running (or still stopping); the new one was not started')
+            return False
+        self.last_acquisition_error = None
         if not _job:
             self.job_file = None # a standard acquisition never runs a leftover job
         print('start multipoint')
@@ -2720,6 +2825,11 @@ class MultiPointController(QObject):
                 print("Invalid coordinates for focus map, aborting.")
                 return
 
+        old = self.__dict__.get('thread')
+        if isinstance(old, QThread):
+            self._old_threads.append(old) # stability: a QThread must not be destroyed before it has really stopped
+        self._old_threads = [t for t in self._old_threads if not t.isFinished()]
+        self._set_joystick_enabled(False) # stability: joystick / focus wheel off during the acquisition (needs the towbinlab firmware)
         self.thread = QThread()
         # create a worker object
         self.processingHandler.start_processing()
@@ -2740,6 +2850,7 @@ class MultiPointController(QObject):
         self.multiPointWorker.signal_current_configuration.connect(self.slot_current_configuration,type=Qt.BlockingQueuedConnection)
         self.multiPointWorker.signal_job_message.connect(self.signal_job_message)
         self.multiPointWorker.signal_job_status.connect(self.signal_job_status)
+        self.multiPointWorker.signal_acquisition_error.connect(self._on_acquisition_error)
         self.multiPointWorker.signal_register_current_fov.connect(self.slot_register_current_fov)
         self.multiPointWorker.napari_layers_init.connect(self.slot_napari_layers_init)
         self.multiPointWorker.napari_layers_update.connect(self.slot_napari_layers_update)
@@ -2748,8 +2859,23 @@ class MultiPointController(QObject):
         self.thread.finished.connect(self.thread.quit)
         # start the thread
         self.thread.start()
+        self.acquisitionStarted.emit()
+        return True
+
+    def _set_joystick_enabled(self, enabled):
+        if not LOCK_JOYSTICK_DURING_ACQUISITION:
+            return
+        try:
+            self.microcontroller.set_joystick_enabled(enabled)
+        except Exception as e:
+            print('joystick lock not available: ' + str(e))
+
+    def _on_acquisition_error(self, message):
+        self.last_acquisition_error = message
+        self.signal_acquisition_error.emit(message)
 
     def _on_acquisition_completed(self):
+        self._set_joystick_enabled(True)
         # restore the previous selected mode
         if self.gen_focus_map:
             self.autofocusController.clear_focus_map()
