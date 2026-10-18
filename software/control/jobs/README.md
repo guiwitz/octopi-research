@@ -5,6 +5,20 @@ positions and time points, channels, autofocus, waiting). It never controls hard
 through the high-level `scope` object, which uses the same tested movement, autofocus and imaging code as the
 standard acquisition. The standard acquisition (Flexible Multipoint tab) is unchanged.
 
+## Checking a job graphically
+
+*Show job plan (graph)* in the JOBs tab (or `python -m control.jobs.plot job.py positions.csv --channels BF,488 --out plan.png`
+from the `software` folder) runs the dry run and draws what the job would do:
+
+- a **timeline per position** (rows grouped by group; one tick per image, colour = channel; triangles = autofocus; dashed lines = time points, red = started late),
+- a **detail** of the first time point (or any range you type in the window) showing the order of channels, autofocus and moves,
+- a **stage map** coloured by group with the visiting order (red rings: positions the job never images),
+- the **working time per time point** against the interval (shows when the interval is too short),
+- a **matrix** of images per channel and autofocus runs for each time point (e.g. "BF only every 4th time point").
+
+Times are estimates (assumed duration of moves and autofocus plus the exposure times); use the graph to check order and
+structure, not exact timing. If the job fails, the figure shows everything up to the error.
+
 ## Workflow
 
 1. **Flexible Multipoint tab:** define the positions (stage position + optional z). Give them **IDs** in the

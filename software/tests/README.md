@@ -6,8 +6,8 @@ Run from the `software` folder with the venv's Python (`C:\Users\towbi\squid-sim
 |---|---|---|---|
 | `tests/test_features_offscreen.py` | no hardware, no display | AF settings/schedule, camera ROI widget, Positions window (offset, undo, next/previous, move-to-selected), saving-dir warning | seconds |
 | `tests/test_schedule_and_files.py` | no hardware | the expectations used by the e2e test agree with the code | seconds |
-| `tests/test_jobs_api.py` | no hardware, no Qt | JOBs scripting core: scheduling (late time points), staggered autofocus, groups, files/metadata, abort and cleanup, error reporting, dry run | seconds |
-| `tests/e2e_jobs.py --simulation` | simulation GUI (opens a window) | the JOBs tab with the real worker: job run, abort, refused broken jobs, standard acquisition unaffected | ~3 min |
+| `tests/test_jobs_api.py` | no hardware, no Qt | JOBs scripting core: scheduling (late time points), staggered autofocus, groups, files/metadata, abort and cleanup, error reporting, dry run, plan recording and graph | seconds |
+| `tests/e2e_jobs.py --simulation` | simulation GUI (opens a window) | the JOBs tab with the real worker: job run, abort, refused broken jobs, job plan graph, standard acquisition unaffected | ~3 min |
 | `tests/e2e_acquisition.py --simulation` | simulation GUI (opens a window) | real acquisitions: AF schedule per (time point, position), files on disk, multichannel | minutes |
 | `tests/e2e_acquisition.py --hardware` | **real microscope, moves the stage** | same as above on the real system | minutes |
 

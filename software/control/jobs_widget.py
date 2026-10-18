@@ -10,9 +10,46 @@ import shutil
 
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog,
-                            QMessageBox, QPlainTextEdit)
+                            QMessageBox, QPlainTextEdit, QDialog, QDoubleSpinBox)
 
 from control.jobs import make_points, dry_run, describe, JobError
+
+
+class PlanDialog(QDialog):
+    """Shows the graphical plan of a job (control/jobs/plot.py); the detail panel can be set to any time range."""
+
+    def __init__(self, result, points, channels, parent=None):
+        super().__init__(parent)
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+        self.setWindowTitle('Job plan (dry run, estimated times)')
+        self.resize(1250, 900)
+        self.result, self.points, self.channels = result, points, channels
+        self.canvas = FigureCanvasQTAgg()
+        self.spin_from, self.spin_to = QDoubleSpinBox(), QDoubleSpinBox()
+        for sp in (self.spin_from, self.spin_to):
+            sp.setRange(0, 1e6); sp.setDecimals(1)
+        self.spin_to.setValue(0)
+        btn_redraw = QPushButton('Redraw detail'); btn_save = QPushButton('Save image...')
+        row = QHBoxLayout()
+        row.addWidget(QLabel('Detail panel from (min)')); row.addWidget(self.spin_from)
+        row.addWidget(QLabel('to (min; 0 = first time point)')); row.addWidget(self.spin_to)
+        row.addWidget(btn_redraw); row.addStretch(1); row.addWidget(btn_save)
+        lay = QVBoxLayout(self); lay.addLayout(row); lay.addWidget(self.canvas, 1)
+        btn_redraw.clicked.connect(self.draw); btn_save.clicked.connect(self.save)
+        self.draw()
+
+    def draw(self):
+        from control.jobs.plot import plot_job
+        t0, t1 = self.spin_from.value() * 60.0, self.spin_to.value() * 60.0
+        fig = plot_job(self.result, self.points, channels=self.channels, detail_range=(t0, t1) if t1 > t0 else None)
+        self.canvas.figure = fig
+        fig.set_canvas(self.canvas)
+        self.canvas.draw()
+
+    def save(self):
+        path, _ = QFileDialog.getSaveFileName(self, 'Save job plan', 'job_plan.png', 'Images (*.png *.pdf *.svg)')
+        if path:
+            self.canvas.figure.savefig(path, bbox_inches='tight')
 
 CACHE_FILE = os.path.join('cache', 'jobs_settings.json')
 EXAMPLE_DIR = 'job_examples'
@@ -47,6 +84,8 @@ class JobsWidget(QFrame):
         self.label_points = QLabel('')
         self.btn_check = QPushButton('Check job (dry run)')
         self.btn_check.setToolTip('Runs the job with simulated time and no hardware: finds errors, counts images and estimates the duration')
+        self.btn_plan = QPushButton('Show job plan (graph)')
+        self.btn_plan.setToolTip('Draws what the job would do and when (timeline per position, stage map, time per time point), from a dry run')
         self.btn_start = QPushButton('Start job')
         self.btn_start.setCheckable(True)
         self.btn_start.setStyleSheet('background-color: #C2C2FF')
@@ -59,7 +98,7 @@ class JobsWidget(QFrame):
         row1.addWidget(self.btn_select_job); row1.addWidget(self.btn_example)
         row2 = QHBoxLayout(); row2.addWidget(QLabel('Saving dir')); row2.addWidget(self.lineEdit_savingDir, 1); row2.addWidget(self.btn_savingDir)
         row2.addWidget(QLabel('Experiment ID')); row2.addWidget(self.lineEdit_experimentID)
-        row3 = QHBoxLayout(); row3.addWidget(self.btn_check); row3.addWidget(self.btn_start)
+        row3 = QHBoxLayout(); row3.addWidget(self.btn_check); row3.addWidget(self.btn_plan); row3.addWidget(self.btn_start)
         layout = QVBoxLayout()
         layout.addLayout(row1); layout.addLayout(row2); layout.addWidget(self.label_points)
         layout.addLayout(row3); layout.addWidget(self.label_status); layout.addWidget(self.log, 1)
@@ -69,6 +108,7 @@ class JobsWidget(QFrame):
         self.btn_example.clicked.connect(self.new_from_example)
         self.btn_savingDir.clicked.connect(self.select_saving_dir)
         self.btn_check.clicked.connect(self.check_job)
+        self.btn_plan.clicked.connect(self.show_plan)
         self.btn_start.clicked.connect(self.toggle_job)
 
     def showEvent(self, event):
@@ -169,6 +209,27 @@ class JobsWidget(QFrame):
         self.label_status.setText('Job OK (dry run)' if res.status == 'completed' else 'Job has a problem: ' + (res.error.splitlines()[0] if res.error else res.status))
         return res
 
+    def show_plan(self):
+        """Dry run with recording and a graphical display of the plan."""
+        self.refresh_points_label()
+        path = self.lineEdit_job.text().strip()
+        pts = self._points()
+        if not path or not pts:
+            self.label_status.setText('Select a job file and define positions first.')
+            return None
+        infos = self._channel_infos()
+        res = dry_run(path, pts, infos, record=True)
+        self.log.appendPlainText('--- plan of ' + os.path.basename(path) + ' ---\n' + describe(res))
+        self.label_status.setText('Job OK (dry run)' if res.status == 'completed' else 'Job has a problem: ' + (res.error.splitlines()[0] if res.error else res.status))
+        try:
+            dlg = PlanDialog(res, pts, list(infos), self)
+        except ImportError as e:
+            self._warn('Job plan', 'matplotlib is needed for the graph: ' + str(e))
+            return res
+        self.plan_dialog = dlg
+        dlg.show()
+        return res
+
     def toggle_job(self, pressed):
         if not pressed:
             self.append_log('abort requested ...')
@@ -216,5 +277,5 @@ class JobsWidget(QFrame):
 
     def _set_controls_enabled(self, enabled):
         for w in (self.lineEdit_job, self.btn_select_job, self.btn_example, self.lineEdit_savingDir, self.btn_savingDir,
-                  self.lineEdit_experimentID, self.btn_check):
+                  self.lineEdit_experimentID, self.btn_check, self.btn_plan):
             w.setEnabled(enabled)

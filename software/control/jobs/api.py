@@ -160,7 +160,7 @@ class Backend:
 class Scope:
     """What a job script sees. See control/jobs/README.md for the full description."""
 
-    def __init__(self, backend, points, experiment_dir=None, clock=None, save_images=True, max_events=None):
+    def __init__(self, backend, points, experiment_dir=None, clock=None, save_images=True, max_events=None, record=False):
         self._backend = backend
         self._points = list(points)
         self._dir = experiment_dir
@@ -168,6 +168,7 @@ class Scope:
         self._save = save_images and experiment_dir is not None
         self._max_events = max_events
         self._events = 0
+        self.events = [] if record else None     # plan of the job for the graphical preview (dry run)
         self._t0 = self._clock.now()
         self._tp = None
         self._current_point = None
@@ -240,6 +241,13 @@ class Scope:
         self.stats['warnings'].append(message)
         self.log('WARNING: ' + message)
 
+    def _rec(self, kind, t0, t1=None, **kw):
+        if self.events is not None:
+            pt = kw.pop('point', None)
+            self.events.append(dict(kind=kind, t0=t0, t1=self.elapsed if t1 is None else t1,
+                                    point=pt.index if pt is not None else None,
+                                    tp=self._tp.index if self._tp is not None else None, **kw))
+
     def _tick(self):
         self.check_abort()
         self._events += 1
@@ -266,14 +274,18 @@ class Scope:
         self._tick()
         if seconds < 0:
             raise JobError('wait(seconds): seconds must be >= 0')
+        t0 = self.elapsed
         if not self._clock.wait_until(self._clock.now() + seconds, self._backend.abort_requested):
             raise JobAborted()
+        self._rec('wait', t0)
 
     def wait_until(self, elapsed_seconds):
         """Wait until `elapsed_seconds` have passed since the start of the job (returns at once if already later)."""
         self._tick()
+        t0 = self.elapsed
         if not self._clock.wait_until(self._t0 + elapsed_seconds, self._backend.abort_requested):
             raise JobAborted()
+        self._rec('wait', t0)
 
     def timepoints(self, n, interval=None):
         """Loop over n time points:  for t in scope.timepoints(48, interval=1800): ...
@@ -286,12 +298,15 @@ class Scope:
             self._tick()
             if i > 0 and interval:
                 planned = prev_start + interval
+                t_w0 = self.elapsed
                 if not self._clock.wait_until(self._t0 + planned, self._backend.abort_requested):
                     raise JobAborted()
+                self._rec('wait', t_w0)
             start = self.elapsed
             late = max(0.0, start - planned) if planned is not None else 0.0
             tp = TimePoint(i, start, late)
             self._tp = tp
+            self._rec('timepoint', start, start, late=late, planned=planned)
             self.stats['timepoints'] += 1
             if late > 0.5:
                 self.stats['late_timepoints'] += 1
@@ -311,7 +326,9 @@ class Scope:
             point = self._points[point]
         if not isinstance(point, Point):
             raise JobError(f'move_to needs a Point from scope.points(), got {point!r}')
+        t0 = self.elapsed
         self._backend.move_to(point.x, point.y, point.z)
+        self._rec('move', t0, point=point)
         self._current_point = point
         self.stats['moves'] += 1
 
@@ -332,6 +349,7 @@ class Scope:
         elif pt is not None:
             pt.z = z_after
         self.stats['autofocus'] += 1
+        self._rec('autofocus', t_start, point=pt, channel=ch)
         self._write_row('autofocus', dict(
             time_s=round(t_start, 2), point_index=pt.index if pt else '', point_id=pt.id if pt else '',
             timepoint=self._tp.index if self._tp else '', channel=ch or '', z_before_mm=z_before, z_after_mm=z_after,
@@ -362,6 +380,7 @@ class Scope:
             self._used_paths.add(path)
             self._backend.save_image(image, path, ch)
             rel = os.path.relpath(path, self._dir)
+        self._rec('capture', t_cap, point=pt, channel=ch)
         self.stats['images'] += 1
         self.stats['per_channel'][ch] = self.stats['per_channel'].get(ch, 0) + 1
         if pt is not None:

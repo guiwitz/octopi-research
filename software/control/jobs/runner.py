@@ -22,6 +22,7 @@ class JobResult:
     duration_s: float = 0.0
     stats: dict = field(default_factory=dict)
     warnings: list = field(default_factory=list)
+    events: list = field(default_factory=list)      # planned operations (dry run with record=True), see plot.py
 
 
 def load_job(path):
@@ -67,7 +68,7 @@ def _exposure_warning(exposures):
     return None
 
 
-def run_job(job_path, points, backend, experiment_dir=None, clock=None, save_images=True, max_events=None, meta=None):
+def run_job(job_path, points, backend, experiment_dir=None, clock=None, save_images=True, max_events=None, meta=None, record=False):
     """Run the job file with the given backend. Never raises for problems in the job: returns a JobResult.
     points: list of Point (see api.make_points)."""
     res = JobResult()
@@ -76,7 +77,7 @@ def run_job(job_path, points, backend, experiment_dir=None, clock=None, save_ima
     started = datetime.datetime.now()
     try:
         fn = load_job(job_path)
-        scope = Scope(backend, points, experiment_dir=experiment_dir, clock=clock, save_images=save_images, max_events=max_events)
+        scope = Scope(backend, points, experiment_dir=experiment_dir, clock=clock, save_images=save_images, max_events=max_events, record=record)
         if experiment_dir is not None:
             shutil.copy2(job_path, os.path.join(experiment_dir, 'job.py'))
             _write_positions(os.path.join(experiment_dir, 'positions_initial.csv'), points)
@@ -105,6 +106,7 @@ def run_job(job_path, points, backend, experiment_dir=None, clock=None, save_ima
         if scope is not None:
             res.duration_s = scope.elapsed
             res.stats = dict(scope.stats)
+            res.events = scope.events or []
             res.warnings.extend(scope.stats['warnings'])
             w = _exposure_warning(scope.stats['exposures'])
             if w:
@@ -120,11 +122,11 @@ def run_job(job_path, points, backend, experiment_dir=None, clock=None, save_ima
     return res
 
 
-def dry_run(job_path, points, channel_infos, **backend_kwargs):
+def dry_run(job_path, points, channel_infos, record=False, **backend_kwargs):
     """Run the job against simulated time to validate it and estimate what it does."""
     clock = SimClock()
     backend = DryRunBackend(channel_infos, clock=clock, **backend_kwargs)
-    return run_job(job_path, points, backend, experiment_dir=None, clock=clock, save_images=False, max_events=DRY_RUN_MAX_EVENTS)
+    return run_job(job_path, points, backend, experiment_dir=None, clock=clock, save_images=False, max_events=DRY_RUN_MAX_EVENTS, record=record)
 
 
 def describe(result):

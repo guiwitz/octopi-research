@@ -295,6 +295,54 @@ def test_dry_run_catches_endless_loop():
     assert res.status == 'failed' and 'did not finish' in res.error
 
 
+def test_plan_recording_and_figure():
+    job = make_job(textwrap.dedent("""
+        def run_job(scope):
+            for t in scope.timepoints(3, interval=100):
+                for p in scope.points('A', 'B'):
+                    scope.move_to(p)
+                    if p.number == 0:
+                        scope.autofocus()
+                    scope.capture('488')
+                    if t.index == 1:
+                        scope.capture('BF')
+    """))
+    P = pts(4, ids=['A-0', 'A-1', 'B-0', 'B-1'])
+    res = dry_run(job, P, CHANNELS, record=True)
+    assert res.status == 'completed', res.error
+    kinds = [e['kind'] for e in res.events]
+    assert kinds.count('timepoint') == 3 and kinds.count('autofocus') == 6
+    assert kinds.count('capture') == 12 + 4 and kinds.count('move') == 12
+    assert all(e['t1'] >= e['t0'] for e in res.events)
+    caps = [e for e in res.events if e['kind'] == 'capture' and e['tp'] == 1]
+    assert {e['channel'] for e in caps} == {'Fluorescence 488 nm Ex', 'BF LED matrix full'}
+    from control.jobs.plot import plot_job
+    fig = plot_job(res, P, channels=list(CHANNELS))
+    assert len(fig.axes) >= 5
+    # not recorded by default
+    assert dry_run(job, P, CHANNELS).events == []
+
+
+def test_plan_figure_for_late_failed_and_empty_jobs():
+    from control.jobs.plot import plot_job, preview_job
+    late = make_job('def run_job(scope):\n    for t in scope.timepoints(3, interval=1):\n        for p in scope.points():\n            scope.move_to(p); scope.capture("488")\n')
+    P = pts(3)
+    res = dry_run(late, P, CHANNELS, record=True)
+    assert res.stats['late_timepoints'] >= 1
+    assert any(e['kind'] == 'timepoint' and e['late'] > 0.5 for e in res.events)
+    plot_job(res, P)
+    failed = make_job('def run_job(scope):\n    scope.move_to(scope.points()[0])\n    scope.capture("488")\n    scope.capture("nonexistent")\n')
+    res = dry_run(failed, P, CHANNELS, record=True)
+    assert res.status == 'failed' and res.events        # what happened until the error is drawn
+    plot_job(res, P)
+    empty = make_job('def run_job(scope):\n    pass\n')
+    fig, res = preview_job(empty, P, CHANNELS, out_path=os.path.join(tempfile.mkdtemp(), 'plan.png'))
+    assert res.status == 'completed'
+    out = os.path.join(tempfile.mkdtemp(), 'plan.png')
+    fig, res = preview_job(late, P, CHANNELS, out_path=out)
+    assert os.path.getsize(out) > 10000
+
+
 if __name__ == '__main__':
     fails = 0
     for name, fn in sorted(globals().items()):
