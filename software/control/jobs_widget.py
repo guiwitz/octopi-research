@@ -20,7 +20,10 @@ class PlanDialog(QDialog):
 
     def __init__(self, result, points, channels, parent=None):
         super().__init__(parent)
-        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+        try:
+            from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+        except ImportError:        # matplotlib < 3.5
+            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
         self.setWindowTitle('Job plan (dry run, estimated times)')
         self.resize(1250, 900)
         self.result, self.points, self.channels = result, points, channels
@@ -224,7 +227,8 @@ class JobsWidget(QFrame):
         try:
             dlg = PlanDialog(res, pts, list(infos), self)
         except ImportError as e:
-            self._warn('Job plan', 'matplotlib is needed for the graph: ' + str(e))
+            self._warn('Job plan', 'The graph needs the Python package matplotlib, which is not installed in this environment.\n\n'
+                       'Install it in the environment used to start the software:\n    pip install matplotlib\n\nDetails: ' + str(e))
             return res
         self.plan_dialog = dlg
         dlg.show()

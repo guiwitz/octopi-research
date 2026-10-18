@@ -16,6 +16,8 @@ from the `software` folder) runs the dry run and draws what the job would do:
 - the **working time per time point** against the interval (shows when the interval is too short),
 - a **matrix** of images per channel and autofocus runs for each time point (e.g. "BF only every 4th time point").
 
+The graph needs the Python package `matplotlib` (`pip install matplotlib` in the environment that starts the software; everything else works without it).
+
 Times are estimates (assumed duration of moves and autofocus plus the exposure times); use the graph to check order and
 structure, not exact timing. If the job fails, the figure shows everything up to the error.
 
