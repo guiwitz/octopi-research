@@ -5,6 +5,7 @@ experiment preparation (saving folder, configurations) and the same MultiPointCo
 as a standard acquisition; the worker runs the job instead of the standard loops.
 """
 import os
+import sys
 import json
 import shutil
 
@@ -228,7 +229,7 @@ class JobsWidget(QFrame):
             dlg = PlanDialog(res, pts, list(infos), self)
         except ImportError as e:
             self._warn('Job plan', 'The graph needs the Python package matplotlib, which is not installed in this environment.\n\n'
-                       'Install it in the environment used to start the software:\n    pip install matplotlib\n\nDetails: ' + str(e))
+                       'Install it for exactly this Python by running in a terminal (Anaconda Prompt / cmd):\n\n    "' + sys.executable + '" -m pip install matplotlib\n\nThen restart the software.\n\nDetails: ' + str(e))
             return res
         self.plan_dialog = dlg
         dlg.show()
