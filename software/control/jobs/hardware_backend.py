@@ -44,6 +44,32 @@ class HardwareBackend(Backend):
     def abort_requested(self):
         return bool(self.w.multiPointController.abort_acqusition_requested)
 
+    # --- pause / resume (flags live in the MultiPointController, set from the GUI thread)
+    def pause_requested(self):
+        return bool(getattr(self.w.multiPointController, 'job_pause_requested', False))
+
+    def take_new_positions(self):
+        mpc = self.w.multiPointController
+        new = getattr(mpc, 'job_new_positions', None)
+        mpc.job_new_positions = None
+        return new
+
+    def on_pause(self):
+        try:
+            self.w.signal_job_message.emit('job paused: you can now change the positions and move the stage; press "Resume job" to continue')
+        except Exception:
+            pass
+
+    def on_resume(self):
+        # the user may have moved the stage and used live view meanwhile: stop live, and force the safe z-lift
+        # (as for the first move of a job) before the next stage move
+        try:
+            if self.live.is_live:
+                self.live.stop_live()
+        except Exception:
+            pass
+        self._last_xy = None
+
     def log(self, message):
         print('[job] ' + message)
         try:

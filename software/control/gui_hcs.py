@@ -449,6 +449,7 @@ class OctopiGUI(QMainWindow):
             self.multiPointWidget2.signal_acquisition_started.connect(self.toggleAcquisitionStart)
             self.jobsWidget.signal_acquisition_started.connect(self.navigationWidget.toggle_navigation_controls)
             self.jobsWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
+            self.jobsWidget.signal_job_paused.connect(self.toggleJobPause)
 
         # exposure/gain edits in the live control widget are applied directly to the camera
         # (previously relayed through the hidden spin boxes of the removed camera settings widget)
@@ -692,6 +693,17 @@ class OctopiGUI(QMainWindow):
         if self.recordTabWidget.currentWidget() is self.multiPointWidget and self.wellSelectionWidget.format != 0: # was: current_index == 0 (wellplate tab)
             self.dock_wellSelection.setVisible(not acquisition_started)
         
+    def toggleJobPause(self, paused):
+        """JOBs: while a job is paused the stage controls and the Flexible Multipoint tab can be used to adjust positions;
+        the other acquisition tabs stay locked. On resume everything is locked again."""
+        self.navigationWidget.toggle_navigation_controls(not paused)
+        if paused:
+            for index in range(self.recordTabWidget.count()):
+                w = self.recordTabWidget.widget(index)
+                self.recordTabWidget.setTabEnabled(index, w is self.multiPointWidget2 or w is self.jobsWidget)
+        else:
+            self.toggleAcquisitionStart(True)     # locks every tab but the current one (the JOBs tab, where Resume was pressed)
+
     def closeEvent(self, event):
         self.navigationController.cache_current_position()
 

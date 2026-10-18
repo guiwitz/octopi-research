@@ -187,6 +187,8 @@ def describe(result):
             lines.append('per group: ' + ', '.join(f'{g}: {n}' for g, n in s['per_group'].items()))
         lines.append(f'autofocus runs: {s.get("autofocus", 0)}   moves: {s.get("moves", 0)}   time points: {s.get("timepoints", 0)}')
         lines.append(f'duration: {result.duration_s / 60:.1f} min ({h:.2f} h)')
+        if s.get('paused_s'):
+            lines.append(f'time spent paused: {s["paused_s"]:.0f} s (not counted in the job time)')
         if s.get('late_timepoints'):
             lines.append(f'time points later than planned: {s["late_timepoints"]} (max {s["max_late_s"]:.0f} s) - the interval is shorter than one pass takes')
     for w in result.warnings:

@@ -12,6 +12,7 @@ JOBs tab with the real MultiPointWorker: (1) a time-lapse job with two channels 
 Exit code 0 = all checks passed. Writes jobs_e2e_report_<time>.txt into --save-dir.
 """
 import os
+import numpy as np
 import sys
 import csv
 import json
@@ -224,6 +225,60 @@ def main():
         record('live view: aborted state', jw.live.model.status == 'aborted', str(jw.live.model.status))
         record('illumination off after abort', not win.liveController.illumination_on)
         record('stage controls usable after abort', not nav.microcontroller.is_busy())
+
+        # --- 2b. pause, edit a position, resume, abort
+        win.recordTabWidget.setCurrentWidget(jw)
+        jw.lineEdit_job.setText(job2); jw.lineEdit_savingDir.setText(args.save_dir); jw.lineEdit_experimentID.setText('jobs_e2e_pause')
+        loop = QEventLoop()
+        mpc.acquisitionFinished.connect(loop.quit)
+        QTimer.singleShot(int(args.timeout_s * 1000), loop.quit)
+        jw.btn_start.click()
+        record('pause button enabled while a job runs', jw.running and jw.btn_pause.isEnabled())
+        pump(4)
+        jw.btn_pause.click()
+        tw = time.time()
+        while not jw.paused and time.time() - tw < 60:
+            pump(0.2)
+        record('job paused at a safe point', jw.paused and jw.btn_pause.text() == 'Resume job')
+        n1 = jw.live.model.images_done
+        pump(3)
+        record('no images are taken while paused', jw.live.model.images_done == n1, f'{n1} -> {jw.live.model.images_done}')
+        record('live view says PAUSED', 'PAUSED' in jw.live.label_head.text(), jw.live.label_head.text())
+        tabs = {win.recordTabWidget.widget(i): win.recordTabWidget.isTabEnabled(i) for i in range(win.recordTabWidget.count())}
+        record('while paused: Flexible Multipoint + JOBs tabs usable, others locked',
+               tabs[mp] and tabs[jw] and not any(v for w, v in tabs.items() if w is not mp and w is not jw), str(list(tabs.values())))
+        record('while paused: start button of Flexible Multipoint disabled', not mp.btn_startAcquisition.isEnabled())
+        record('while paused: stage controls enabled', win.navigationWidget.btn_moveX_forward.isEnabled())
+        # edit position 0 slightly (as a user would after re-focusing), refuse a changed count, then resume
+        mp.location_list[0][2] = mp.location_list[0][2] + 0.0005
+        z_new = float(mp.location_list[0][2])
+        popups.clear()
+        mp.location_list = mp.location_list[:-1]
+        jw.btn_pause.click()
+        record('resume refused when the number of positions changed', jw.paused and len(popups) == 1, str(popups))
+        mp.location_list = np.vstack([mp.location_list, [start[0], start[1], start[2]]])
+        jw.btn_pause.click()
+        record('job resumed', not jw.paused and jw.btn_pause.text() == 'Pause job')
+        n2 = jw.live.model.images_done
+        pump(6)
+        record('images are taken again after resume', jw.live.model.images_done > n2, f'{n2} -> {jw.live.model.images_done}')
+        record('tabs locked again after resume (Flexible Multipoint tab and its start button)', not win.recordTabWidget.isTabEnabled(win.recordTabWidget.indexOf(mp)) and not mp.btn_startAcquisition.isEnabled())
+        jw.btn_start.click()               # abort
+        loop.exec_()
+        try:
+            mpc.acquisitionFinished.disconnect(loop.quit)
+        except TypeError:
+            pass
+        pump(1)
+        record('job aborted after resume', jw.live.model.status == 'aborted', str(jw.live.model.status))
+        record('after the job: all tabs usable, Flexible start button enabled, pause button off',
+               all(win.recordTabWidget.isTabEnabled(i) for i in range(win.recordTabWidget.count())) and mp.btn_startAcquisition.isEnabled() and not jw.btn_pause.isEnabled())
+        dp = [x for x in glob.glob(os.path.join(args.save_dir, 'jobs_e2e_pause_*')) if os.path.isdir(x)]
+        if dp:
+            dpm = max(dp, key=os.path.getmtime)
+            log = open(os.path.join(dpm, 'job_log.txt'), encoding='utf-8').read()
+            record('job log shows pause and resume', 'job PAUSED' in log and 'job RESUMED' in log)
+            record('job log shows the changed position', 'changed while the job was paused' in log)
 
         # --- 3. broken jobs are refused
         popups.clear()

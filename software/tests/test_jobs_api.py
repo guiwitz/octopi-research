@@ -426,6 +426,119 @@ def test_job_documentation():
             assert 'WHAT IT DOES' in txt and 'YOU PROVIDE' in txt, f
 
 
+class PausingBackend(TestBackend):
+    """Pauses when `trigger` is set (or after N captures) and stays paused for `polls` polls; then offers new positions."""
+    def __init__(self, clock, pause_after=None, polls=5, new_positions=None, abort_on_pause=False, **kw):
+        super().__init__(clock, **kw)
+        self.pause_after, self.polls, self.new_positions, self.abort_on_pause = pause_after, polls, new_positions, abort_on_pause
+        self.trigger, self.polls_left, self.fired = False, 0, False
+        self.log_ = []
+        self._abort = False
+
+    def pause_requested(self):
+        if not self.fired and (self.trigger or (self.pause_after is not None and self.n_captures >= self.pause_after)):
+            self.fired, self.polls_left = True, self.polls
+        if self.polls_left > 0:
+            self.polls_left -= 1
+            return True
+        return False
+
+    def abort_requested(self): return self._abort or super().abort_requested()
+    def take_new_positions(self): return self.new_positions
+    def on_pause(self):
+        self.log_.append('pause')
+        if self.abort_on_pause:
+            self._abort = True
+    def on_resume(self): self.log_.append('resume')
+
+
+def test_pause_resume_between_operations_and_new_positions():
+    job = make_job("""
+        def run_job(scope):
+            for t in scope.timepoints(2, interval=100):
+                for p in scope.points():
+                    scope.move_to(p)
+                    scope.capture('488')
+    """)
+    P = pts(2)
+    clock = SimClock()
+    new = [(10.0, 20.0, 30.0), (1.0, 2.0, 3.0)]            # point 0 edited, point 1 unchanged
+    be = PausingBackend(clock, pause_after=1, polls=5, new_positions=new)
+    msgs = []
+    res = run_job(job, P, be, clock=clock, save_images=False, observer=msgs.append)
+    assert res.status == 'completed', res.error
+    assert be.log_ == ['pause', 'resume']
+    assert abs(res.stats['paused_s'] - 0.4) < 1e-6 and res.stats['images'] == 4
+    # time point 2 starts at job time 100 although the clock ran 0.5 s more (paused time is not job time)
+    tps = [m for m in msgs if m['type'] == 'timepoint']
+    assert abs(tps[1]['start'] - 100.0) < 1e-6 and tps[1]['late'] == 0.0, tps
+    assert abs(clock.now() - (res.duration_s + 0.4)) < 1.0
+    # the edited position is used later: (10,20,30) appears in the moves of time point 2
+    assert (10.0, 20.0, 30.0) in be.moves
+    # the stage returned to the current point (first point, the pause came before the 2nd capture of... ) - restore move exists
+    states = [m.get('state') for m in msgs if m['type'] == 'state']
+    assert 'paused' in states and states.index('paused') < len(states) - 1
+
+
+def test_pause_during_wait_continues_the_countdown():
+    job = make_job("""
+        def run_job(scope):
+            scope.move_to(scope.points()[0])
+            scope.capture('488')
+            scope.wait(60)
+            scope.capture('488')
+    """)
+    clock = SimClock()
+    be = PausingBackend(clock, polls=10)
+    msgs = []
+
+    def obs(m):
+        msgs.append(m)
+        if m['type'] == 'state' and m['state'] == 'waiting' and not be.fired:
+            be.trigger = True
+    res = run_job(job, pts(1), be, clock=clock, save_images=False, observer=obs)
+    assert res.status == 'completed' and res.stats['images'] == 2
+    waits = [m for m in msgs if m['type'] == 'state' and m['state'] == 'waiting']
+    assert len(waits) == 2 and abs(waits[0]['until'] - waits[1]['until']) < 1e-9      # same target after the pause
+    assert abs(res.stats['paused_s'] - 0.9) < 1e-6
+
+
+def test_pause_with_changed_number_of_positions_is_ignored_and_abort_while_paused():
+    job = make_job("""
+        def run_job(scope):
+            for p in scope.points():
+                scope.move_to(p)
+                scope.capture('488')
+    """)
+    clock = SimClock()
+    be = PausingBackend(clock, pause_after=1, new_positions=[(0, 0, 0)])        # 1 position instead of 2
+    res = run_job(job, pts(2), be, clock=clock, save_images=False)
+    assert res.status == 'completed' and any('ignored' in w for w in res.warnings), res.warnings
+    clock = SimClock()
+    be = PausingBackend(clock, pause_after=1, polls=10 ** 6, abort_on_pause=True)
+    res = run_job(job, pts(2), be, clock=clock, save_images=False)
+    assert res.status == 'aborted' and be.cleaned
+
+
+def test_live_model_while_paused_and_countdown_text():
+    from control.jobs_live import JobProgress
+    clock = SimClock()
+    m = JobProgress(clock=clock.now)
+    m.start([], None, [])
+    m.update(dict(type='state', state='waiting', until=300.0, reason='interval', next_tp=1, t=100.0))
+    assert m.countdown_text() == 'Next acquisition in 200 s   (3 min 20 s)'
+    clock.t += 0.4
+    assert m.countdown_text().startswith('Next acquisition in 200 s') or m.countdown_text().startswith('Next acquisition in 199 s')
+    clock.t += 200
+    m.update(dict(type='state', state='waiting', until=130.0, reason='interval', next_tp=1, t=100.0))
+    m.update(dict(type='state', state='paused', point=0, t=110.0))
+    assert m.is_paused() and m.countdown_text() is None and 'PAUSED' in m.headline()[0]
+    t1 = m.job_time(); clock.t += 50
+    assert m.job_time() == t1 == 110.0                       # job time stands still
+    m.update(dict(type='state', state='waiting', until=130.0, reason='interval', next_tp=1, t=110.0))
+    assert not m.is_paused() and m.countdown_text() == 'Next acquisition in 20 s'
+
+
 if __name__ == '__main__':
     fails = 0
     for name, fn in sorted(globals().items()):

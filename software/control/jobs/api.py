@@ -82,6 +82,7 @@ class Point:
         self.number = number      # 0-based position within its group
         self.x, self.y, self.z = x, y, z
         self.z_initial = z
+        self.table_xyz = (x, y, z)   # as read from the positions table (used to detect edits made while the job is paused)
 
     def __repr__(self):
         return f'Point(id={self.id!r}, group={self.group!r}, index={self.index}, x={self.x:.3f}, y={self.y:.3f}, z={self.z})'
@@ -147,6 +148,19 @@ class Backend:
     def abort_requested(self):
         return False
 
+    # --- pause / resume (optional; a backend that never pauses needs none of these)
+    def pause_requested(self):          # True while the user wants the job paused
+        return False
+
+    def take_new_positions(self):       # -> list of (x, y, z) in table order (same length as the job's points) or None
+        return None
+
+    def on_pause(self):                 # called when the job has reached a safe point and is paused
+        pass
+
+    def on_resume(self):                # called just before the job continues
+        pass
+
     def log(self, message):
         pass
 
@@ -173,13 +187,14 @@ class Scope:
         self._t0 = self._clock.now()
         self._tp = None
         self._current_point = None
+        self._paused_total = 0.0                 # seconds spent paused (job time does not count them)
         self._used_paths = set()
         self._image_counter = 0
         self._csv = {}
         self._log_file = None
         self._channel_names = list(backend.channels())
         self.stats = dict(images=0, autofocus=0, moves=0, timepoints=0, late_timepoints=0, max_late_s=0.0,
-                          per_channel={}, per_group={}, exposures={}, warnings=[])
+                          per_channel={}, per_group={}, exposures={}, warnings=[], paused_s=0.0)
         self._groups = {}
         for p in self._points:
             self._groups.setdefault(p.group, []).append(p)
@@ -265,11 +280,71 @@ class Scope:
                 self.events.append(ev)
             self._notify(dict(type='done', **ev))
 
-    def _tick(self):
+    def _tick(self, restore=True):
         self.check_abort()
         self._events += 1
         if self._max_events and self._events > self._max_events:
             raise JobError(f'the job did not finish after {self._max_events} operations (endless loop?)')
+        if self._backend.pause_requested():
+            self._pause_now(restore)
+
+    # --- pause / resume ----------------------------------------------------------------------
+    def _pause_now(self, restore=True):
+        """Hold the job here (between two operations) until the backend says resume. Job time does not run while
+        paused, so planned waits/intervals simply continue where they were. On resume the positions edited in the table
+        meanwhile are taken over, and the stage returns to the current point."""
+        t_p = self._clock.now()
+        pt = self._current_point
+        self._state('paused', point=pt.index if pt is not None else None, t=self.elapsed)
+        self.log('job PAUSED')
+        self._backend.on_pause()
+        while self._backend.pause_requested():
+            if self._backend.abort_requested():
+                raise JobAborted()
+            self._clock.sleep(0.1)
+        self._t0 += self._clock.now() - t_p           # job time did not run while paused
+        self._apply_positions(self._backend.take_new_positions())
+        self._backend.on_resume()
+        self._paused_total += self._clock.now() - t_p
+        self.stats['paused_s'] = round(self._paused_total, 1)
+        self.log(f'job RESUMED (paused for {self._clock.now() - t_p:.1f} s)')
+        self._state('idle', reason='resumed')
+        pt = self._current_point
+        if restore and pt is not None:
+            self._state('moving', point=pt.index)
+            self._backend.move_to(pt.x, pt.y, pt.z)
+
+    def _apply_positions(self, new):
+        if new is None:
+            return
+        if len(new) != len(self._points):
+            self.warn(f'the positions table has {len(new)} entries but the job started with {len(self._points)}; '
+                      f'positions added or removed while paused are ignored')
+            return
+        changed = 0
+        for p, c in zip(self._points, new):
+            xyz = (float(c[0]), float(c[1]), float(c[2]) if len(c) > 2 and c[2] is not None else None)
+            if xyz != p.table_xyz:
+                p.x, p.y, p.z = xyz
+                p.z_initial = xyz[2]
+                p.table_xyz = xyz
+                changed += 1
+        if changed:
+            self.log(f'{changed} position(s) were changed while the job was paused; the new coordinates are used from now on')
+
+    def _sleep_until(self, target, **state_kw):
+        """Wait until job time `target` (s); abort and pause stay responsive. Returns when the time has come."""
+        while True:
+            self.check_abort()
+            if self._backend.pause_requested():
+                self._pause_now(True)
+                self._state('waiting', until=target, **state_kw)     # the countdown continues with the same target
+                continue
+            if self.elapsed >= target:
+                return
+            stop = lambda: bool(self._backend.abort_requested() or self._backend.pause_requested())
+            if self._clock.wait_until(self._t0 + target, stop):
+                return
 
     # --- channels ----------------------------------------------------------------------------
     def _resolve_channel(self, name):
@@ -293,8 +368,7 @@ class Scope:
             raise JobError('wait(seconds): seconds must be >= 0')
         t0 = self.elapsed
         self._state('waiting', until=t0 + seconds, reason='wait')
-        if not self._clock.wait_until(self._clock.now() + seconds, self._backend.abort_requested):
-            raise JobAborted()
+        self._sleep_until(t0 + seconds, reason='wait')
         self._rec('wait', t0)
 
     def wait_until(self, elapsed_seconds):
@@ -302,8 +376,7 @@ class Scope:
         self._tick()
         t0 = self.elapsed
         self._state('waiting', until=max(t0, elapsed_seconds), reason='wait_until')
-        if not self._clock.wait_until(self._t0 + elapsed_seconds, self._backend.abort_requested):
-            raise JobAborted()
+        self._sleep_until(elapsed_seconds, reason='wait_until')
         self._rec('wait', t0)
 
     def timepoints(self, n, interval=None):
@@ -319,8 +392,7 @@ class Scope:
                 planned = prev_start + interval
                 t_w0 = self.elapsed
                 self._state('waiting', until=planned, reason='interval', next_tp=i)
-                if not self._clock.wait_until(self._t0 + planned, self._backend.abort_requested):
-                    raise JobAborted()
+                self._sleep_until(planned, reason='interval', next_tp=i)
                 self._rec('wait', t_w0)
             start = self.elapsed
             late = max(0.0, start - planned) if planned is not None else 0.0
@@ -343,7 +415,7 @@ class Scope:
     # --- stage -------------------------------------------------------------------------------
     def move_to(self, point):
         """Move the stage to a Point (x, y, z; with all the usual backlash/safety handling)."""
-        self._tick()
+        self._tick(restore=False)
         if isinstance(point, int) and not isinstance(point, bool):
             point = self._points[point]
         if not isinstance(point, Point):

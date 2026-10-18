@@ -42,6 +42,24 @@ The JOBs tab shows the state of a running job (updated twice per second; no matp
 "Planned" values come from the dry run that is done when you press *Start job*; a job whose number of images depends on image
 content can differ. The view does not influence the job: if it ever fails, the job continues.
 
+## Pausing a job
+
+While a job runs, **Pause job** stops it at the next safe point (between two operations, e.g. after the image being taken;
+a running move/exposure is never interrupted). The button then turns into **Resume job**. While paused:
+
+* the stage controls and the **Flexible Multipoint** tab can be used: move the stage, re-focus, and change positions
+  (e.g. "Offset positions", or editing a coordinate). Positions cannot be added or removed while paused (resume is refused
+  if the count differs); changes to the "group" column are ignored until the next job.
+* the other acquisition tabs and the Start button of Flexible Multipoint stay locked.
+* **Job time stands still**: a planned wait or interval simply continues with the remaining time after resume (the
+  countdown shows it), and time points keep their planned job-time schedule. Time spent paused is listed in the summary.
+
+On resume the changed coordinates are used from then on, live view is switched off if it was on, and the stage goes back
+to the current position (with the z-lift for safety) before the job continues exactly where it was.
+Abort works while paused.
+
+The live view shows a large countdown in seconds ("Next acquisition in 125 s") while the job waits.
+
 ## Checking a job graphically
 
 *Show job plan (graph)* in the JOBs tab (or `python -m control.jobs.plot job.py positions.csv --channels BF,488 --out plan.png`

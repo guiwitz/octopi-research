@@ -2548,6 +2548,8 @@ class MultiPointController(QObject):
         self.job_file = None # JOBs: path of the job file to run instead of the standard loops (None = standard acquisition)
         self.job_points = None # JOBs: list of control.jobs.Point
         self.job_result = None
+        self.job_pause_requested = False # JOBs: True while the running job should be paused (set from the GUI)
+        self.job_new_positions = None # JOBs: positions (x,y,z list) read from the table at resume
 
     def set_NX(self,N):
         self.NX = N
@@ -2644,6 +2646,8 @@ class MultiPointController(QObject):
             self.location_list = None
 
         self.abort_acqusition_requested = False
+        self.job_pause_requested = False
+        self.job_new_positions = None
 
         self.configuration_before_running_multipoint = self.liveController.currentConfiguration
         # stop live
@@ -2781,6 +2785,15 @@ class MultiPointController(QObject):
 
     def request_abort_aquisition(self):
         self.abort_acqusition_requested = True
+
+    def request_job_pause(self):
+        """JOBs: pause the running job at the next safe point (between two operations)."""
+        self.job_pause_requested = True
+
+    def resume_job(self, new_positions=None):
+        """JOBs: continue a paused job. new_positions: list of (x,y,z) from the positions table, or None to keep them."""
+        self.job_new_positions = new_positions
+        self.job_pause_requested = False
 
     def slot_detection_stats(self, stats):
         self.detection_stats.emit(stats)

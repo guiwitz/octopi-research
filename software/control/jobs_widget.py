@@ -71,6 +71,7 @@ UNSUPPORTED_CHANNELS = ('RGB', 'USB Spectrometer')
 class JobsWidget(QFrame):
 
     signal_acquisition_started = Signal(bool)     # same meaning as in the other acquisition tabs (locks the stage controls)
+    signal_job_paused = Signal(bool)              # True: job paused (stage controls and Flexible Multipoint tab usable); False: resumed
 
     def __init__(self, multipointController, configurationManager, positionsWidget, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -78,10 +79,13 @@ class JobsWidget(QFrame):
         self.configurationManager = configurationManager
         self.positionsWidget = positionsWidget      # Flexible Multipoint tab: location_list, location_ids, saving dir, experiment ID
         self.running = False
+        self.paused = False
+        self._n_points_at_start = 0
         self._build()
         self._load_cache()
         self.mpc.signal_job_message.connect(self.append_log)
         self.mpc.signal_job_status.connect(self.live.on_message)
+        self.mpc.signal_job_status.connect(self._on_job_status)
         self.mpc.acquisitionFinished.connect(self.acquisition_is_finished)
 
     # --- layout
@@ -102,6 +106,11 @@ class JobsWidget(QFrame):
         self.btn_start = QPushButton('Start job')
         self.btn_start.setCheckable(True)
         self.btn_start.setStyleSheet('background-color: #C2C2FF')
+        self.btn_pause = QPushButton('Pause job')
+        self.btn_pause.setEnabled(False)
+        self.btn_pause.setToolTip('Pause at the next safe point (between two operations). While paused you can move the stage and edit the '
+                                  'positions in the Flexible Multipoint tab; "Resume job" continues where the job was (waiting times continue, '
+                                  'time spent paused is not counted). Positions cannot be added or removed while paused.')
         self.label_status = QLabel('')
         self.live = LiveJobView()
         self.log = QPlainTextEdit()
@@ -112,7 +121,7 @@ class JobsWidget(QFrame):
         row1.addWidget(self.btn_select_job); row1.addWidget(self.btn_example)
         row2 = QHBoxLayout(); row2.addWidget(QLabel('Saving dir')); row2.addWidget(self.lineEdit_savingDir, 1); row2.addWidget(self.btn_savingDir)
         row2.addWidget(QLabel('Experiment ID')); row2.addWidget(self.lineEdit_experimentID)
-        row3 = QHBoxLayout(); row3.addWidget(self.btn_check); row3.addWidget(self.btn_plan); row3.addWidget(self.btn_start)
+        row3 = QHBoxLayout(); row3.addWidget(self.btn_check); row3.addWidget(self.btn_plan); row3.addWidget(self.btn_start); row3.addWidget(self.btn_pause)
         layout = QVBoxLayout()
         layout.addLayout(row1); layout.addLayout(row2); layout.addWidget(self.label_points)
         layout.addLayout(row3); layout.addWidget(self.label_status); layout.addWidget(self.live); layout.addWidget(self.log, 1)
@@ -125,6 +134,7 @@ class JobsWidget(QFrame):
         self.btn_check.clicked.connect(self.check_job)
         self.btn_plan.clicked.connect(self.show_plan)
         self.btn_start.clicked.connect(self.toggle_job)
+        self.btn_pause.clicked.connect(self.toggle_pause)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -311,12 +321,62 @@ class JobsWidget(QFrame):
         self.label_status.setText('Job running ...')
         self.append_log(f'--- job started, experiment folder {self.mpc.experiment_ID} ---')
         self.live.begin(res.events, res.duration_s, self._points())
+        self._n_points_at_start = len(self._points())
+        self.paused = False
+        self.btn_pause.setText('Pause job')
+        self.btn_pause.setEnabled(True)
         self.mpc.run_job(self.lineEdit_job.text().strip(), self._points())
+
+    # --- pause / resume
+    def toggle_pause(self):
+        if not self.running:
+            return
+        if not self.paused:
+            self.btn_pause.setEnabled(False)
+            self.btn_pause.setText('Pausing ...')
+            self.label_status.setText('Pause requested: the job stops at the next safe point (between two operations) ...')
+            self.mpc.request_job_pause()
+            return
+        pw = self.positionsWidget
+        new = [tuple(float(v) for v in r) for r in pw.location_list]
+        if len(new) != self._n_points_at_start:
+            self._warn('Resume job', f'The job started with {self._n_points_at_start} positions, the table now has {len(new)}.\n'
+                                     f'Positions cannot be added or removed while a job is paused. Restore the original number of positions '
+                                     f'(Undo in the Positions window) and resume again.')
+            return
+        self.append_log('resuming job ...')
+        self._set_paused(False)
+        self.mpc.resume_job(new)
+
+    def _set_paused(self, paused):
+        if paused == self.paused:
+            return
+        self.paused = paused
+        pw = self.positionsWidget
+        self.btn_pause.setEnabled(True)
+        self.btn_pause.setText('Resume job' if paused else 'Pause job')
+        try:
+            (pw.disable_the_start_aquisition_button if paused else pw.enable_the_start_aquisition_button)()
+        except Exception:
+            pass
+        if paused:
+            self.label_status.setText('Job PAUSED. Move the stage / edit positions in the Flexible Multipoint tab, then press "Resume job".')
+        else:
+            self.label_status.setText('Job running ...')
+        self.signal_job_paused.emit(paused)
+
+    def _on_job_status(self, msg):
+        if isinstance(msg, dict) and msg.get('type') == 'state' and msg.get('state') == 'paused' and self.running:
+            self._set_paused(True)
 
     def acquisition_is_finished(self):
         if not self.running:
             return          # a standard acquisition of another tab finished
         self.running = False
+        if self.paused:
+            self._set_paused(False)
+        self.btn_pause.setEnabled(False)
+        self.btn_pause.setText('Pause job')
         res = self.mpc.job_result
         if self.live.model.active:            # the runner ended without a final message (crash)
             self.live.on_message(dict(type='finished', status=res.status if res is not None else 'failed', error=res.error if res is not None else 'see the console'))

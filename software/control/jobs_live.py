@@ -3,15 +3,16 @@
 JobProgress  - the logic (no Qt): digests the messages sent by the running job (api.Scope observer) and the plan from
                the dry run, and answers "where are we".
 LiveJobView  - the widget (JOBs tab): status line with countdown, progress bars, one box per time point and one box per
-               position of the current time point. Needs no matplotlib. Updates twice per second.
+               position of the current time point. Needs no matplotlib. Updates five times per second.
 
 Messages (dicts, see api.Scope._notify):
-  {'type':'state', 'state':'moving'|'capturing'|'autofocus'|'waiting'|'idle', 'point':idx, 'channel':name, 'tp':idx,
+  {'type':'state', 'state':'moving'|'capturing'|'autofocus'|'waiting'|'paused'|'idle', 'point':idx, 'channel':name, 'tp':idx,
    'until':job time (s) for waits, 'reason':'interval'|'wait'|'wait_until', 'next_tp':idx, 't':job time}
   {'type':'timepoint', 'index', 'start', 'late', 'planned', 'n', 'interval', 'next_start'}
   {'type':'done', 'kind':'move'|'capture'|'autofocus'|'wait'|'timepoint', 'point', 'tp', 'channel', 't0', 't1'}
   {'type':'finished', 'status', 'error', 't'}
 """
+import math
 import time
 import datetime
 
@@ -116,7 +117,21 @@ class JobProgress:
         """Current job time (s since the job started), extrapolated from the last message."""
         if self.status is not None and self.finished_t is not None:
             return self.finished_t
+        if self.state.get('state') == 'paused':
+            return self.t_msg                   # job time stands still while paused
         return self.t_msg + (self._clock() - self.wall_msg) if self.active else self.t_msg
+
+    def is_paused(self):
+        return self.active and self.status is None and self.state.get('state') == 'paused'
+
+    def countdown_text(self):
+        """Big countdown while the job waits: 'Next acquisition in 125 s  (2 min 05 s)'. None if not waiting."""
+        if not self.active or self.status is not None or self.state.get('state') != 'waiting':
+            return None
+        left = max(0.0, self.state.get('until', 0) - self.job_time())
+        secs = int(math.ceil(left - 1e-9))
+        what = 'Next acquisition in' if self.state.get('reason') == 'interval' else 'Waiting, ends in'
+        return f'{what} {secs} s' + (f'   ({fmt_s(secs)})' if secs >= 120 else '')
 
     def _label(self, idx):
         p = self.points.get(idx)
@@ -136,6 +151,8 @@ class JobProgress:
             return 'No job running', None
         st, now = self.state, self.job_time()
         s = st.get('state')
+        if s == 'paused':
+            return f'PAUSED for {fmt_s(self._clock() - self.wall_msg)} - adjust positions, then press "Resume job"   [{self._tp_text()}]', None
         if s == 'waiting':
             left = max(0.0, st.get('until', now) - now)
             if st.get('reason') == 'interval':
@@ -303,18 +320,23 @@ if _QT:
             self.label_head.setWordWrap(True)
             self.bar_countdown = QProgressBar(); self.bar_countdown.setTextVisible(False); self.bar_countdown.setFixedHeight(8)
             self.bar_overall = QProgressBar(); self.bar_overall.setFormat('images %v / %m'); self.bar_overall.setFixedHeight(16)
+            self.label_count = QLabel('')
+            fc = self.label_count.font(); fc.setPointSize(fc.pointSize() + 12); fc.setBold(True)
+            self.label_count.setFont(fc)
+            self.label_count.setAlignment(Qt.AlignCenter)
+            self.label_count.setVisible(False)
             self.label_details = QLabel('')
             self.label_details.setWordWrap(True)
             self.strip_tp = _Strip('time points  (green: done, blue: now, yellow: waiting to start, orange foot: started late)', one_based=True)
             self.strip_pos = _Strip('positions of the current time point  (green: imaged, blue: now, red dot: autofocus done)')
             lay = QVBoxLayout(self)
             lay.setContentsMargins(4, 4, 4, 4)
-            for w in (self.label_head, self.bar_countdown, self.label_details, self.bar_overall, self.strip_tp, self.strip_pos):
+            for w in (self.label_head, self.label_count, self.bar_countdown, self.label_details, self.bar_overall, self.strip_tp, self.strip_pos):
                 lay.addWidget(w)
             self.setFrameShape(QFrame.StyledPanel)
             self._countdown_total = None
             self.timer = QTimer(self)
-            self.timer.setInterval(500)
+            self.timer.setInterval(200)
             self.timer.timeout.connect(self.refresh)
             self.refresh()
 
@@ -338,6 +360,10 @@ if _QT:
             m = self.model
             text, countdown = m.headline()
             self.label_head.setText(text)
+            ct = m.countdown_text()
+            self.label_count.setText(ct or '')
+            self.label_count.setVisible(ct is not None)
+            self.label_head.setStyleSheet('color: #b35900' if m.is_paused() else '')
             if countdown is not None and self._countdown_total:
                 self.bar_countdown.setRange(0, 1000)
                 self.bar_countdown.setValue(int(1000 * (1 - min(1.0, countdown / self._countdown_total))))
