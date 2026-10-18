@@ -6,6 +6,7 @@ as a standard acquisition; the worker runs the job instead of the standard loops
 """
 import os
 import sys
+import traceback
 import json
 import shutil
 
@@ -28,7 +29,8 @@ class PlanDialog(QDialog):
         self.setWindowTitle('Job plan (dry run, estimated times)')
         self.resize(1250, 900)
         self.result, self.points, self.channels = result, points, channels
-        self.canvas = FigureCanvasQTAgg()
+        self._canvas_class = FigureCanvasQTAgg
+        self.canvas = None
         self.spin_from, self.spin_to = QDoubleSpinBox(), QDoubleSpinBox()
         for sp in (self.spin_from, self.spin_to):
             sp.setRange(0, 1e6); sp.setDecimals(1)
@@ -38,7 +40,7 @@ class PlanDialog(QDialog):
         row.addWidget(QLabel('Detail panel from (min)')); row.addWidget(self.spin_from)
         row.addWidget(QLabel('to (min; 0 = first time point)')); row.addWidget(self.spin_to)
         row.addWidget(btn_redraw); row.addStretch(1); row.addWidget(btn_save)
-        lay = QVBoxLayout(self); lay.addLayout(row); lay.addWidget(self.canvas, 1)
+        self.layout_ = QVBoxLayout(self); self.layout_.addLayout(row)
         btn_redraw.clicked.connect(self.draw); btn_save.clicked.connect(self.save)
         self.draw()
 
@@ -46,9 +48,14 @@ class PlanDialog(QDialog):
         from control.jobs.plot import plot_job
         t0, t1 = self.spin_from.value() * 60.0, self.spin_to.value() * 60.0
         fig = plot_job(self.result, self.points, channels=self.channels, detail_range=(t0, t1) if t1 > t0 else None)
-        self.canvas.figure = fig
-        fig.set_canvas(self.canvas)
-        self.canvas.draw()
+        canvas = self._canvas_class(fig)          # a new canvas for every figure (works with all matplotlib versions)
+        if self.canvas is not None:
+            self.layout_.removeWidget(self.canvas)
+            self.canvas.setParent(None)
+            self.canvas.deleteLater()
+        self.canvas = canvas
+        self.layout_.addWidget(canvas, 1)
+        canvas.draw()
 
     def save(self):
         path, _ = QFileDialog.getSaveFileName(self, 'Save job plan', 'job_plan.png', 'Images (*.png *.pdf *.svg)')
@@ -164,6 +171,12 @@ class JobsWidget(QFrame):
         return {c.name: dict(exposure_ms=c.exposure_time, gain=c.analog_gain, intensity=c.illumination_intensity)
                 for c in self.configurationManager.configurations if not any(u in c.name for u in UNSUPPORTED_CHANNELS)}
 
+    def _say(self, text):
+        """Message in the status line AND the log (and returns None, for 'nothing was done')."""
+        self.label_status.setText(text.splitlines()[0])
+        self.log.appendPlainText(text)
+        return None
+
     def _warn(self, title, text):
         QMessageBox.warning(self, title, text)
 
@@ -202,13 +215,14 @@ class JobsWidget(QFrame):
         self.refresh_points_label()
         path = self.lineEdit_job.text().strip()
         if not path:
-            self.label_status.setText('Select a job file first.')
-            return None
+            return self._say('Select a job file first (button "Select job..." or "New from example...").')
         pts = self._points()
         if not pts:
-            self.label_status.setText('Define positions in the Flexible Multipoint tab first.')
-            return None
-        res = dry_run(path, pts, self._channel_infos())
+            return self._say('No positions: define them in the Flexible Multipoint tab first (the JOBs tab uses that position list).')
+        try:
+            res = dry_run(path, pts, self._channel_infos())
+        except Exception:
+            return self._say('Internal error in the job check:\n' + traceback.format_exc())
         self.log.appendPlainText('--- check of ' + os.path.basename(path) + ' ---\n' + describe(res))
         self.label_status.setText('Job OK (dry run)' if res.status == 'completed' else 'Job has a problem: ' + (res.error.splitlines()[0] if res.error else res.status))
         return res
@@ -218,18 +232,27 @@ class JobsWidget(QFrame):
         self.refresh_points_label()
         path = self.lineEdit_job.text().strip()
         pts = self._points()
-        if not path or not pts:
-            self.label_status.setText('Select a job file and define positions first.')
-            return None
-        infos = self._channel_infos()
-        res = dry_run(path, pts, infos, record=True)
+        if not path:
+            return self._say('Select a job file first (button "Select job..." or "New from example...").')
+        if not pts:
+            return self._say('No positions: define them in the Flexible Multipoint tab first (the JOBs tab uses that position list).')
+        try:
+            infos = self._channel_infos()
+            res = dry_run(path, pts, infos, record=True)
+        except Exception:
+            return self._say('Internal error in the job plan:\n' + traceback.format_exc())
         self.log.appendPlainText('--- plan of ' + os.path.basename(path) + ' ---\n' + describe(res))
         self.label_status.setText('Job OK (dry run)' if res.status == 'completed' else 'Job has a problem: ' + (res.error.splitlines()[0] if res.error else res.status))
+        if res.status != 'completed' and not res.events:
+            self._say('The job could not be drawn: ' + (res.error or res.status))
         try:
             dlg = PlanDialog(res, pts, list(infos), self)
         except ImportError as e:
             self._warn('Job plan', 'The graph needs the Python package matplotlib, which is not installed in this environment.\n\n'
                        'Install it for exactly this Python by running in a terminal (Anaconda Prompt / cmd):\n\n    "' + sys.executable + '" -m pip install matplotlib\n\nThen restart the software.\n\nDetails: ' + str(e))
+            return res
+        except Exception:
+            self._say('Internal error while drawing the plan:\n' + traceback.format_exc())
             return res
         self.plan_dialog = dlg
         dlg.show()
