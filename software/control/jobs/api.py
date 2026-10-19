@@ -534,9 +534,10 @@ class Scope:
         return z_after
 
     # --- imaging -----------------------------------------------------------------------------
-    @staticmethod
-    def _compression(compression, quality, ratio=None):
+    def _compression(self, compression, quality, ratio=None):
         """Validate compression/quality/ratio BEFORE anything is acquired. -> ('lossless', None, None) or ('lossy', dB or None, ratio or None)."""
+        if isinstance(ratio, dict):
+            ratio = {self._resolve_channel(k): v for k, v in ratio.items()}      # short channel names are fine
         try:
             mode, q, ratio = stackio.normalize_compression(compression, quality, ratio)
             if mode == 'lossy':
@@ -560,12 +561,13 @@ class Scope:
                 qtxt = ', '.join(f'{q:.0f}' for q in r.get('qualities', [r['quality_db']])) + ' dB'
                 msg = (f'{rel}: lossy JPEG2000 {qtxt}, {r["ratio"]:.0f}x smaller than raw ({r["file_bytes"] / 1e6:.2f} MB)'
                        + (f'; codec error {err:.1f} counts rms vs image noise {noise:.1f} counts (middle plane)' if ch else ''))
-                tr = r.get('target_ratio')
-                if tr and r['ratio'] < 0.7 * tr:
-                    self.warn(f'{rel}: the target compression of {tr:g}x was not reached (achieved {r["ratio"]:.1f}x at {r["quality_db"]:.0f} dB, the lowest allowed quality in at least one channel): '
+                tg = r.get('targets') or []
+                short = [f'{c.get("channel_index")}: {c["ratio"]:.1f}x of {t:g}x' for c, t in zip(ch, tg) if c['ratio'] < 0.7 * t]
+                if short:
+                    self.warn(f'{rel}: the target compression was not reached in channel {"; ".join(short)} (lowest allowed quality is {stackio.QUALITY_RANGE_DB[0]:g} dB): '
                               f'the image has too much structure or noise for that ratio')
                 self.log(msg)
-                self._write_row('lossy_files', dict(file=rel, quality_db='/'.join(f'{q:.1f}' for q in r.get('qualities', [r['quality_db']])), target_ratio=r.get('target_ratio') or '',
+                self._write_row('lossy_files', dict(file=rel, quality_db='/'.join(f'{q:.1f}' for q in r.get('qualities', [r['quality_db']])), target_ratio='/'.join(f'{t:g}' for t in (r.get('targets') or [])),
                                                     achieved_ratio=round(r['ratio'], 1), file_mb=round(r['file_bytes'] / 1e6, 3),
                                                     codec_rmse_counts=round(err, 2), image_noise_counts=round(noise, 2)))
 

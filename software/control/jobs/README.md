@@ -135,7 +135,7 @@ def run_job(scope):
 | `scope.timepoints(n, interval=None)` | loop; yields `TimePoint` with `.index`, `.start` (s since job start), `.late` (s). `n=None`: until aborted |
 | `scope.move_to(point)` | move the stage (same backlash/safety handling as the standard acquisition) |
 | `scope.autofocus(channel=None)` | contrast autofocus with the settings of the Autofocus tab; stores the focused z in the point; returns z (mm) |
-| `scope.capture("488")` | one image in a channel; saved automatically; returns the image as NumPy array. `save=False`: do not save. `compression="lossy"` (default ratio=100) or `compression="lossy", quality=80`: JPEG2000 (see below) |
+| `scope.capture("488")` | one image in a channel; saved automatically; returns the image as NumPy array. `save=False`: do not save. `compression="lossy"` (default ratio: fluorescence 100, others 10) or `compression="lossy", quality=80`: JPEG2000 (see below) |
 | `scope.capture_channels(["BF LED matrix full", "488"])` | several channels in that order; returns `{channel: image}` |
 | `scope.zstack(channels, planes=, step_um=, span_um=, order=, compression=, quality=, ratio=)` | z-stack centred on the current z; give two of planes/step_um/span_um; one multipage OME-TIFF; returns `{channel: (planes, Y, X)}` |
 | `scope.movie(channels, frames=, interval_s=, duration_s=, compression=, quality=, ratio=)` | fast time series at the current position, one multipage OME-TIFF with the real time of every image; returns `{channel: (frames, Y, X)}` |
@@ -171,8 +171,10 @@ ends the experiment cleanly. Errors found by the dry run prevent the start.
   metadata (`DeltaT`) and in `frames.csv`; the achieved interval (mean, sd, min, max) is logged and written into the file description. If the
   hardware cannot keep the interval a warning is issued. Time points of the job are separate files, as before. Pause takes effect after the movie.
 * **Saving:** `compression="lossless"` (default; zlib-compressed TIFF, bit-identical) or `"lossy"` (16-bit JPEG2000 inside the same TIFF).
-  Lossy aims at a **target compression** `ratio` (default **100**: file = raw pixels / 100): shortly before each file is written (background thread)
-  the quality is calibrated on the middle plane of every channel (central 1024 x 1024 crop) and the lowest result is used, so all channels reach the ratio.
+  Lossy aims at a **target compression** `ratio`: by default **100 for fluorescence channels and 10 for bright field, dark field and other channels**
+  (file = raw pixels / ratio). `ratio=30` sets one value for all channels, `ratio={"488": 50}` single channels (others keep their default).
+  Shortly before each file is written (background thread) the quality is calibrated for every channel on its middle plane (whole plane,
+  1 dB steps) and applied to that channel only.
   Alternatively `quality=<dB>` fixes the PSNR (error about 65535 / 10^(dB/20) counts, e.g. 80 dB = 6.5 counts); then the compression depends on the image.
   Give only one of `ratio` and `quality`.
   **What 100x means:** JPEG2000 reaches such ratios only by removing the camera noise (and the finest detail): on synthetic fluorescence images with
