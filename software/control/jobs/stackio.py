@@ -75,9 +75,10 @@ def _crop(img, n=1024):
 
 
 def calibrate_quality(data, ratio, tol_db=1.0):
-    """Quality (dB) that gives about `ratio` x compression. data: (T, Z, C, Y, X). For every channel the middle plane is tested
-    (whole plane, bisection on the quality to 1 dB; a crop was not representative: it gave 55x instead of 100x); the LOWEST quality over the channels is used so that every channel reaches
-    the ratio. Returns (quality_db, info) with info = per channel dict(quality_db, ratio, rmse, noise)."""
+    """Quality (dB) per channel that gives about `ratio` x compression. data: (T, Z, C, Y, X). For every channel the middle plane is tested
+    (whole plane, bisection on the quality to 1 dB; a crop was not representative: it gave 55x instead of 100x). Every channel gets its OWN
+    quality (a common one set by the least compressible channel destroyed the easy channels). Returns (list of quality_db per channel, info)
+    with info = per channel dict(quality_db, ratio, rmse, noise)."""
     import imagecodecs
     T, Z, C = data.shape[:3]
     lo_q, hi_q = QUALITY_RANGE_DB
@@ -107,7 +108,7 @@ def calibrate_quality(data, ratio, tol_db=1.0):
         infos.append(dict(channel_index=c, quality_db=round(q, 2), ratio=round(r, 1),
                           rmse=float(np.sqrt(np.mean((rec - img) ** 2))), noise=estimate_noise(img)))
         chosen.append(q)
-    return float(min(chosen)), infos
+    return [float(q) for q in chosen], infos
 
 
 def check_lossy_ok():
@@ -141,10 +142,13 @@ def write_ome_tiff(path, data, channels, planes=None, pixel_size_um=None, z_step
         raise StackIOError(f'{len(channels)} channel names for {C} channels')
     n = T * Z * C
     info = dict(mode=mode, quality_db=q, target_ratio=ratio, raw_bytes=int(data.nbytes))
+    qs = [q] * C
     if mode == 'lossy' and q is None:
-        q, per_channel = calibrate_quality(data, ratio)
+        qs, per_channel = calibrate_quality(data, ratio)
         info['channels'] = per_channel
-        info['quality_db'] = q
+    if mode == 'lossy':
+        info['qualities'] = qs
+        info['quality_db'] = min(qs)
     meta = dict(axes='TZCYX', Channel={'Name': [str(c) for c in channels]})
     if pixel_size_um:
         meta.update(PhysicalSizeX=float(pixel_size_um), PhysicalSizeY=float(pixel_size_um))
@@ -168,9 +172,24 @@ def write_ome_tiff(path, data, channels, planes=None, pixel_size_um=None, z_step
             if len(v) != n:
                 raise StackIOError(f'plane metadata {k!r} has {len(v)} entries, expected {n}')
         meta['Plane'] = pl
-    if description and mode == 'lossy':
-        meta['Description'] = f'{description}; JPEG2000 quality {q:.1f} dB' + (f' (chosen for a {ratio:g}x target compression)' if ratio else '')
-    tifffile.imwrite(path, data, ome=True, metadata=meta, bigtiff=True, **_tiff_args(mode, q, data.shape[-2]))
+    if mode == 'lossless':
+        tifffile.imwrite(path, data, ome=True, metadata=meta, bigtiff=True, **_tiff_args(mode, None, data.shape[-2]))
+    else:
+        # lossy: every page is written separately, because every channel has its own quality (tifffile applies one compression to a call)
+        if description:
+            meta['Description'] = f'{description}; JPEG2000 quality ' + ', '.join(f'{c}: {v:.0f} dB' for c, v in zip(channels, qs)) + \
+                (f' (chosen per channel for a {ratio:g}x target compression)' if ratio else '')
+        ox = tifffile.OmeXml()
+        ox.addimage(dtype=data.dtype, shape=data.shape, storedshape=(n, 1, 1, data.shape[-2], data.shape[-1], 1), **meta)
+        xml = ox.tostring().encode('ascii', 'xmlcharrefreplace').decode('ascii')     # TIFF descriptions must be 7-bit ASCII
+        with tifffile.TiffWriter(path, bigtiff=True, ome=False) as tw:
+            k = 0
+            for t in range(T):
+                for z in range(Z):
+                    for c in range(C):
+                        tw.write(data[t, z, c], photometric='minisblack', metadata=None, contiguous=False,
+                                 description=xml if k == 0 else None, **_tiff_args('lossy', qs[c], data.shape[-2]))
+                        k += 1
     import os
     info['file'] = path
     info['file_bytes'] = os.path.getsize(path)

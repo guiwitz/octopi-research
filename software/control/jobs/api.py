@@ -557,14 +557,15 @@ class Scope:
                 ch = r.get('channels') or []
                 err = max([c['rmse'] for c in ch] or [0.0])
                 noise = max([c['noise'] for c in ch] or [0.0])
-                msg = (f'{rel}: lossy JPEG2000 {r["quality_db"]:.1f} dB, {r["ratio"]:.0f}x smaller than raw ({r["file_bytes"] / 1e6:.2f} MB)'
+                qtxt = ', '.join(f'{q:.0f}' for q in r.get('qualities', [r['quality_db']])) + ' dB'
+                msg = (f'{rel}: lossy JPEG2000 {qtxt}, {r["ratio"]:.0f}x smaller than raw ({r["file_bytes"] / 1e6:.2f} MB)'
                        + (f'; codec error {err:.1f} counts rms vs image noise {noise:.1f} counts (middle plane)' if ch else ''))
                 tr = r.get('target_ratio')
                 if tr and r['ratio'] < 0.7 * tr:
-                    self.warn(f'{rel}: the target compression of {tr:g}x was not reached (achieved {r["ratio"]:.1f}x at {r["quality_db"]:.0f} dB, the lowest allowed quality): '
+                    self.warn(f'{rel}: the target compression of {tr:g}x was not reached (achieved {r["ratio"]:.1f}x at {r["quality_db"]:.0f} dB, the lowest allowed quality in at least one channel): '
                               f'the image has too much structure or noise for that ratio')
                 self.log(msg)
-                self._write_row('lossy_files', dict(file=rel, quality_db=round(r['quality_db'], 2), target_ratio=r.get('target_ratio') or '',
+                self._write_row('lossy_files', dict(file=rel, quality_db='/'.join(f'{q:.1f}' for q in r.get('qualities', [r['quality_db']])), target_ratio=r.get('target_ratio') or '',
                                                     achieved_ratio=round(r['ratio'], 1), file_mb=round(r['file_bytes'] / 1e6, 3),
                                                     codec_rmse_counts=round(err, 2), image_noise_counts=round(noise, 2)))
 
