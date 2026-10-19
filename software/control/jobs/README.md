@@ -135,10 +135,10 @@ def run_job(scope):
 | `scope.timepoints(n, interval=None)` | loop; yields `TimePoint` with `.index`, `.start` (s since job start), `.late` (s). `n=None`: until aborted |
 | `scope.move_to(point)` | move the stage (same backlash/safety handling as the standard acquisition) |
 | `scope.autofocus(channel=None)` | contrast autofocus with the settings of the Autofocus tab; stores the focused z in the point; returns z (mm) |
-| `scope.capture("488")` | one image in a channel; saved automatically (`multipage=`, `filename=`: see file names below); returns the image as NumPy array. `save=False`: do not save. `compression="lossy"` (default: error = 1x image noise per channel) or `compression="lossy", quality=80`: JPEG2000 (see below) |
+| `scope.capture("488")` | one image in a channel; saved automatically (`save_as=`, `filename=`: see file names below); returns the image as NumPy array. `save=False`: do not save. `compression="lossy"` (default: error = 1x image noise per channel) or `compression="lossy", quality=80`: JPEG2000 (see below) |
 | `scope.capture_channels(["BF LED matrix full", "488"])` | several channels in that order; returns `{channel: image}` |
-| `scope.zstack(channels, planes=, step_um=, span_um=, order=, compression=, quality=, ratio=, multipage=, filename=)` | z-stack centred on the current z; give two of planes/step_um/span_um; one multipage OME-TIFF; returns `{channel: (planes, Y, X)}` |
-| `scope.movie(channels, frames=, interval_s=, duration_s=, compression=, quality=, ratio=, multipage=, filename=)` | fast time series at the current position, one multipage OME-TIFF with the real time of every image; returns `{channel: (frames, Y, X)}` |
+| `scope.zstack(channels, planes=, step_um=, span_um=, order=, compression=, quality=, ratio=, save_as=, filename=)` | z-stack centred on the current z; give two of planes/step_um/span_um; one multipage OME-TIFF; returns `{channel: (planes, Y, X)}` |
+| `scope.movie(channels, frames=, interval_s=, duration_s=, compression=, quality=, ratio=, save_as=, filename=)` | fast time series at the current position, one multipage OME-TIFF with the real time of every image; returns `{channel: (frames, Y, X)}` |
 | `scope.wait(seconds)` | wait (abortable) |
 | `scope.wait_until(seconds)` | wait until this many seconds after the job start |
 | `scope.elapsed` | seconds since the job start |
@@ -165,9 +165,9 @@ ends the experiment cleanly. Errors found by the dry run prevent the start.
 * **Z-stack** (`scope.zstack`): centred on the *current* z (after `move_to`, and after `autofocus` the focused z). Two of `planes`, `step_um`,
   `span_um` (span = (planes - 1) x step). The stage scans upwards and returns to the centre. `order="channel_major"` (default): each channel
   scans the whole stack; `"z_major"`: all channels at each plane, then the next plane. The channel's z offset (channel configuration) is added.
-  All planes and channels of one call are ONE file `Time0003_Point0002_Zstack.tiff` (OME axes Z, C); with `multipage=False` one file per image (see file names below).
+  All planes and channels of one call are ONE file `Time0003_Point0002_Zstack.tiff` (OME axes Z, C); with `save_as="single"` one file per image (see file names below).
 * **Movie** (`scope.movie`): rounds of all `channels`, each starting `interval_s` after the start of the previous (scheduled against a fixed
-  clock; `interval_s=None` = back to back). ONE file per call (`Time0003_Point0002_Movie.tiff`, axes T, C; `multipage=False`: one file per image). The real time of every image is in the OME
+  clock; `interval_s=None` = back to back). ONE file per call (`Time0003_Point0002_Movie.tiff`, axes T, C; `save_as="single"`: one file per image). The real time of every image is in the OME
   metadata (`DeltaT`) and in `frames.csv`; the achieved interval (mean, sd, min, max) is logged and written into the file description. If the
   hardware cannot keep the interval a warning is issued. Time points of the job are separate files, as before. Pause takes effect after the movie.
 * **Saving:** `compression="lossless"` (default; zlib-compressed TIFF, bit-identical) or `"lossy"` (16-bit JPEG2000 inside the same TIFF).
@@ -191,8 +191,8 @@ ends the experiment cleanly. Errors found by the dry run prevent the start.
 
 | file | content |
 |---|---|
-| `Time0000_Point0000.tiff`, ... | **multipage** (checkbox *Save as multipage TIFF* in the JOBs tab, default on; `multipage=True/False` per call): ONE file per point and time point with all images taken there (channels as pages; `capture`, `capture_channels`), `..._Zstack.tiff`, `..._Movie.tiff`; flat in the experiment folder. Images outside a time-point loop use `Time0000` |
-| `0/`, `1/`, ... | **single files** (checkbox off): folder per time point (`0/` outside `scope.timepoints`), `<point ID>_0_0_<z plane>_<channel>.tiff` as in the Flexible Multipoint tab; movie frames `<ID>_0_0_0_<channel>_Movie_F0012.tiff` |
+| `Time0000_Point0000.tiff`, ... | **multipage / merge** (*Save as* in the JOBs tab, default "multipage TIFF, written directly"; `save_as="multipage"`, `"merge"` or `"single"` per call; with "merge" every image is first written as a single file and merged into this file later, while the job waits or at the end, then deleted): ONE file per point and time point with all images taken there (channels as pages; `capture`, `capture_channels`), `..._Zstack.tiff`, `..._Movie.tiff`; flat in the experiment folder. Images outside a time-point loop use `Time0000` |
+| `0/`, `1/`, ... | **single files** (*Save as* single files): folder per time point (`0/` outside `scope.timepoints`), `<point ID>_0_0_<z plane>_<channel>.tiff` as in the Flexible Multipoint tab; movie frames `<ID>_0_0_0_<channel>_Movie_F0012.tiff` |
 | `_ver_2`, `_ver_3` | appended when a name already exists (e.g. the same channel captured twice at a point). `filename="my_name"` (no extension) replaces the automatic name in `capture`, `capture_channels`, `zstack`, `movie`; single files then get `my_name_<channel>`, `my_name_Z0005_<channel>`, `my_name_F0012_<channel>` |
 | `lossy_files.csv` | one row per lossy file: quality, target and achieved compression, codec error and image noise (counts) |
 | `frames.csv` | one row per image of a z-stack or movie: file, kind, frame/z/t index, channel, job time, time since the start of the stack/movie, stage x/y/z, exposure, gain, intensity |

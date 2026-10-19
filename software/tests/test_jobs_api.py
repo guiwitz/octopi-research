@@ -99,7 +99,7 @@ def test_loop_files_and_metadata():
                     scope.move_to(pt)
                     scope.capture("BF")
                     scope.capture("488")
-    ''', pts(2), multipage=False)
+    ''', pts(2), save_as='single')
     assert res.status == 'completed', res.error
     assert res.stats['images'] == 12 and res.stats['per_channel'] == {'BF LED matrix full': 6, 'Fluorescence 488 nm Ex': 6}
     r = rows(out, 'images')

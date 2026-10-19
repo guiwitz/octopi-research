@@ -180,6 +180,42 @@ def calibrate_quality(data, ratios, tol_db=1.0):
     return [float(q) for q in chosen], infos
 
 
+class PageFiles:
+    """Pages (T, Z, C) that are stored as single-page TIFF files, behaving like a read-only array (T, Z, C, Y, X) for write_ome_tiff:
+    a page is read from disk when it is indexed, so only one page is in memory at a time. A missing file reads as zeros (see .missing)."""
+
+    def __init__(self, paths, shape_tzc, dtype, yx):
+        self.paths = {tuple(k): v for k, v in paths.items()}
+        self.shape = tuple(shape_tzc) + tuple(yx)
+        self.dtype = np.dtype(dtype)
+        self.ndim = 5
+        self.nbytes = int(np.prod(self.shape)) * self.dtype.itemsize
+        self.missing = []
+
+    def __getitem__(self, key):
+        import os
+        import tifffile
+        p = self.paths.get(tuple(key))
+        if p is None or not os.path.isfile(p):
+            self.missing.append(tuple(key))
+            return np.zeros(self.shape[3:], self.dtype)
+        a = tifffile.imread(p)
+        return np.ascontiguousarray(a.reshape(self.shape[3:]))
+
+
+def merge_ok(src_paths, out_path, n_pages):
+    """True if out_path is a readable TIFF with n_pages pages (checked before the single files are deleted)."""
+    import os
+    import tifffile
+    try:
+        if not os.path.isfile(out_path):
+            return False
+        with tifffile.TiffFile(out_path) as tf:
+            return len(tf.pages) == n_pages
+    except Exception:
+        return False
+
+
 def check_lossy_ok():
     ok, msg = lossy_available()
     if not ok:
@@ -203,7 +239,7 @@ def write_ome_tiff(path, data, channels, planes=None, pixel_size_um=None, z_step
     mode, q, ratio = normalize_compression(compression, quality, ratio)
     if mode == 'lossy':
         check_lossy_ok()
-    data = np.asarray(data)
+    data = data if isinstance(data, PageFiles) else np.asarray(data)
     if data.ndim != 5:
         raise StackIOError(f'data must have axes T,Z,C,Y,X, got shape {data.shape}')
     T, Z, C = data.shape[:3]
@@ -243,11 +279,12 @@ def write_ome_tiff(path, data, channels, planes=None, pixel_size_um=None, z_step
             if len(v) != n:
                 raise StackIOError(f'plane metadata {k!r} has {len(v)} entries, expected {n}')
         meta['Plane'] = pl
-    if mode == 'lossless':
+    if mode == 'lossless' and isinstance(data, np.ndarray):
         tifffile.imwrite(path, data, ome=True, metadata=meta, bigtiff=True, **_tiff_args(mode, None, data.shape[-2]))
     else:
-        # lossy: every page is written separately, because every channel has its own quality (tifffile applies one compression to a call)
-        if description:
+        # lossy: every page is written separately, because every channel has its own quality (tifffile applies one compression to a call);
+        # also used for lossless data that is read page by page from files (PageFiles)
+        if description and mode == 'lossy':
             meta['Description'] = f'{description}; JPEG2000 quality ' + ', '.join(f'{c}: {v:.0f} dB' for c, v in zip(channels, qs)) + \
                 (' (chosen per channel for target compressions ' + ', '.join(f'{t:g}x' if t else f'error = {DEFAULT_NOISE_FACTOR:g} x noise' for t in targets) + ')' if targets
                  else (f' (chosen per channel: error = {DEFAULT_NOISE_FACTOR:g} x pixel noise)' if q is None else ''))
@@ -260,7 +297,7 @@ def write_ome_tiff(path, data, channels, planes=None, pixel_size_um=None, z_step
                 for z in range(Z):
                     for c in range(C):
                         tw.write(data[t, z, c], photometric='minisblack', metadata=None, contiguous=False,
-                                 description=xml if k == 0 else None, **_tiff_args('lossy', qs[c], data.shape[-2]))
+                                 description=xml if k == 0 else None, **_tiff_args(mode, qs[c], data.shape[-2]))
                         k += 1
     import os
     info['file'] = path

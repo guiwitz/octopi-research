@@ -210,11 +210,11 @@ class _Linter:
                 self.add(node.args[0], 'error', 'move_to needs a position (from scope.points()), not a time point.')
 
     def _check_naming_args(self, kw):
-        fn, mp = kw.get('filename'), kw.get('multipage')
+        fn, mp = kw.get('filename'), kw.get('save_as')
         if isinstance(fn, ast.Constant) and (not isinstance(fn.value, str) or not fn.value.strip()):
             self.add(fn, 'error', 'filename must be a non-empty text without extension, e.g. filename="my_image".')
-        if isinstance(mp, ast.Constant) and not isinstance(mp.value, bool) and mp.value is not None:
-            self.add(mp, 'error', 'multipage must be True or False.')
+        if isinstance(mp, ast.Constant) and mp.value is not None and mp.value not in ('multipage', 'merge', 'single'):
+            self.add(mp, 'error', 'save_as must be "multipage", "merge" or "single".')
 
     def _check_compression_args(self, node, name, kw):
         c = kw.get('compression')

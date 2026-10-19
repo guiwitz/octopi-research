@@ -55,13 +55,17 @@ class ZBackend(TestBackend):
         return img, info
 
     def save_image(self, image, path, channel):
-        open(path, 'wb').write(b'x')
+        if getattr(self, 'real_tiff', False):
+            tifffile.imwrite(path, image)
+        else:
+            open(path, 'wb').write(b'x')
 
 
 def run(job_text, points, **kw):
     clock = SimClock()
     bkw = {k: kw.pop(k) for k in list(kw) if k in ('offsets', 'capture_s', 'move_s', 'abort_after')}
     be = ZBackend(clock, **bkw)
+    be.real_tiff = bool(kw.pop('real_tiff', False))
     if kw.pop('noise', False):
         be.noise = True
     out = tempfile.mkdtemp()
@@ -261,7 +265,7 @@ def test_default_single_capture_unchanged():
         def run_job(scope):
             scope.move_to(scope.points()[0])
             scope.capture("488")
-    ''', pts(1), multipage=False)
+    ''', pts(1), save_as='single')
     f = rows(out, 'images')[0]['file']
     assert open(os.path.join(out, f), 'rb').read() == b'x'                  # went through backend.save_image as before
 
@@ -438,7 +442,7 @@ def test_single_files_follow_flexible_multipoint_layout_and_ver_counter():
                 scope.move_to(scope.points()[0])
                 scope.capture("488")
                 scope.capture("488")
-    ''', pts(1), multipage=False)
+    ''', pts(1), save_as='single')
     assert res.status == 'completed', res.error
     n = _names(out)
     assert n == ['0/A-0_0_0_0_Fluorescence_488_nm_Ex.tiff', '0/A-0_0_0_0_Fluorescence_488_nm_Ex_ver_2.tiff',
@@ -464,8 +468,8 @@ def test_zstack_and_movie_names_multipage_and_single():
             scope.move_to(scope.points()[0])
             scope.zstack(["488", "BF"], planes=2, step_um=1.0)
             scope.movie("488", frames=2, interval_s=1.0)
-            scope.zstack(["488"], planes=2, step_um=1.0, multipage=False)
-            scope.movie(["488"], frames=2, interval_s=1.0, multipage=False)
+            scope.zstack(["488"], planes=2, step_um=1.0, save_as="single")
+            scope.movie(["488"], frames=2, interval_s=1.0, save_as="single")
     ''', pts(1))
     assert res.status == 'completed', res.error
     n = sorted(set(_names(out, table='frames')))
@@ -482,8 +486,8 @@ def test_filename_argument():
             scope.capture("488", filename="my_first.ome.tiff")
             scope.capture("488", filename="my_first")
             scope.capture_channels(["BF", "488"], filename="both")
-            scope.capture_channels(["BF", "488"], filename="split", multipage=False)
-            scope.zstack("488", planes=2, step_um=1.0, filename="stack", multipage=False)
+            scope.capture_channels(["BF", "488"], filename="split", save_as="single")
+            scope.zstack("488", planes=2, step_um=1.0, filename="stack", save_as="single")
             scope.movie("488", frames=2, filename="mov")
     ''', pts(1))
     assert res.status == 'completed', res.error
@@ -503,9 +507,9 @@ def test_filename_argument():
 def test_multipage_lossy_capture_and_lint_of_naming_args():
     from control.jobs.lint import lint
     ch = list(CHANNELS)
-    bad = 'def run_job(scope):\n    scope.move_to(scope.points()[0])\n    scope.capture("488", filename="")\n    scope.capture("488", multipage="yes")\n'
+    bad = 'def run_job(scope):\n    scope.move_to(scope.points()[0])\n    scope.capture("488", filename="")\n    scope.capture("488", save_as="yes")\n'
     msgs = ' | '.join(i.message for i in lint(bad, channels=ch) if i.severity == 'error')
-    assert 'filename must be' in msgs and 'multipage must be' in msgs, msgs
+    assert 'filename must be' in msgs and 'save_as must be' in msgs, msgs
     if LOSSY_OK:
         res, be, out = run('''
         def run_job(scope):
@@ -516,6 +520,62 @@ def test_multipage_lossy_capture_and_lint_of_naming_args():
         f = os.path.join(out, 'Time0000_Point0000.tiff')
         with tifffile.TiffFile(f) as tf:
             assert len(tf.pages) == 2 and tf.pages[0].compression.name.startswith('JPEG2000')
+
+
+def test_merge_mode_capture_channels_zstack_movie():
+    res, be, out = run('''
+        def run_job(scope):
+            for t in scope.timepoints(2, interval=60):
+                scope.move_to(scope.points()[0])
+                scope.capture_channels(["BF", "488"])
+                scope.zstack(["488", "BF"], planes=2, step_um=1.0)
+                scope.movie("488", frames=2, interval_s=1.0)
+    ''', pts(1), real_tiff=True, save_as='merge')
+    assert res.status == 'completed', res.error
+    names = sorted(set(_names(out) + _names(out, table='frames')))
+    assert names == ['Time0000_Point0000.tiff', 'Time0000_Point0000_Movie.tiff', 'Time0000_Point0000_Zstack.tiff',
+                     'Time0001_Point0000.tiff', 'Time0001_Point0000_Movie.tiff', 'Time0001_Point0000_Zstack.tiff'], names
+    for n in names:
+        with tifffile.TiffFile(os.path.join(out, n)) as tf:
+            exp = {'Time0000_Point0000.tiff': 2, 'Time0001_Point0000.tiff': 2}.get(n, 4 if 'Zstack' in n else 2)
+            assert len(tf.pages) == exp and tf.is_ome, (n, len(tf.pages))
+    left = [f for d, _, fs in os.walk(out) for f in fs if f.endswith('.tiff') and not f.startswith('Time')]
+    assert not left, f'single files must be deleted after the merge: {left}'
+    assert not [f for f in os.listdir(out) if f.endswith('.part')]
+    # content identical to the directly written multipage files
+    res2, be2, out2 = run('''
+        def run_job(scope):
+            for t in scope.timepoints(2, interval=60):
+                scope.move_to(scope.points()[0])
+                scope.capture_channels(["BF", "488"])
+                scope.zstack(["488", "BF"], planes=2, step_um=1.0)
+                scope.movie("488", frames=2, interval_s=1.0)
+    ''', pts(1), real_tiff=True, save_as='multipage')
+    assert res2.status == 'completed', res2.error
+    for n in names:
+        assert np.array_equal(tifffile.imread(os.path.join(out, n)), tifffile.imread(os.path.join(out2, n))), n
+
+
+def test_merge_mode_lossy_and_kept_when_a_single_file_is_missing():
+    res, be, out = run('''
+        def run_job(scope):
+            scope.move_to(scope.points()[0])
+            scope.capture_channels(["BF", "488"], compression="lossy")
+    ''', pts(1), real_tiff=True, save_as='merge', noise=True)
+    assert res.status == 'completed', res.error
+    if LOSSY_OK:
+        with tifffile.TiffFile(os.path.join(out, 'Time0000_Point0000.tiff')) as tf:
+            assert len(tf.pages) == 2 and tf.pages[0].compression.name.startswith('JPEG2000')
+    # a missing single file: the merged file is written with a zero page, the existing single files stay, the error is logged
+    import control.jobs.stackio as sio
+    d = tempfile.mkdtemp()
+    a = np.full((8, 10), 7, np.uint16)
+    tifffile.imwrite(os.path.join(d, 'p0.tiff'), a)
+    src = sio.PageFiles({(0, 0, 0): os.path.join(d, 'p0.tiff'), (0, 0, 1): os.path.join(d, 'gone.tiff')}, (1, 1, 2), np.uint16, (8, 10))
+    sio.write_ome_tiff(os.path.join(d, 'm.tiff'), src, ['A', 'B'])
+    assert src.missing == [(0, 0, 1)]
+    back = tifffile.imread(os.path.join(d, 'm.tiff')).reshape(2, 8, 10)
+    assert back[0].min() == 7 and back[1].max() == 0 and os.path.isfile(os.path.join(d, 'p0.tiff'))
 
 
 if __name__ == '__main__':

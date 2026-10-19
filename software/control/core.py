@@ -1897,7 +1897,7 @@ class MultiPointWorker(QObject):
             result = run_job(mpc.job_file, mpc.job_points, HardwareBackend(self),
                              experiment_dir=os.path.join(self.base_path,self.experiment_ID),
                              meta=dict(experiment_id=self.experiment_ID), observer=self.signal_job_status.emit,
-                             multipage=getattr(mpc, 'job_multipage', True))
+                             save_as=getattr(mpc, 'job_save_as', 'multipage'))
             mpc.job_result = result
             self.signal_job_message.emit('job ' + result.status + (': ' + result.error.splitlines()[0] if result.error else ''))
         except BaseException:
@@ -1921,6 +1921,10 @@ class MultiPointWorker(QObject):
         except BaseException as e: # also SystemExit (microcontroller timeout calls sys.exit)
             import traceback
             traceback.print_exc()
+            try:
+                self._finish_merges() # single files of the finished positions are merged anyway
+            except BaseException:
+                traceback.print_exc()
             if isinstance(e, AcquisitionStopped):
                 message = str(e)
             else:
@@ -1978,6 +1982,8 @@ class MultiPointWorker(QObject):
         self.scan_coordinates_mm_backup = self.scan_coordinates_mm.copy()
 
         self._open_position_log()
+        self._merge_jobs = []
+        self._merge_threads = []
 
         while self.time_point < self.Nt:
             # check if abort acquisition has been requested
@@ -1991,6 +1997,7 @@ class MultiPointWorker(QObject):
                                    next_start=(self.time_point+1)*self.dt if (self.dt and self.time_point+1 < self.Nt) else None))
             # run single time point
             self.run_single_time_point()
+            self._start_merge_thread() # single files of this time point -> multichannel files, in the background while the camera is idle
             self.time_point = self.time_point + 1
             # continous acquisition
             if self.dt == 0:
@@ -2012,12 +2019,41 @@ class MultiPointWorker(QObject):
                         break
                     time.sleep(0.05)
                 self._flex_notify(dict(type='state', state='idle', tp=self.time_point))
+        self._finish_merges()
         self.processingHandler.processing_queue.join()
         self.processingHandler.upload_queue.join()
         elapsed_time = time.perf_counter_ns()-self.start_time
         print("Time taken for acquisition/processing: "+str(elapsed_time/10**9))
         self._flex_notify(dict(type='finished', status='aborted' if self.multiPointController.abort_acqusition_requested else 'completed', error=''))
         self._emit_finished()
+
+    def _start_merge_thread(self):
+        """towbinlab: merge the single files of finished positions into their multichannel files (one image in memory at a time; the single
+        files are deleted only after the merged file is verified). Runs in a thread, one at a time, while the camera waits for the next time point."""
+        jobs, self._merge_jobs = getattr(self, '_merge_jobs', []), []
+        if not jobs:
+            return
+        import threading
+        self._merge_threads = [t for t in getattr(self, '_merge_threads', []) if t.is_alive()]
+        def work(jobs=jobs, previous=list(self._merge_threads)):
+            for t in previous: # one merge thread at a time (disk)
+                t.join()
+            from control.towbin_funs import merge_plane_tiffs
+            for j in jobs:
+                try:
+                    ok, missing = merge_plane_tiffs(j['parts'], j['out'], j['channels'], j['numchannels'], j['num_z'])
+                    if not ok:
+                        print('*** merge: ' + os.path.basename(j['out']) + ' written, but images are missing (zeros) for (channel, z) ' + str(missing) + '; the single files were kept')
+                except BaseException as e:
+                    print('*** merge of ' + os.path.basename(j['out']) + ' failed (' + type(e).__name__ + ': ' + str(e) + '); the single files were kept')
+        t = threading.Thread(target=work, name='merge-multichannel', daemon=False)
+        t.start()
+        self._merge_threads.append(t)
+
+    def _finish_merges(self):
+        self._start_merge_thread()
+        for t in getattr(self, '_merge_threads', []):
+            t.join()
 
     def wait_till_operation_is_completed(self):
         t0 = time.time()
@@ -2167,8 +2203,12 @@ class MultiPointWorker(QObject):
                     # for multi-channel image
                     self.image_multichannel = None
                     self.save_multichannel = False
+                    self.merge_multichannel = False # towbinlab: write single files first, merge them into the multichannel file later
+                    self._merge_parts = {}
                     if self.microscope.multiPointWidget2.checkbox_save_multichannel.isChecked():
                         self.save_multichannel = True
+                        self.merge_multichannel = bool(getattr(self.microscope.multiPointWidget2, 'checkbox_merge_multichannel', None) and
+                                                       self.microscope.multiPointWidget2.checkbox_merge_multichannel.isChecked())
                         numchannels = len(self.selected_configurations)
                         num_z = self.NZ
 
@@ -2350,6 +2390,11 @@ class MultiPointWorker(QObject):
                                     from .towbin_funs import save_single_plane_tiff
                                     if not self.save_multichannel:
                                         save_single_plane_tiff(image, saving_path)
+                                    elif self.merge_multichannel:
+                                        # single file now (as without multichannel), merged into the multichannel file when the camera is idle
+                                        save_single_plane_tiff(image, saving_path)
+                                        self._merge_parts[(self.channel_counter, k)] = saving_path
+                                        self.channel_counter += 1
                                     else:
                                         if self.image_multichannel is None:
                                             if image.dtype == np.uint16:
@@ -2602,7 +2647,13 @@ class MultiPointWorker(QObject):
                                         self.dz_usteps = self.dz_usteps + self.deltaZ_usteps
 
                         # z and channel finished. Save multichannel image if needed
-                        if self.save_multichannel and self.image_multichannel is not None:
+                        if self.save_multichannel and self.merge_multichannel and self._merge_parts:
+                            multi_channel_id = f"Time{self.time_point :04d}_Point{int(coordinate_id) :04d}"
+                            self._merge_jobs.append(dict(parts=dict(self._merge_parts), out=os.path.join(self.base_path, self.experiment_ID, multi_channel_id + ".tiff"),
+                                                         channels=[config.name for config in self.selected_configurations],
+                                                         numchannels=numchannels, num_z=num_z))
+                            self._merge_parts = {}
+                        elif self.save_multichannel and self.image_multichannel is not None:
                             multi_channel_id = f"Time{self.time_point :04d}_Point{int(coordinate_id) :04d}"
                             channel_names = [config.name for config in self.selected_configurations]
                             saving_path = os.path.join(self.base_path, self.experiment_ID, multi_channel_id + ".tiff")
@@ -2785,7 +2836,7 @@ class MultiPointController(QObject):
         self.location_list = None # for flexible multipoint
         self.job_file = None # JOBs: path of the job file to run instead of the standard loops (None = standard acquisition)
         self.job_points = None # JOBs: list of control.jobs.Point
-        self.job_multipage = True # JOBs: True = multipage TIFF files (Time0003_Point0002.tiff), False = single TIFF files per image
+        self.job_save_as = 'multipage' # JOBs: 'multipage' (Time0003_Point0002.tiff, written directly), 'merge' (single files merged later) or 'single' (single files per image)
         self.job_result = None
         self.job_pause_requested = False # JOBs: True while the running job should be paused (set from the GUI)
         self.job_new_positions = None # JOBs: positions (x,y,z list) read from the table at resume
@@ -2866,12 +2917,12 @@ class MultiPointController(QObject):
         for configuration_name in selected_configurations_name:
             self.selected_configurations.append(next((config for config in self.configurationManager.configurations if config.name == configuration_name)))
         
-    def run_job(self, job_file, points, multipage=True):
+    def run_job(self, job_file, points, save_as='multipage'):
         """JOBs: run a job file (control/jobs) with the given list of control.jobs.Point. Same preparation as a
         standard acquisition (call set_base_path, set_selected_configurations and start_new_experiment first)."""
         self.job_file = job_file
         self.job_points = points
-        self.job_multipage = bool(multipage)
+        self.job_save_as = save_as
         self.job_result = None
         self.run_acquisition(np.array([[p.x,p.y,p.z] for p in points],dtype=float),_job=True)
 

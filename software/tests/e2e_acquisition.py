@@ -82,6 +82,8 @@ def check_files(exp_dir, n_t, n_pos, n_channels, multichannel):
             # per-position multichannel tiffs live in the experiment folder
             mc = glob.glob(os.path.join(exp_dir, f'Time{t:04d}_Point*.tiff'))
             res.append((f'time point {t}: {n_pos} multichannel files', len(mc) == n_pos, f'found {len(mc)}'))
+            if os.environ.get('E2E_MERGE'):
+                res.append((f'time point {t}: single files merged and deleted', len(imgs) == 0, f'{len(imgs)} left'))
         else:
             res.append((f'time point {t}: {n_pos * n_channels} images', len(imgs) == n_pos * n_channels, f'found {len(imgs)}'))
     if multichannel:
@@ -151,6 +153,13 @@ def main():
     os.chdir(SOFTWARE_DIR)
     sys.path.insert(0, SOFTWARE_DIR)
     os.environ['QT_API'] = 'pyqt5'
+    if args.simulation and os.environ.get('SQUID_E2E_OFFSCREEN'):      # no display / napari on this machine: offscreen Qt, napari mocked
+        os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+        from unittest.mock import MagicMock
+        for m in ['napari', 'napari.utils', 'napari.utils.colormaps']:
+            sys.modules[m] = MagicMock()
+        import control._def as d
+        d.USE_NAPARI_FOR_LIVE_VIEW = d.USE_NAPARI_FOR_MULTIPOINT = d.USE_NAPARI_FOR_TILED_DISPLAY = False
     from qtpy.QtCore import QEventLoop, QTimer, Qt
     from qtpy.QtWidgets import QApplication
     import control.gui_hcs as gui
@@ -239,6 +248,7 @@ def main():
                     item.setSelected(True)
             mp.checkbox_withAutofocus.setChecked(cfg['af'])
             mp.checkbox_save_multichannel.setChecked(cfg['multichannel'])
+            mp.checkbox_merge_multichannel.setChecked(bool(os.environ.get('E2E_MERGE')))    # E2E_MERGE=1: single files first, merged after each time point
             afc.set_af_schedule(mode=cfg['mode'], n=cfg['n'], all_at_t0=cfg['all_t0'])
             app.processEvents()
 

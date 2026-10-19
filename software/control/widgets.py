@@ -2121,6 +2121,12 @@ class MultiPointWidget2(QFrame):
         self.label_af_summary.setStyleSheet('font-size: 8pt; color: gray;')
         self.checkbox_save_multichannel = QCheckBox('save as multichannel')
         self.checkbox_save_multichannel.setChecked(True)
+        self.checkbox_merge_multichannel = QCheckBox('write single files first, merge later')
+        self.checkbox_merge_multichannel.setToolTip('Multichannel file built from single image files that are written during the acquisition and merged '
+                                                    'after each time point (the single files are deleted after the merge). Slower, but nothing is held in memory.\n'
+                                                    'Unchecked: the multichannel file is written directly from memory at the end of each position.')
+        self.checkbox_merge_multichannel.setChecked(False)
+        self.checkbox_save_multichannel.toggled.connect(self.checkbox_merge_multichannel.setEnabled)
         self.checkbox_withReflectionAutofocus = QCheckBox('Reflection AF')
         self.checkbox_withReflectionAutofocus.setChecked(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
         self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
@@ -2179,6 +2185,7 @@ class MultiPointWidget2(QFrame):
         if SUPPORT_LASER_AUTOFOCUS:
             grid_af.addWidget(self.checkbox_withReflectionAutofocus)
         grid_af.addWidget(self.checkbox_save_multichannel)
+        grid_af.addWidget(self.checkbox_merge_multichannel)
         grid_af.addStretch(1) # keep the checkboxes and the summary together at the top
 
         grid_line3 = QHBoxLayout()
@@ -2528,6 +2535,7 @@ class MultiPointWidget2(QFrame):
         self.list_configurations.setEnabled(enabled)
         self.checkbox_withAutofocus.setEnabled(enabled)
         self.checkbox_save_multichannel.setEnabled(enabled)
+        self.checkbox_merge_multichannel.setEnabled(enabled and self.checkbox_save_multichannel.isChecked())
         if hasattr(self,'towbin_widget'):
             self.towbin_widget.setEnabled(enabled)  # positions must not change during an acquisition
         self.checkbox_withReflectionAutofocus.setEnabled(enabled)

@@ -188,7 +188,7 @@ def main():
             im = rows(d, 'images')
             record('job 1 image count', len(im) == exp_images, f'{len(im)} vs {exp_images}')
             record('job 1 all image files exist', all(os.path.isfile(os.path.join(d, r['file'])) for r in im))
-            record('job 1 unique file names', len({r['file'] for r in im}) == len(im))
+            record('job 1 one multipage file per point and time point (Time0000_Point0000.tiff, ...)', len({r['file'] for r in im}) == 3 * n and im[0]['file'] == 'Time0000_Point0000.tiff', str(sorted({r['file'] for r in im})[:3]))
             record('job 1 images carry point IDs and groups', {r['group'] for r in im} == {'A', 'B'} and im[0]['point_id'] == 'A-0')
             af = rows(d, 'autofocus')
             exp_af = sum(1 for t in range(3) for p in range(n) if (t + p) % 2 == 0)
@@ -199,7 +199,7 @@ def main():
             try:
                 import tifffile
                 a = tifffile.imread(os.path.join(d, im[0]['file']))
-                record('job 1 image readable (OME-TIFF)', a.ndim == 2 and a.size > 0, str(a.shape))
+                record('job 1 image readable (OME-TIFF)', a.ndim in (2, 3) and a.size > 0, str(a.shape))
             except Exception as e:
                 record('job 1 image readable (OME-TIFF)', False, repr(e))
         lm = jw.live.model
@@ -304,9 +304,9 @@ def main():
             try:
                 import tifffile
                 files = sorted({r['file'] for r in fr})
-                with tifffile.TiffFile(os.path.join(d3, [f for f in files if 'zstack' in f][0])) as tf:
+                with tifffile.TiffFile(os.path.join(d3, [f for f in files if 'zstack' in f.lower()][0])) as tf:
                     record('z-stack file: 6 pages, lossless, OME', len(tf.pages) == 6 and tf.pages[0].compression.name == 'ADOBE_DEFLATE' and tf.is_ome)
-                with tifffile.TiffFile(os.path.join(d3, [f for f in files if 'movie' in f][0])) as tf:
+                with tifffile.TiffFile(os.path.join(d3, [f for f in files if 'movie' in f.lower()][0])) as tf:
                     record('movie file: 3 pages, JPEG2000, OME with times', len(tf.pages) == 3 and tf.pages[0].compression.name == 'JPEG2000' and 'DeltaT=' in tf.ome_metadata)
                     tms = [float(r['dt_s']) for r in fr if r['kind'] == 'movie']
                     record('movie frames about 0.6 s apart', len(tms) == 3 and all(abs(b - a - 0.6) < 0.25 for a, b in zip(tms, tms[1:])), str(tms))
