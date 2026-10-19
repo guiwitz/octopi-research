@@ -10,7 +10,7 @@ import traceback
 import json
 import shutil
 
-from qtpy.QtCore import Signal
+from qtpy.QtCore import Signal, Qt
 from qtpy.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog,
                             QMessageBox, QPlainTextEdit, QDialog, QDoubleSpinBox)
 
@@ -99,6 +99,9 @@ class JobsWidget(QFrame):
         self.btn_savingDir = QPushButton('Saving dir...')
         self.lineEdit_experimentID = QLineEdit('job')
         self.label_points = QLabel('')
+        self.btn_designer = QPushButton('Job designer...')
+        self.btn_designer.setToolTip('Opens the Job designer: an editor to write a job, test it (simulated, nothing moves), see a graphic of what it does, '
+                                     'and get help on all functions. Does not influence a running job.')
         self.btn_check = QPushButton('Check job (dry run)')
         self.btn_check.setToolTip('Runs the job with simulated time and no hardware: finds errors, counts images and estimates the duration')
         self.btn_plan = QPushButton('Show job plan (graph)')
@@ -118,7 +121,7 @@ class JobsWidget(QFrame):
         self.log.setMaximumBlockCount(5000)
 
         row1 = QHBoxLayout(); row1.addWidget(QLabel('Job file')); row1.addWidget(self.lineEdit_job, 1)
-        row1.addWidget(self.btn_select_job); row1.addWidget(self.btn_example)
+        row1.addWidget(self.btn_select_job); row1.addWidget(self.btn_example); row1.addWidget(self.btn_designer)
         row2 = QHBoxLayout(); row2.addWidget(QLabel('Saving dir')); row2.addWidget(self.lineEdit_savingDir, 1); row2.addWidget(self.btn_savingDir)
         row2.addWidget(QLabel('Experiment ID')); row2.addWidget(self.lineEdit_experimentID)
         row3 = QHBoxLayout(); row3.addWidget(self.btn_check); row3.addWidget(self.btn_plan); row3.addWidget(self.btn_start); row3.addWidget(self.btn_pause)
@@ -130,6 +133,7 @@ class JobsWidget(QFrame):
         self.btn_select_job.clicked.connect(self.select_job)
         self.lineEdit_job.editingFinished.connect(self._job_path_edited)
         self.btn_example.clicked.connect(self.new_from_example)
+        self.btn_designer.clicked.connect(self.open_designer)
         self.btn_savingDir.clicked.connect(self.select_saving_dir)
         self.btn_check.clicked.connect(self.check_job)
         self.btn_plan.clicked.connect(self.show_plan)
@@ -236,6 +240,40 @@ class JobsWidget(QFrame):
             self._save_cache()
             self.append_log(f'copied {os.path.basename(src)} to {dst}; edit it with any text editor, then press "Check job".')
             self.show_documentation()
+
+    # --- job designer
+    def open_designer(self):
+        """Open (or bring to the front) the Job designer window; it uses the positions and channels of this program for its tests."""
+        try:
+            win = getattr(self, 'designer', None)
+            if win is None or not win.isVisible():
+                from control.jobs_designer import JobDesignerWindow
+                path = self.lineEdit_job.text().strip()
+                win = JobDesignerWindow(channels_provider=self._channel_infos, positions_provider=self._positions_for_designer,
+                                        job_path=path if os.path.isfile(path) else None, example_dir=EXAMPLE_DIR if os.path.isdir(EXAMPLE_DIR) else None,
+                                        use_job_callback=self.use_job_from_designer)
+                win.setAttribute(Qt.WA_DeleteOnClose, True)
+                self.designer = win
+            win.show()
+            win.raise_()
+            win.activateWindow()
+        except Exception:
+            self._say('Could not open the Job designer:\n' + traceback.format_exc())
+
+    def _positions_for_designer(self):
+        pw = self.positionsWidget
+        return [str(i) for i in pw.location_ids], [tuple(r) for r in pw.location_list]
+
+    def use_job_from_designer(self, path):
+        """Called by the designer: select its (saved) job file here. Returns a message for the designer's status bar."""
+        if self.running:
+            return 'A job is running: it was not changed. Select the new job here after it has finished.'
+        self.lineEdit_job.setText(path)
+        self._save_cache()
+        self._doc_shown_for = path
+        self.show_documentation()
+        self.check_job()
+        return f'{os.path.basename(path)} is selected in the JOBs tab (checked). Press "Start job" there.'
 
     def select_saving_dir(self):
         d = QFileDialog.getExistingDirectory(self, 'Select folder')

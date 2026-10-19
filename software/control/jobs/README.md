@@ -76,6 +76,32 @@ The graph needs the Python package `matplotlib` (`pip install matplotlib` in the
 Times are estimates (assumed duration of moves and autofocus plus the exposure times); use the graph to check order and
 structure, not exact timing. If the job fails, the figure shows everything up to the error.
 
+## Job designer (editor, test, graphic, help)
+
+**JOBs tab -> "Job designer..."** opens an editor in which jobs are written and tested; it can also be started alone with
+`python -m control.jobs_designer [job.py]` from the `software` folder. Nothing in the designer moves the stage or switches on light.
+
+* **Editor:** Python colours, line numbers, Tab/Shift+Tab, Ctrl+/ (comment), Ctrl+F (find). Typing `scope.` lists all functions with a short
+  description (Ctrl+Space anywhere); inside `scope.capture("` the channel names are offered, in `scope.points("` the groups, after `pt.` the attributes of a position.
+  Hover over a function for its description, press **F1** on a name for the full help.
+* **Live check while typing** (`control/jobs/lint.py`): syntax errors, typos (`scope.captur`, `pt.indx`), wrong arguments, unknown channel names
+  (also in `CHANNELS = [...]` at the top), unknown groups, a loop over positions without `move_to`, `time.sleep` (cannot be aborted), undefined names.
+  Problems are underlined, marked in the margin and listed in the *Problems* tab.
+* **Test (F5):** runs the job in a dry run (simulated microscope and time, so a 2-day job takes a moment; a job stuck in an endless loop is stopped after 30 s).
+  *Output* shows the summary, warnings, `print()` output and `scope.log()` messages. If the job fails, the line is marked in the editor.
+  *Step list* lists every operation with time and line; double click jumps to the line.
+* **Plan graphic** (no matplotlib needed): timeline per position (ticks = images coloured by channel, triangles/boxes = autofocus, grey = moves,
+  dashed = time points, red = late), stage map (colour = group, order of visits, positions never imaged), working time per time point against the interval,
+  and an images-per-time-point matrix. Mouse wheel zooms time, drag moves, double click = whole job, hover = details, click an image = jump to the code line.
+* **Test setup:** the positions (IDs define the groups) and channels (exposure, gain, intensity) used for the test, and the assumed duration of a move,
+  an image and an autofocus. Positions and channels are taken from the Flexible Multipoint tab / channel configuration when the designer is opened from the
+  JOBs tab; they can be edited, replaced by sample positions or loaded from a CSV. Edits there affect only the test.
+* **Help panel:** all functions (search, description, arguments, example, *Insert call* / *Insert example*), guide pages (quick start, positions and groups,
+  time points, channels, autofocus, pause/abort, files, *Python in 2 minutes*), the examples (*Open a copy in the editor*) and ready-made snippets.
+  The function reference is `control/jobs/apidoc.py`; `tests/test_jobs_designer.py` checks that every `scope` function is documented there and that the
+  documented signatures match the code.
+* **Use in JOBs tab** (Ctrl+U) saves the job and selects it in the JOBs tab (checked); the job is started there. It is refused while a job is running.
+
 ## Workflow
 
 1. **Flexible Multipoint tab:** define the positions (stage position + optional z). Give them **IDs** in the

@@ -9,6 +9,7 @@ This module has no hardware and no Qt dependency, so jobs can be checked (dry ru
 """
 import os
 import re
+import sys
 import csv
 import time
 import datetime
@@ -116,6 +117,22 @@ def make_points(ids, coords):
     return pts
 
 
+def resolve_channel_name(name, channel_names):
+    """The channel a (part of a) name stands for: exact match, else the one channel that contains it (case-insensitive).
+    Raises JobError for unknown or ambiguous names (used by Scope and by the job designer's checker)."""
+    if not isinstance(name, str):
+        raise JobError(f'channel must be a name (text), got {name!r}')
+    if name in channel_names:
+        return name
+    low = name.lower()
+    hits = [c for c in channel_names if low in c.lower()]
+    if len(hits) == 1:
+        return hits[0]
+    if not hits:
+        raise JobError(f'unknown channel {name!r}. Available: {list(channel_names)}')
+    raise JobError(f'channel {name!r} is ambiguous: {hits}. Use a longer part of the name.')
+
+
 def _safe(s):
     return re.sub(r'[^A-Za-z0-9._+-]+', '_', str(s)).strip('_') or 'x'
 
@@ -174,7 +191,7 @@ class Backend:
 class Scope:
     """What a job script sees. See control/jobs/README.md for the full description."""
 
-    def __init__(self, backend, points, experiment_dir=None, clock=None, save_images=True, max_events=None, record=False, observer=None):
+    def __init__(self, backend, points, experiment_dir=None, clock=None, save_images=True, max_events=None, record=False, observer=None, trace_file=None):
         self._backend = backend
         self._points = list(points)
         self._dir = experiment_dir
@@ -184,6 +201,8 @@ class Scope:
         self._events = 0
         self.events = [] if record else None     # plan of the job for the graphical preview (dry run)
         self._observer = observer                # live view: called with small dicts (see _notify); must never break the job
+        self._trace_file = os.path.abspath(trace_file) if trace_file else None   # job file: recorded events get the line number of the call (job designer)
+        self._trace_cache = {}
         self._t0 = self._clock.now()
         self._tp = None
         self._current_point = None
@@ -276,9 +295,26 @@ class Scope:
             ev = dict(kind=kind, t0=t0, t1=self.elapsed if t1 is None else t1,
                       point=pt.index if pt is not None else None,
                       tp=self._tp.index if self._tp is not None else None, **kw)
+            if self._trace_file is not None:
+                line = self._job_line()
+                if line is not None:
+                    ev['line'] = line
             if self.events is not None:
                 self.events.append(ev)
             self._notify(dict(type='done', **ev))
+
+    def _job_line(self):
+        """Line in the job file that is executing (innermost frame of the job file), None if not found."""
+        f = sys._getframe(1)
+        while f is not None:
+            fn = f.f_code.co_filename
+            hit = self._trace_cache.get(fn)
+            if hit is None:
+                hit = self._trace_cache[fn] = (os.path.abspath(fn) == self._trace_file)
+            if hit:
+                return f.f_lineno
+            f = f.f_back
+        return None
 
     def _tick(self, restore=True):
         self.check_abort()
@@ -348,17 +384,7 @@ class Scope:
 
     # --- channels ----------------------------------------------------------------------------
     def _resolve_channel(self, name):
-        if not isinstance(name, str):
-            raise JobError(f'channel must be a name (text), got {name!r}')
-        if name in self._channel_names:
-            return name
-        low = name.lower()
-        hits = [c for c in self._channel_names if low in c.lower()]
-        if len(hits) == 1:
-            return hits[0]
-        if not hits:
-            raise JobError(f'unknown channel {name!r}. Available: {self._channel_names}')
-        raise JobError(f'channel {name!r} is ambiguous: {hits}. Use a longer part of the name.')
+        return resolve_channel_name(name, self._channel_names)
 
     # --- time --------------------------------------------------------------------------------
     def wait(self, seconds):

@@ -23,6 +23,7 @@ class JobResult:
     stats: dict = field(default_factory=dict)
     warnings: list = field(default_factory=list)
     events: list = field(default_factory=list)      # planned operations (dry run with record=True), see plot.py
+    error_line: int = None                          # line of the job file where the problem is (None if unknown); used by the job designer
 
 
 def _load_module(path):
@@ -34,9 +35,13 @@ def _load_module(path):
     try:
         spec.loader.exec_module(module)
     except SyntaxError as e:
-        raise JobError(f'syntax error in {os.path.basename(path)}, line {e.lineno}: {e.msg}')
+        err = JobError(f'syntax error in {os.path.basename(path)}, line {e.lineno}: {e.msg}')
+        err.line = e.lineno
+        raise err
     except Exception as e:
-        raise JobError(f'error while loading {os.path.basename(path)}: {e!r}\n' + _user_traceback(path))
+        err = JobError(f'error while loading {os.path.basename(path)}: {e!r}\n' + _user_traceback(path))
+        err.line = _user_line(path)
+        raise err
     return module
 
 
@@ -91,6 +96,13 @@ def _user_traceback(path):
     return '\n'.join(mine)
 
 
+def _user_line(path):
+    """Line of the job file in the innermost frame of the current exception (None if the job file is not involved)."""
+    tb = traceback.extract_tb(sys.exc_info()[2])
+    mine = [f.lineno for f in tb if os.path.abspath(f.filename) == os.path.abspath(path)]
+    return mine[-1] if mine else None
+
+
 def _git_commit():
     try:
         here = os.path.dirname(os.path.abspath(__file__))
@@ -108,7 +120,7 @@ def _exposure_warning(exposures):
     return None
 
 
-def run_job(job_path, points, backend, experiment_dir=None, clock=None, save_images=True, max_events=None, meta=None, record=False, observer=None):
+def run_job(job_path, points, backend, experiment_dir=None, clock=None, save_images=True, max_events=None, meta=None, record=False, observer=None, trace_file=None):
     """Run the job file with the given backend. Never raises for problems in the job: returns a JobResult.
     points: list of Point (see api.make_points)."""
     res = JobResult()
@@ -117,7 +129,7 @@ def run_job(job_path, points, backend, experiment_dir=None, clock=None, save_ima
     started = datetime.datetime.now()
     try:
         fn = load_job(job_path)
-        scope = Scope(backend, points, experiment_dir=experiment_dir, clock=clock, save_images=save_images, max_events=max_events, record=record, observer=observer)
+        scope = Scope(backend, points, experiment_dir=experiment_dir, clock=clock, save_images=save_images, max_events=max_events, record=record, observer=observer, trace_file=trace_file)
         if experiment_dir is not None:
             shutil.copy2(job_path, os.path.join(experiment_dir, 'job.py'))
             _write_positions(os.path.join(experiment_dir, 'positions_initial.csv'), points)
@@ -131,11 +143,14 @@ def run_job(job_path, points, backend, experiment_dir=None, clock=None, save_ima
             scope.log('job aborted by the user')
         except JobError as e:
             res.status, res.error = 'failed', str(e)
+            res.error_line = _user_line(job_path)
         except Exception as e:
             res.status, res.error = 'failed', f'{e!r}\n' + _user_traceback(job_path)
+            res.error_line = _user_line(job_path)
             scope.log('job FAILED: ' + res.error)
     except JobError as e:
         res.status, res.error = 'invalid', str(e)
+        res.error_line = getattr(e, 'line', None)
     except BaseException as e:   # a bug in the runner itself: still clean up, then report
         res.status, res.error = 'failed', f'internal error: {e!r}\n{traceback.format_exc()}'
     finally:
