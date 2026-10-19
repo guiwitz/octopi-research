@@ -135,7 +135,7 @@ def run_job(scope):
 | `scope.timepoints(n, interval=None)` | loop; yields `TimePoint` with `.index`, `.start` (s since job start), `.late` (s). `n=None`: until aborted |
 | `scope.move_to(point)` | move the stage (same backlash/safety handling as the standard acquisition) |
 | `scope.autofocus(channel=None)` | contrast autofocus with the settings of the Autofocus tab; stores the focused z in the point; returns z (mm) |
-| `scope.capture("488")` | one image in a channel; saved automatically; returns the image as NumPy array. `save=False`: do not save. `compression="lossy"` (default quality 60 dB) or `compression="lossy", quality=80`: JPEG2000 (see below) |
+| `scope.capture("488")` | one image in a channel; saved automatically; returns the image as NumPy array. `save=False`: do not save. `compression="lossy"` (default: error = 1x image noise per channel) or `compression="lossy", quality=80`: JPEG2000 (see below) |
 | `scope.capture_channels(["BF LED matrix full", "488"])` | several channels in that order; returns `{channel: image}` |
 | `scope.zstack(channels, planes=, step_um=, span_um=, order=, compression=, quality=, ratio=)` | z-stack centred on the current z; give two of planes/step_um/span_um; one multipage OME-TIFF; returns `{channel: (planes, Y, X)}` |
 | `scope.movie(channels, frames=, interval_s=, duration_s=, compression=, quality=, ratio=)` | fast time series at the current position, one multipage OME-TIFF with the real time of every image; returns `{channel: (frames, Y, X)}` |
@@ -171,10 +171,12 @@ ends the experiment cleanly. Errors found by the dry run prevent the start.
   metadata (`DeltaT`) and in `frames.csv`; the achieved interval (mean, sd, min, max) is logged and written into the file description. If the
   hardware cannot keep the interval a warning is issued. Time points of the job are separate files, as before. Pause takes effect after the movie.
 * **Saving:** `compression="lossless"` (default; zlib-compressed TIFF, bit-identical) or `"lossy"` (16-bit JPEG2000 inside the same TIFF).
-  Lossy uses a fixed **quality of 60 dB** (PSNR relative to the full scale of the data type; error about 65535 / 10^(dB/20) counts, 60 dB = 65 counts,
-  80 dB = 6.5 counts) for every channel type. `quality=<dB>` (40 to 120) changes it. The compression then depends on the image; on real Squid images
-  60 dB gave roughly 100x to several 100x for fluorescence and about 10x for bright field (see `claude/lossy_ratio_defaults_and_test_images.md` in the project).
-  Alternatively `ratio=` asks for a size: a number for all channels (`ratio=30`) or `ratio={"488": 50}` for single channels (others use 60 dB);
+  Lossy by default uses a **noise-relative quality**: per channel, shortly before the file is written (background thread), the pixel noise is estimated
+  from the middle image (every 4th row/column, ~0.1 s) and the JPEG2000 quality is set so that the codec error is about **1x that noise**
+  (`stackio.DEFAULT_NOISE_FACTOR`). For stacks and movies this is checked by encoding/decoding once to 1-3 times (~1 s each on a full frame, once per file);
+  for single images only the formula is used (error ~ 65535 / 10^(dB/20) counts). Dim noisy channels are thus kept more precisely than bright ones.
+  `quality=<dB>` (40 to 120; 60 dB = 65 counts error, 80 dB = 6.5 counts) sets a fixed quality instead. The compression depends on the image.
+  Alternatively `ratio=` asks for a size: a number for all channels (`ratio=30`) or `ratio={"488": 50}` for single channels (others use the noise-relative default);
   the quality is then calibrated for every channel on its middle plane (whole plane, 1 dB steps) shortly before the file is written (background thread).
   The achieved ratio is at least the target, often far more (the codec's rate control jumps once the quality falls below the noise).
   Give only one of `quality` and `ratio`. Lossy removes camera noise and the finest detail: check on your own images that this is acceptable

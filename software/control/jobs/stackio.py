@@ -5,8 +5,9 @@ No hardware, no Qt. Needs `tifffile` (and `imagecodecs` for the lossy JPEG2000 o
 File layout: axes are always T, Z, C, Y, X (singleton axes are kept), pages in that order (C varies fastest).
 The OME metadata holds one <Plane> per page: acquisition time (DeltaT, s since the start of the movie/stack), stage
 position and exposure time. Lossless = zlib (deflate); lossy = JPEG2000 with a PSNR target ("quality", dB, relative to the
-full scale of the data type, default 60 dB for every channel type) OR a target compression ratio ("ratio", a number, or a dict
-{channel: number}): then the quality is chosen automatically per channel, just before writing, so that the channel is about
+full scale of the data type), a target compression ratio ("ratio", a number, or a dict {channel: number}) or, by default, a
+NOISE-RELATIVE quality: the quality is then chosen automatically per channel, just before writing, so that the codec error is
+DEFAULT_NOISE_FACTOR (1.0) x the pixel noise of that channel (see calibrate_noise_quality); with "ratio" so that the channel is about
 `ratio` times smaller than the raw pixels (see calibrate_quality).
 """
 import queue
@@ -14,7 +15,8 @@ import threading
 
 import numpy as np
 
-DEFAULT_QUALITY_DB = 60.0              # default of compression="lossy", for every channel type
+DEFAULT_NOISE_FACTOR = 1.0             # default of compression="lossy": codec error (rms, counts) = this x pixel noise of the channel
+NOISE_ROW_STRIDE = 4                   # the noise is estimated on every 4th row (4x faster, 4x less memory, same value)
 RATIO_RANGE = (2.0, 2000.0)
 QUALITY_RANGE_DB = (40.0, 120.0)
 ZLIB_LEVEL = 6
@@ -47,8 +49,9 @@ def _check_ratio(r):
 
 
 def normalize_compression(compression, quality=None, ratio=None):
-    """-> ('lossless', None, None) or ('lossy', quality_db_or_None, ratio_spec). Lossy without quality and ratio = DEFAULT_QUALITY_DB for every
-    channel. ratio_spec is None, a number (all channels) or a dict {channel name: number} (channels not in the dict get the default quality).
+    """-> ('lossless', None, None) or ('lossy', quality_db_or_None, ratio_spec). Lossy without quality and ratio = noise-relative quality
+    (codec error = DEFAULT_NOISE_FACTOR x noise, chosen per channel when writing). ratio_spec is None, a number (all channels) or a dict
+    {channel name: number} (channels not in the dict get the noise-relative quality).
     Raises StackIOError for wrong values."""
     c = 'lossless' if compression is None else str(compression).strip().lower()
     if c in ('lossless', 'zlib', 'deflate', 'none'):
@@ -65,7 +68,7 @@ def normalize_compression(compression, quality=None, ratio=None):
                 raise StackIOError(f'quality must be between {lo:g} and {hi:g} dB (PSNR; higher = better, bigger files), got {q:g}')
             return 'lossy', q, None
         if ratio is None:
-            return 'lossy', DEFAULT_QUALITY_DB, None
+            return 'lossy', None, None
         if isinstance(ratio, dict):
             return 'lossy', None, {str(k): _check_ratio(v) for k, v in ratio.items()}
         return 'lossy', None, _check_ratio(ratio)
@@ -73,7 +76,7 @@ def normalize_compression(compression, quality=None, ratio=None):
 
 
 def resolve_ratios(channels, ratio_spec):
-    """Target compression per channel (list; None = fixed default quality) from a number / dict {channel: number}."""
+    """Target compression per channel (list; None = noise-relative default quality) from a number / dict {channel: number}."""
     if isinstance(ratio_spec, dict):
         unknown = [k for k in ratio_spec if k not in channels]
         if unknown:
@@ -83,12 +86,18 @@ def resolve_ratios(channels, ratio_spec):
 
 
 def estimate_noise(img):
-    """Pixel noise (standard deviation, counts) from the difference of neighbouring pixels (robust, MAD)."""
-    a = np.asarray(img, dtype=np.float64)
-    d = (a[:, 1:] - a[:, :-1]).ravel()
-    if d.size == 0:
-        return 0.0
-    return float(1.4826 * np.median(np.abs(d - np.median(d))) / np.sqrt(2))
+    """Pixel noise (standard deviation, counts) of one image, robust (MAD of differences of neighbouring pixels). Horizontal differences on
+    every NOISE_ROW_STRIDE-th row and vertical differences on every NOISE_ROW_STRIDE-th column; the smaller of the two is used (image
+    structure inflates a difference estimate, noise does not). Cost: ~0.1 s and ~50 MB temporary memory for a 2080x3088 frame."""
+    a = np.asarray(img)
+    s = NOISE_ROW_STRIDE
+
+    def mad(d):
+        d = d.ravel()
+        return 0.0 if d.size == 0 else float(1.4826 * np.median(np.abs(d - np.median(d))) / np.sqrt(2))
+    h = np.asarray(a[::s, :], dtype=np.float64)
+    v = np.asarray(a[:, ::s], dtype=np.float64)
+    return min(mad(h[:, 1:] - h[:, :-1]), mad(v[1:, :] - v[:-1, :]))
 
 
 def _crop(img, n=1024):
@@ -97,11 +106,40 @@ def _crop(img, n=1024):
     return np.ascontiguousarray(img[y0:y0 + n, x0:x0 + n])
 
 
+def calibrate_noise_quality(img, factor=None, verify=True, tol=0.1, max_iter=3):
+    """Quality (dB) at which the JPEG2000 error of `img` (2D, uint16) is about `factor` x its pixel noise (default DEFAULT_NOISE_FACTOR).
+    First guess from a formula: rmse = 65535 / 10^(dB/20). With verify=True (stacks and movies, one search per file) the guess is checked by
+    encoding + decoding and corrected (usually 1-2 rounds, ~1 s each on a full frame); with verify=False (single images) only the formula is used
+    (no extra encoding). The quality is limited to QUALITY_RANGE_DB. Returns (quality_db, dict(quality_db, ratio, rmse, noise))."""
+    factor = DEFAULT_NOISE_FACTOR if factor is None else float(factor)
+    lo, hi = QUALITY_RANGE_DB
+    noise = estimate_noise(img)
+    target = max(factor * noise, 1e-3)
+    q = float(np.clip(20 * np.log10(65535.0 / target), lo, hi))
+    info = dict(quality_db=round(q, 2), ratio=None, rmse=None, noise=noise)
+    if not verify:
+        return q, info
+    import imagecodecs
+    img = np.ascontiguousarray(img)
+    ref = img.astype(np.float64)
+    for _ in range(max_iter):
+        b = imagecodecs.jpeg2k_encode(img, level=q, reversible=False, numthreads=4)
+        rmse = float(np.sqrt(np.mean((imagecodecs.jpeg2k_decode(b).astype(np.float64) - ref) ** 2)))
+        info.update(quality_db=round(q, 2), ratio=round(img.nbytes / len(b), 1), rmse=rmse)
+        if rmse <= 0 or abs(rmse / target - 1) <= tol or q in (lo, hi):
+            break
+        q2 = float(np.clip(q + 20 * np.log10(rmse / target), lo, hi))     # error too big -> raise the quality
+        if q2 == q:
+            break
+        q = q2
+    return q, info
+
+
 def calibrate_quality(data, ratios, tol_db=1.0):
     """Quality (dB) per channel that gives about `ratio` x compression. data: (T, Z, C, Y, X). For every channel the middle plane is tested
     (whole plane, bisection on the quality to 1 dB; a crop was not representative: it gave 55x instead of 100x). Every channel gets its OWN
     quality (a common one set by the least compressible channel destroyed the easy channels). Returns (list of quality_db per channel, info)
-    with info = per channel dict(quality_db, ratio, rmse, noise)."""
+    with info = per channel dict(quality_db, ratio, rmse, noise). A ratio of None means: noise-relative default (calibrate_noise_quality)."""
     import imagecodecs
     T, Z, C = data.shape[:3]
     lo_q, hi_q = QUALITY_RANGE_DB
@@ -109,11 +147,13 @@ def calibrate_quality(data, ratios, tol_db=1.0):
     ratios = [float(ratios)] * C if np.isscalar(ratios) else list(ratios)
     for c in range(C):
         ratio = ratios[c]
-        if ratio is None:
-            chosen.append(DEFAULT_QUALITY_DB)
-            infos.append(dict(channel_index=c, quality_db=DEFAULT_QUALITY_DB, ratio=None, rmse=None, noise=None))
-            continue
         img = np.ascontiguousarray(data[T // 2, Z // 2, c])
+        if ratio is None:                                  # no target for this channel: noise-relative default
+            q, info = calibrate_noise_quality(img, verify=(T * Z > 1))
+            info['channel_index'] = c
+            chosen.append(q)
+            infos.append(info)
+            continue
         raw = img.nbytes
 
         def enc(q):
@@ -173,9 +213,10 @@ def write_ome_tiff(path, data, channels, planes=None, pixel_size_um=None, z_step
     targets = resolve_ratios(channels, ratio) if (mode == 'lossy' and ratio is not None) else None
     info = dict(mode=mode, quality_db=q, target_ratio=ratio, targets=targets, raw_bytes=int(data.nbytes))
     qs = [q] * C
-    if targets is not None:
-        qs, per_channel = calibrate_quality(data, targets)
+    if mode == 'lossy' and q is None:                       # ratio targets and/or noise-relative default, chosen per channel
+        qs, per_channel = calibrate_quality(data, targets if targets is not None else [None] * C)
         info['channels'] = per_channel
+        info['noise_factor'] = DEFAULT_NOISE_FACTOR
     if mode == 'lossy':
         info['qualities'] = qs
         info['quality_db'] = min(qs)
@@ -208,7 +249,8 @@ def write_ome_tiff(path, data, channels, planes=None, pixel_size_um=None, z_step
         # lossy: every page is written separately, because every channel has its own quality (tifffile applies one compression to a call)
         if description:
             meta['Description'] = f'{description}; JPEG2000 quality ' + ', '.join(f'{c}: {v:.0f} dB' for c, v in zip(channels, qs)) + \
-                (' (chosen per channel for target compressions ' + ', '.join(f'{t:g}x' if t else 'default quality' for t in targets) + ')' if targets else '')
+                (' (chosen per channel for target compressions ' + ', '.join(f'{t:g}x' if t else f'error = {DEFAULT_NOISE_FACTOR:g} x noise' for t in targets) + ')' if targets
+                 else (f' (chosen per channel: error = {DEFAULT_NOISE_FACTOR:g} x pixel noise)' if q is None else ''))
         ox = tifffile.OmeXml()
         ox.addimage(dtype=data.dtype, shape=data.shape, storedshape=(n, 1, 1, data.shape[-2], data.shape[-1], 1), **meta)
         xml = ox.tostring().encode('ascii', 'xmlcharrefreplace').decode('ascii')     # TIFF descriptions must be 7-bit ASCII

@@ -360,17 +360,26 @@ def test_lossy_defaults_to_60_db_and_ratio_is_an_option():
     data = np.stack([img, np.roll(img, 7, axis=1)])[None, None]           # (T=1, Z=1, C=2, Y, X)
     d = tempfile.mkdtemp()
     FL = ['Fluorescence 488 nm Ex', 'BF LED matrix full']
-    info = stackio.write_ome_tiff(os.path.join(d, 'a.ome.tiff'), data, FL, compression='lossy')           # default: 60 dB for every channel
-    assert info['qualities'] == [60.0, 60.0] and info['targets'] is None and info['quality_db'] == 60.0, info
+    info = stackio.write_ome_tiff(os.path.join(d, 'a.ome.tiff'), data, FL, compression='lossy')           # default: error = 1x noise, per channel
+    assert info['targets'] is None and len(info['qualities']) == 2 and info['noise_factor'] == 1.0, info
+    assert all(c['rmse'] is None for c in info['channels']), info          # single image: formula only, no verification encode
     back = tifffile.imread(info['file']).reshape(2, H, W)
     assert np.abs(back[0].astype(float) - data[0, 0, 0]).max() < 2000 and info['ratio'] > 2
-    # ratio mode: calibrated per channel (a number for all channels, or a dict; channels not in the dict use 60 dB)
+    # stack: the formula is verified, the error ends up near 1x noise
+    two = np.concatenate([data, data], axis=1)                                                              # Z=2
+    infoz = stackio.write_ome_tiff(os.path.join(d, 'z.ome.tiff'), two, FL, compression='lossy')
+    for c in infoz['channels']:
+        assert c['rmse'] is not None and 0.5 < c['rmse'] / c['noise'] < 2.0, infoz
+    # noise estimate: white noise sigma 20 -> ~20, also with a smooth structure added; row/column subsampling
+    wn = (rng.normal(0, 20, (512, 512)) + 1000 + 300 * np.sin(np.arange(512) / 30.0)[None, :]).astype(np.float32).clip(0, 65535).astype(np.uint16)
+    assert 17 < stackio.estimate_noise(wn) < 23, stackio.estimate_noise(wn)
+    # ratio mode: calibrated per channel (a number for all channels, or a dict; channels not in the dict use the noise-relative default)
     info2 = stackio.write_ome_tiff(os.path.join(d, 'b.ome.tiff'), data, FL, compression='lossy', ratio=100)
     assert info2['targets'] == [100.0, 100.0] and 60 < info2['ratio'] and len(info2['channels']) == 2, info2
     info3 = stackio.write_ome_tiff(os.path.join(d, 'c.ome.tiff'), data, FL, compression='lossy', ratio=20)
     assert info3['ratio'] < info2['ratio'] and info3['quality_db'] > info2['quality_db']
     info4 = stackio.write_ome_tiff(os.path.join(d, 'd.ome.tiff'), data, FL, compression='lossy', ratio={FL[0]: 30})
-    assert info4['targets'] == [30.0, None] and info4['qualities'][1] == 60.0 and info4['qualities'][0] != 60.0
+    assert info4['targets'] == [30.0, None] and info4['channels'][1]['noise'] is not None and info4['qualities'][0] != info4['qualities'][1]
     info5 = stackio.write_ome_tiff(os.path.join(d, 'e.ome.tiff'), data, FL, compression='lossy', quality=90)
     assert info5['qualities'] == [90.0, 90.0] and info5['targets'] is None
     for kw in (dict(compression='lossy', quality=80, ratio=100), dict(compression='lossless', ratio=100), dict(compression='lossy', ratio=1)):
@@ -397,7 +406,7 @@ def test_job_logs_lossy_report():
     ''', pts(1), noise=True)
     assert res.status == 'completed', res.error
     r = rows(out, 'lossy_files')
-    assert len(r) == 1 and float(r[0]['achieved_ratio']) > 1 and r[0]['target_ratio'] == '' and r[0]['quality_db'] == '60.0', r
+    assert len(r) == 1 and float(r[0]['achieved_ratio']) > 1 and r[0]['target_ratio'] == '' and r[0]['quality_db'] != '', r
     log = open(os.path.join(out, 'job_log.txt'), encoding='utf-8').read()
     assert 'lossy JPEG2000' in log and 'smaller than raw' in log
 
