@@ -63,7 +63,7 @@ def test_fast_movie_through_scope_file_light_restore_display():
     open(job, 'w').write('def run_job(scope):\n    scope.fast_movie("488", fps=25, frames=15, roi=256, bits=8)\n')
     res = run_job(job, make_points(['stage'], [(1, 2, 3)]), be, experiment_dir=out)
     assert res.status == 'completed', res.error
-    f = os.path.join(out, 'Time0000_Stage_FastMovie.tiff')
+    f = os.path.join(out, 'Time0000_Point0000_FastMovie.tiff')
     with tifffile.TiffFile(f) as tf:
         assert len(tf.pages) == 15 and tf.pages[0].shape == (256, 256) and tf.pages[0].dtype == np.uint8 and tf.pages[0].compression.name == 'NONE'
     kinds = [e[:2] if e[0] == 'light' else e[0] for e in events]

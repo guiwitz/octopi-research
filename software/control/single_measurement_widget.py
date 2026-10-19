@@ -2,8 +2,8 @@
 
 Both are small jobs (control/jobs): the tab writes the job file (cache/single_measurement_job.py; it is also copied into the experiment folder as
 job.py, so what was done is documented and can be reused in the JOBs tab) and runs it through the same MultiPointController/worker as the JOBs tab.
-The stage does not move. Files and settings are those of the JOBs: Time0000_Stage.tiff (all selected channels in one multipage file) or
-single files per channel, Time0000_Stage_FastMovie.tiff for the fast timelapse (see control/jobs/README.md).
+The stage does not move. Files and settings are those of the JOBs: Time0000_Point0000.tiff (all selected channels in one multipage file) or
+single files per channel, Time0000_Point0000_FastMovie.tiff for the fast timelapse (see control/jobs/README.md).
 """
 import os
 import json
@@ -71,7 +71,7 @@ class SingleMeasurementWidget(QFrame):
         self.combo_save_as = QComboBox()
         for value, text in (('multipage', 'multipage TIFF, written directly'), ('merge', 'single files, merged into multipage TIFF later'), ('single', 'single files')):
             self.combo_save_as.addItem(text, value)
-        self.combo_save_as.setToolTip('multipage: all channels of an image in ONE file (Time0000_Stage.tiff); single files: one TIFF per channel in a folder (0/stage_0_0_0_<channel>.tiff); '
+        self.combo_save_as.setToolTip('multipage: all channels of an image in ONE file (Time0000_Point0000.tiff); single files: one TIFF per channel in a folder (0/stage_0_0_0_<channel>.tiff); '
                                       'merge: single files first, merged into the multipage file afterwards (safer for very large images). As in the JOBs tab.')
 
         # single capture

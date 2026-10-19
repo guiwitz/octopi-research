@@ -618,11 +618,17 @@ class Scope:
         """Name of a multipage file: Time0003_Point0002[_<descriptor>] (or `filename`)"""
         if filename:
             return filename
-        pt, tp = self._current_point, self._tp
+        pt, tp = self._name_point(), self._tp
         return f'Time{tp.index if tp else 0:04d}_' + (f'Point{pt.index:04d}' if pt is not None else 'Stage') + (f'_{descriptor}' if descriptor else '')
 
+    def _name_point(self):
+        """the point used in file names: the current one; a job with exactly one point that never called move_to (Single measurement tab) uses that point"""
+        if self._current_point is None and len(self._points) == 1:
+            return self._points[0]
+        return self._current_point
+
     def _region(self):
-        pt = self._current_point
+        pt = self._name_point()
         return _safe(pt.id) if (pt is not None and pt.id) else (str(pt.index) if pt is not None else 'stage')
 
     def _new_path(self, base, ext='.tiff', single=False):
