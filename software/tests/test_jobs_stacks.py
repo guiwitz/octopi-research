@@ -247,7 +247,7 @@ def test_compression_arguments_are_checked_before_acquiring():
             scope.move_to(scope.points()[0])
             scope.capture("488", quality=80)
     ''', pts(1))
-    assert res.status == 'failed' and 'quality only applies' in res.error and be.n_captures == 0
+    assert res.status == 'failed' and 'quality and ratio only apply' in res.error and be.n_captures == 0
     res, be, out = run('''
         def run_job(scope):
             scope.move_to(scope.points()[0])
@@ -343,6 +343,52 @@ def test_lint_knows_zstack_and_movie():
     bad = 'def run_job(scope):\n    scope.move_to(scope.points()[0])\n    scope.zstack(["488", "999"], planes=3)\n    scope.movie("488", interval_s=1, compression="zip")\n'
     msgs = ' | '.join(i.message for i in lint(bad, channels=ch) if i.severity == 'error')
     assert 'two of planes' in msgs and "unknown channel '999'" in msgs and 'frames=' in msgs and 'lossless' in msgs, msgs
+
+
+def test_target_ratio_calibration_reaches_about_100x():
+    if not LOSSY_OK:
+        print('   (skipped: imagecodecs not available)')
+        return
+    rng = np.random.default_rng(5)
+    H, W = 1200, 1500
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    sig = np.zeros((H, W), np.float32)
+    for _ in range(80):
+        cy, cx, s, a = rng.integers(0, H), rng.integers(0, W), rng.uniform(3, 9), rng.uniform(400, 3000)
+        sig += a * np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2) / (2 * s * s))
+    img = rng.poisson(sig + 100).astype(np.uint16)
+    data = np.stack([img, np.roll(img, 7, axis=1)])[None, None]           # (T=1, Z=1, C=2, Y, X)
+    d = tempfile.mkdtemp()
+    info = stackio.write_ome_tiff(os.path.join(d, 'a.ome.tiff'), data, ['a', 'b'], compression='lossy')     # default ratio 100
+    assert 60 < info['ratio'] and info['target_ratio'] == 100.0 and len(info['channels']) == 2, info
+    back = tifffile.imread(info['file']).reshape(2, H, W)
+    err = np.sqrt(np.mean((back.astype(float) - data[0, 0]) ** 2))
+    assert err < 3 * max(c['noise'] for c in info['channels']) + 5, (err, info['channels'])      # error stays of the order of the image noise
+    info2 = stackio.write_ome_tiff(os.path.join(d, 'b.ome.tiff'), data, ['a', 'b'], compression='lossy', ratio=20)
+    assert info2['ratio'] < info['ratio'] and info2['quality_db'] > info['quality_db']
+    info3 = stackio.write_ome_tiff(os.path.join(d, 'c.ome.tiff'), data, ['a', 'b'], compression='lossy', quality=90)
+    assert info3['quality_db'] == 90 and info3['target_ratio'] is None and 'channels' not in info3
+    for kw in (dict(compression='lossy', quality=80, ratio=100), dict(compression='lossless', ratio=100), dict(compression='lossy', ratio=1)):
+        try:
+            stackio.normalize_compression(kw['compression'], kw.get('quality'), kw.get('ratio'))
+        except stackio.StackIOError:
+            continue
+        raise AssertionError(kw)
+
+
+def test_job_logs_lossy_report():
+    if not LOSSY_OK:
+        return
+    res, be, out = run('''
+        def run_job(scope):
+            scope.move_to(scope.points()[0])
+            scope.zstack("488", planes=3, step_um=1.0, compression="lossy")
+    ''', pts(1), noise=True)
+    assert res.status == 'completed', res.error
+    r = rows(out, 'lossy_files')
+    assert len(r) == 1 and float(r[0]['achieved_ratio']) > 1 and r[0]['target_ratio'] == '100.0', r
+    log = open(os.path.join(out, 'job_log.txt'), encoding='utf-8').read()
+    assert 'lossy JPEG2000' in log and 'smaller than raw' in log
 
 
 if __name__ == '__main__':

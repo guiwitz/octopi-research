@@ -135,10 +135,10 @@ def run_job(scope):
 | `scope.timepoints(n, interval=None)` | loop; yields `TimePoint` with `.index`, `.start` (s since job start), `.late` (s). `n=None`: until aborted |
 | `scope.move_to(point)` | move the stage (same backlash/safety handling as the standard acquisition) |
 | `scope.autofocus(channel=None)` | contrast autofocus with the settings of the Autofocus tab; stores the focused z in the point; returns z (mm) |
-| `scope.capture("488")` | one image in a channel; saved automatically; returns the image as NumPy array. `save=False`: do not save. `compression="lossy", quality=80`: JPEG2000 (see below) |
+| `scope.capture("488")` | one image in a channel; saved automatically; returns the image as NumPy array. `save=False`: do not save. `compression="lossy"` (default ratio=100) or `compression="lossy", quality=80`: JPEG2000 (see below) |
 | `scope.capture_channels(["BF LED matrix full", "488"])` | several channels in that order; returns `{channel: image}` |
-| `scope.zstack(channels, planes=, step_um=, span_um=, order=, compression=, quality=)` | z-stack centred on the current z; give two of planes/step_um/span_um; one multipage OME-TIFF; returns `{channel: (planes, Y, X)}` |
-| `scope.movie(channels, frames=, interval_s=, duration_s=, compression=, quality=)` | fast time series at the current position, one multipage OME-TIFF with the real time of every image; returns `{channel: (frames, Y, X)}` |
+| `scope.zstack(channels, planes=, step_um=, span_um=, order=, compression=, quality=, ratio=)` | z-stack centred on the current z; give two of planes/step_um/span_um; one multipage OME-TIFF; returns `{channel: (planes, Y, X)}` |
+| `scope.movie(channels, frames=, interval_s=, duration_s=, compression=, quality=, ratio=)` | fast time series at the current position, one multipage OME-TIFF with the real time of every image; returns `{channel: (frames, Y, X)}` |
 | `scope.wait(seconds)` | wait (abortable) |
 | `scope.wait_until(seconds)` | wait until this many seconds after the job start |
 | `scope.elapsed` | seconds since the job start |
@@ -171,9 +171,16 @@ ends the experiment cleanly. Errors found by the dry run prevent the start.
   metadata (`DeltaT`) and in `frames.csv`; the achieved interval (mean, sd, min, max) is logged and written into the file description. If the
   hardware cannot keep the interval a warning is issued. Time points of the job are separate files, as before. Pause takes effect after the movie.
 * **Saving:** `compression="lossless"` (default; zlib-compressed TIFF, bit-identical) or `"lossy"` (16-bit JPEG2000 inside the same TIFF).
-  `quality` (lossy only) is the PSNR target in dB relative to the full scale of the data type (default 80, allowed 40 to 120). On 16-bit data
-  80 dB means about 6 counts rms error and files about 4x smaller than lossless zlib (measured with synthetic fluorescence images); higher = better and bigger.
-  JPEG2000 encoding takes about 1.4 s per 2048 x 3088 frame; it runs in a background thread. Lossy needs `pip install imagecodecs`
+  Lossy aims at a **target compression** `ratio` (default **100**: file = raw pixels / 100): shortly before each file is written (background thread)
+  the quality is calibrated on the middle plane of every channel (central 1024 x 1024 crop) and the lowest result is used, so all channels reach the ratio.
+  Alternatively `quality=<dB>` fixes the PSNR (error about 65535 / 10^(dB/20) counts, e.g. 80 dB = 6.5 counts); then the compression depends on the image.
+  Give only one of `ratio` and `quality`.
+  **What 100x means:** JPEG2000 reaches such ratios only by removing the camera noise (and the finest detail): on synthetic fluorescence images with
+  Poisson noise, 100x or more was reached at an error of the order of the image noise (the decoded image was even closer to the noise-free scene than the original);
+  at a fixed quality the ratio varies from about 10x (bright, busy images) to several 1000x (sparse images). Dense, fine structure such as bright field loses more.
+  Every lossy file is reported in `job_log.txt` and `lossy_files.csv` (achieved ratio, quality, codec error and image noise in counts): check on your own images
+  that the error is acceptable for your analysis before using it for real experiments. Lossless stays the default.
+  JPEG2000 encoding takes about 0.7 to 1.4 s per 2048 x 3088 frame; it runs in a background thread. Lossy needs `pip install imagecodecs`
   (a missing package is reported by the check and before anything is acquired).
 * **Reading lossy files:** `tifffile` + `imagecodecs` (Python, napari via its tifffile reader), Bio-Formats (Fiji). Stacks and movies are held in
   memory until written (limit 4 GB).
@@ -184,6 +191,7 @@ ends the experiment cleanly. Errors found by the dry run prevent the start.
 | file | content |
 |---|---|
 | `t0000/`, `t0001/`, ... | images of each time point (`no_timepoint/` for images outside `scope.timepoints`), named `p<index>_<id>_<channel>.tiff` (a number is appended if the same image name occurs twice); OME-TIFF as in the standard acquisition |
+| `lossy_files.csv` | one row per lossy file: quality, target and achieved compression, codec error and image noise (counts) |
 | `frames.csv` | one row per image of a z-stack or movie: file, kind, frame/z/t index, channel, job time, time since the start of the stack/movie, stage x/y/z, exposure, gain, intensity |
 | `images.csv` | one row per single image (`capture`): file, time since start, wall time, time point, point index/ID/group, channel, actual stage x/y/z, exposure, gain, intensity |
 | `autofocus.csv` | one row per autofocus: time, point, channel, z before/after, duration |

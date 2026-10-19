@@ -214,7 +214,7 @@ def test_editor_completion_and_help():
     w.help_on_word(ed.word_at_cursor()[0])
     assert 'autofocus' in w.help.detail.toPlainText()
     # help search and insert
-    w.help.search.setText('interval'); app.processEvents()
+    w.help.search.setText('timepoints'); app.processEvents()
     assert w.help.tree.currentItem().text(0).startswith('timepoints')
     got = []
     w.help.insert_requested.connect(got.append)

@@ -287,7 +287,7 @@ def main():
                 pt = scope.points()[0]
                 scope.move_to(pt)
                 z0 = scope.zstack({[ch1, ch2]!r}, planes=3, step_um=2.0, order="z_major")
-                scope.movie({ch1!r}, frames=3, interval_s=0.6, compression="lossy", quality=85)
+                scope.movie({ch1!r}, frames=3, interval_s=0.6, compression="lossy")
                 scope.capture({ch1!r}, compression="lossy")
         ''')
         res = jw.check_job()

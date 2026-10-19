@@ -370,6 +370,7 @@ class Scope:
         return None
 
     def _tick(self, restore=True):
+        self._drain_writer()
         self.check_abort()
         self._events += 1
         if self._max_events and self._events > self._max_events:
@@ -534,15 +535,38 @@ class Scope:
 
     # --- imaging -----------------------------------------------------------------------------
     @staticmethod
-    def _compression(compression, quality):
-        """Validate compression/quality BEFORE anything is acquired. -> ('lossless', None) or ('lossy', dB)."""
+    def _compression(compression, quality, ratio=None):
+        """Validate compression/quality/ratio BEFORE anything is acquired. -> ('lossless', None, None) or ('lossy', dB or None, ratio or None)."""
         try:
-            mode, q = stackio.normalize_compression(compression, quality)
+            mode, q, ratio = stackio.normalize_compression(compression, quality, ratio)
             if mode == 'lossy':
                 stackio.check_lossy_ok()
         except stackio.StackIOError as e:
             raise JobError(str(e))
-        return mode, q
+        return mode, q, ratio
+
+    def _drain_writer(self, final=False):
+        """Log what the background writer has finished (lossy files: quality, achieved compression, codec error vs image noise)."""
+        w = self._writer
+        if w is None:
+            return
+        results, w.results = w.results, []
+        for r in results:
+            rel = os.path.relpath(r['file'], self._dir) if self._dir else r['file']
+            if r.get('mode') == 'lossy':
+                ch = r.get('channels') or []
+                err = max([c['rmse'] for c in ch] or [0.0])
+                noise = max([c['noise'] for c in ch] or [0.0])
+                msg = (f'{rel}: lossy JPEG2000 {r["quality_db"]:.1f} dB, {r["ratio"]:.0f}x smaller than raw ({r["file_bytes"] / 1e6:.2f} MB)'
+                       + (f'; codec error {err:.1f} counts rms vs image noise {noise:.1f} counts (middle plane, central crop)' if ch else ''))
+                tr = r.get('target_ratio')
+                if tr and r['ratio'] < 0.7 * tr:
+                    self.warn(f'{rel}: the target compression of {tr:g}x was not reached (achieved {r["ratio"]:.1f}x at {r["quality_db"]:.0f} dB, the lowest allowed quality): '
+                              f'the image has too much structure or noise for that ratio')
+                self.log(msg)
+                self._write_row('lossy_files', dict(file=rel, quality_db=round(r['quality_db'], 2), target_ratio=r.get('target_ratio') or '',
+                                                    achieved_ratio=round(r['ratio'], 1), file_mb=round(r['file_bytes'] / 1e6, 3),
+                                                    codec_rmse_counts=round(err, 2), image_noise_counts=round(noise, 2)))
 
     def _get_writer(self):
         if self._writer is None:
@@ -580,13 +604,13 @@ class Scope:
             self.stats['exposures'][ch] = info['exposure_ms']
         return image, info, t_cap
 
-    def capture(self, channel, save=True, compression='lossless', quality=None):
+    def capture(self, channel, save=True, compression='lossless', quality=None, ratio=None):
         """Take one image in `channel` at the current position and return it as a NumPy array.
         The image is saved automatically (unique file name) and listed in images.csv; save=False returns it only.
         compression: "lossless" (default, zlib TIFF) or "lossy" (JPEG2000 in the TIFF, 16 bit); quality: PSNR in dB for lossy (default 80)."""
         self._tick()
         ch = self._resolve_channel(channel)
-        mode, q = self._compression(compression, quality)
+        mode, q, ratio = self._compression(compression, quality, ratio)
         image, info, t_cap = self._grab(ch)
         pt, tp = self._current_point, self._tp
         rel = ''
@@ -600,7 +624,7 @@ class Scope:
                               y_um=[(info.get('y_mm') or 0.0) * 1000], z_um=[(info.get('z_mm') or 0.0) * 1000])
                 px = self._backend.pixel_size_um()
                 self._get_writer().submit(lambda: stackio.write_ome_tiff(path, data, [ch], planes=planes, pixel_size_um=px,
-                                                                         compression='lossy', quality=q, description=f'lossy JPEG2000, PSNR target {q:g} dB'),
+                                                                         compression='lossy', quality=q, ratio=ratio, description='lossy JPEG2000'),
                                           data.nbytes, self._backend.abort_requested)
             rel = os.path.relpath(path, self._dir)
         self._write_row('images', dict(
@@ -610,9 +634,9 @@ class Scope:
             exposure_ms=info.get('exposure_ms', ''), gain=info.get('gain', ''), intensity=info.get('intensity', '')))
         return image
 
-    def capture_channels(self, channels, save=True, compression='lossless', quality=None):
+    def capture_channels(self, channels, save=True, compression='lossless', quality=None, ratio=None):
         """capture() for several channels in the given order; returns {channel: image}."""
-        return {self._resolve_channel(c): self.capture(c, save=save, compression=compression, quality=quality) for c in channels}
+        return {self._resolve_channel(c): self.capture(c, save=save, compression=compression, quality=quality, ratio=ratio) for c in channels}
 
     # --- z-stacks and movies -----------------------------------------------------------------
     def _resolve_channel_list(self, channels, what):
@@ -640,7 +664,7 @@ class Scope:
             raise JobError(f'{what}: {n_images} images of {np.asarray(image).nbytes / 1e6:.1f} MB need {need / 1e9:.1f} GB of memory, '
                            f'more than the allowed {MAX_BUFFER_BYTES / 1e9:.0f} GB. Use fewer planes/frames.')
 
-    def _write_frames(self, path_label, kind, data, chans, rows, px, z_step_um, interval_s, mode, q, description):
+    def _write_frames(self, path_label, kind, data, chans, rows, px, z_step_um, interval_s, mode, q, ratio, description):
         """Write the (T,Z,C,Y,X) array in the background and add one row per page to frames.csv. -> file path relative to the experiment dir"""
         rel = ''
         if self._save:
@@ -651,7 +675,7 @@ class Scope:
                           z_um=[(r['z_mm'] or 0.0) * 1000 for r in rows])
             self._get_writer().submit(
                 lambda: stackio.write_ome_tiff(path, data, chans, planes=planes, pixel_size_um=px, z_step_um=z_step_um,
-                                               time_increment_s=interval_s, compression=mode, quality=q, description=description),
+                                               time_increment_s=interval_s, compression=mode, quality=q, ratio=ratio, description=description),
                 int(data.nbytes), self._backend.abort_requested)
             pt, tp = self._current_point, self._tp
             for r in rows:
@@ -660,7 +684,7 @@ class Scope:
                     group=pt.group if pt else '', **r))
         return rel
 
-    def zstack(self, channels, planes=None, step_um=None, span_um=None, order='channel_major', compression='lossless', quality=None, save=True):
+    def zstack(self, channels, planes=None, step_um=None, span_um=None, order='channel_major', compression='lossless', quality=None, ratio=None, save=True):
         """Z-stack centred on the current z. Give two of planes, step_um, span_um. Returns {channel: array (planes, Y, X)}.
         order: "channel_major" = each channel scans the whole stack in turn; "z_major" = all channels at each plane, then the next plane.
         All planes and channels go into ONE multipage OME-TIFF per call (axes Z, C). compression: "lossless" (default) or "lossy" (JPEG2000, quality in dB)."""
@@ -668,7 +692,7 @@ class Scope:
         chans = self._resolve_channel_list(channels, 'zstack')
         if order not in ('channel_major', 'z_major'):
             raise JobError(f'zstack: order must be "channel_major" or "z_major", got {order!r}')
-        mode, q = self._compression(compression, quality)
+        mode, q, ratio = self._compression(compression, quality, ratio)
         n, step, offs = stack_positions(planes, step_um, span_um)
         x0, y0, z0 = self._backend.position()
         C = len(chans)
@@ -706,21 +730,21 @@ class Scope:
         # pages are written in (Z, C) order
         ordered = [rows[(i, ci)] for i in range(n) for ci in range(C)]
         desc = (f'z-stack: {n} planes, step {step:g} um, span {(n - 1) * step:g} um, centre z {z0 * 1000:.2f} um, order {order}, '
-                f'channels {chans}, ' + ('lossless' if mode == 'lossless' else f'lossy JPEG2000 {q:g} dB'))
+                f'channels {chans}, ' + ('lossless' if mode == 'lossless' else 'lossy JPEG2000'))
         rel = ''
         if save:
-            rel = self._write_frames('zstack', 'zstack', data, chans, ordered, self._backend.pixel_size_um(), step, None, mode, q, desc)
+            rel = self._write_frames('zstack', 'zstack', data, chans, ordered, self._backend.pixel_size_um(), step, None, mode, q, ratio, desc)
         self.log(f'z-stack: {n} planes x {C} channel(s), step {step:g} um, {self.elapsed - t_begin:.1f} s' + (f' -> {rel}' if rel else ''))
         return {c: data[0, :, ci] for ci, c in enumerate(chans)}
 
-    def movie(self, channels, frames=None, interval_s=None, duration_s=None, compression='lossless', quality=None, save=True):
+    def movie(self, channels, frames=None, interval_s=None, duration_s=None, compression='lossless', quality=None, ratio=None, save=True):
         """Movie at the current position: `frames` rounds of imaging all `channels`, each round starting `interval_s` after the start
         of the previous one (as close as the hardware allows; interval_s=None = back to back). Give frames, or duration_s together with
         interval_s. Returns {channel: array (frames, Y, X)}. ONE multipage OME-TIFF per call (axes T, C) with the real time of every image.
         The achieved intervals are logged and stored in the file and in frames.csv. Pause takes effect after the movie, Abort stops it."""
         self._tick()
         chans = self._resolve_channel_list(channels, 'movie')
-        mode, q = self._compression(compression, quality)
+        mode, q, ratio = self._compression(compression, quality, ratio)
         if frames is not None and duration_s is not None:
             raise JobError('movie: give frames OR duration_s (with interval_s), not both')
         if interval_s is not None and (not np.isfinite(interval_s) or interval_s <= 0):
@@ -772,12 +796,12 @@ class Scope:
                     self.warn(f'movie could not keep the requested interval of {interval_s:g} s: achieved {d.mean():.3f} s on average '
                               f'(longest {d.max():.3f} s). One round takes about {np.median([e for e in np.diff(st)]):.2f} s here; use a longer interval or fewer channels.')
         self.log(report)
-        desc = (report + f'. Channels {chans}, ' + ('lossless' if mode == 'lossless' else f'lossy JPEG2000 {q:g} dB') +
+        desc = (report + f'. Channels {chans}, ' + ('lossless' if mode == 'lossless' else 'lossy JPEG2000') +
                 '. Page time (DeltaT) = job time when the image was requested (start of the exposure +- readout).')
         rel = ''
         if save:
             rel = self._write_frames('movie', 'movie', data, chans, rows, self._backend.pixel_size_um(), None,
-                                     float(d.mean()) if len(d) else None, mode, q, desc)
+                                     float(d.mean()) if len(d) else None, mode, q, ratio, desc)
             if rel:
                 self.log(f'movie saved as {rel}')
         return {c: data[:, 0, ci] for ci, c in enumerate(chans)}
@@ -797,8 +821,10 @@ class Scope:
 
     def _close(self):
         if self._writer is not None:
-            w, self._writer = self._writer, None
-            for e in w.close():
+            errs = self._writer.close()
+            self._drain_writer(True)
+            self._writer = None
+            for e in errs:
                 self.log(f'ERROR writing an image file: {e}')
         for f, _ in self._csv.values():
             f.close()
