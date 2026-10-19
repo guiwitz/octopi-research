@@ -24,6 +24,13 @@ CH = {'BF LED matrix full': dict(exposure_ms=12.0, gain=0, intensity=3), 'Fluore
 EXAMPLES = os.path.join(SOFTWARE_DIR, 'job_examples')
 
 
+def _squid_channels():
+    """Channels of the real Squid channel configuration (tests/fixtures; has 405, 488, 561, BF, DF) for checking the example jobs."""
+    import re
+    xml = open(os.path.join(SOFTWARE_DIR, 'tests', 'fixtures', 'squid1_channel_configurations.xml'), encoding='utf-8').read()
+    return {n: dict(exposure_ms=12.0, gain=0, intensity=3) for n in re.findall(r'<mode [^>]*?Name="([^"]+)"', xml)}
+
+
 def _job(text):
     d = tempfile.mkdtemp()
     p = os.path.join(d, 'job.py')
@@ -62,7 +69,7 @@ def test_documented_point_attributes_exist():
 def test_examples_have_no_lint_errors():
     for f in sorted(os.listdir(EXAMPLES)):
         if f.endswith('.py'):
-            iss = lint(open(os.path.join(EXAMPLES, f)).read(), CH, ['A', 'B', 'default'])
+            iss = lint(open(os.path.join(EXAMPLES, f)).read(), _squid_channels(), ['A', 'B', 'default'])
             assert not [i for i in iss if i.severity in ('error', 'warning')], (f, [str(i) for i in iss])
 
 

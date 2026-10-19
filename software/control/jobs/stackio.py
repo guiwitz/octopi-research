@@ -74,16 +74,16 @@ def _crop(img, n=1024):
     return np.ascontiguousarray(img[y0:y0 + n, x0:x0 + n])
 
 
-def calibrate_quality(data, ratio, tol_db=0.5):
+def calibrate_quality(data, ratio, tol_db=1.0):
     """Quality (dB) that gives about `ratio` x compression. data: (T, Z, C, Y, X). For every channel the middle plane is tested
-    (central 1024 x 1024 crop, bisection on the quality); the LOWEST quality over the channels is used so that every channel reaches
+    (whole plane, bisection on the quality to 1 dB; a crop was not representative: it gave 55x instead of 100x); the LOWEST quality over the channels is used so that every channel reaches
     the ratio. Returns (quality_db, info) with info = per channel dict(quality_db, ratio, rmse, noise)."""
     import imagecodecs
     T, Z, C = data.shape[:3]
     lo_q, hi_q = QUALITY_RANGE_DB
     infos, chosen = [], []
     for c in range(C):
-        img = _crop(np.asarray(data[T // 2, Z // 2, c]))
+        img = np.ascontiguousarray(data[T // 2, Z // 2, c])
         raw = img.nbytes
 
         def enc(q):
@@ -116,9 +116,10 @@ def check_lossy_ok():
         raise StackIOError(msg)
 
 
-def _tiff_args(mode, quality):
+def _tiff_args(mode, quality, height):
     if mode == 'lossy':
-        return dict(compression='jpeg2000', compressionargs={'level': float(quality), 'numthreads': 4})
+        # ONE strip per page: tifffile's default (strips of ~64 kB, each coded on its own) made the same quality 8x larger
+        return dict(compression='jpeg2000', compressionargs={'level': float(quality), 'numthreads': 4}, rowsperstrip=int(height))
     return dict(compression='zlib', compressionargs={'level': ZLIB_LEVEL})
 
 
@@ -169,7 +170,7 @@ def write_ome_tiff(path, data, channels, planes=None, pixel_size_um=None, z_step
         meta['Plane'] = pl
     if description and mode == 'lossy':
         meta['Description'] = f'{description}; JPEG2000 quality {q:.1f} dB' + (f' (chosen for a {ratio:g}x target compression)' if ratio else '')
-    tifffile.imwrite(path, data, ome=True, metadata=meta, bigtiff=True, **_tiff_args(mode, q))
+    tifffile.imwrite(path, data, ome=True, metadata=meta, bigtiff=True, **_tiff_args(mode, q, data.shape[-2]))
     import os
     info['file'] = path
     info['file_bytes'] = os.path.getsize(path)
