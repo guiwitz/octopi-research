@@ -345,7 +345,7 @@ def test_lint_knows_zstack_and_movie():
     assert 'two of planes' in msgs and "unknown channel '999'" in msgs and 'frames=' in msgs and 'lossless' in msgs, msgs
 
 
-def test_target_ratio_calibration_reaches_about_100x():
+def test_lossy_defaults_to_60_db_and_ratio_is_an_option():
     if not LOSSY_OK:
         print('   (skipped: imagecodecs not available)')
         return
@@ -359,33 +359,32 @@ def test_target_ratio_calibration_reaches_about_100x():
     img = rng.poisson(sig + 100).astype(np.uint16)
     data = np.stack([img, np.roll(img, 7, axis=1)])[None, None]           # (T=1, Z=1, C=2, Y, X)
     d = tempfile.mkdtemp()
-    FL = ['Fluorescence 488 nm Ex', 'Fluorescence 561 nm Ex']
-    info = stackio.write_ome_tiff(os.path.join(d, 'a.ome.tiff'), data, FL, compression='lossy')     # default: fluorescence 100x
-    assert 60 < info['ratio'] and info['targets'] == [100.0, 100.0] and len(info['channels']) == 2 and len(info['qualities']) == 2, info
+    FL = ['Fluorescence 488 nm Ex', 'BF LED matrix full']
+    info = stackio.write_ome_tiff(os.path.join(d, 'a.ome.tiff'), data, FL, compression='lossy')           # default: 60 dB for every channel
+    assert info['qualities'] == [60.0, 60.0] and info['targets'] is None and info['quality_db'] == 60.0, info
     back = tifffile.imread(info['file']).reshape(2, H, W)
-    err = np.sqrt(np.mean((back.astype(float) - data[0, 0]) ** 2))
-    assert err < 3 * max(c['noise'] for c in info['channels']) + 5, (err, info['channels'])      # error stays of the order of the image noise
-    info2 = stackio.write_ome_tiff(os.path.join(d, 'b.ome.tiff'), data, FL, compression='lossy', ratio=20)
-    assert info2['ratio'] < info['ratio'] and info2['quality_db'] > info['quality_db']
-    info3 = stackio.write_ome_tiff(os.path.join(d, 'c.ome.tiff'), data, FL, compression='lossy', quality=90)
-    assert info3['quality_db'] == 90 and info3['targets'] is None and 'channels' not in info3
-    # defaults by channel type: bright field 10x, fluorescence 100x; a dict overrides single channels
-    info4 = stackio.write_ome_tiff(os.path.join(d, 'd.ome.tiff'), data, ['BF LED matrix full', FL[0]], compression='lossy')
-    assert info4['targets'] == [10.0, 100.0] and info4['qualities'][0] > info4['qualities'][1], info4
-    info5 = stackio.write_ome_tiff(os.path.join(d, 'e.ome.tiff'), data, ['BF LED matrix full', FL[0]], compression='lossy', ratio={FL[0]: 30})
-    assert info5['targets'] == [10.0, 30.0]
-    try:
-        stackio.write_ome_tiff(os.path.join(d, 'f.ome.tiff'), data, FL, compression='lossy', ratio={'nope': 30})
-    except stackio.StackIOError:
-        pass
-    else:
-        raise AssertionError('unknown channel in ratio dict accepted')
+    assert np.abs(back[0].astype(float) - data[0, 0, 0]).max() < 2000 and info['ratio'] > 2
+    # ratio mode: calibrated per channel (a number for all channels, or a dict; channels not in the dict use 60 dB)
+    info2 = stackio.write_ome_tiff(os.path.join(d, 'b.ome.tiff'), data, FL, compression='lossy', ratio=100)
+    assert info2['targets'] == [100.0, 100.0] and 60 < info2['ratio'] and len(info2['channels']) == 2, info2
+    info3 = stackio.write_ome_tiff(os.path.join(d, 'c.ome.tiff'), data, FL, compression='lossy', ratio=20)
+    assert info3['ratio'] < info2['ratio'] and info3['quality_db'] > info2['quality_db']
+    info4 = stackio.write_ome_tiff(os.path.join(d, 'd.ome.tiff'), data, FL, compression='lossy', ratio={FL[0]: 30})
+    assert info4['targets'] == [30.0, None] and info4['qualities'][1] == 60.0 and info4['qualities'][0] != 60.0
+    info5 = stackio.write_ome_tiff(os.path.join(d, 'e.ome.tiff'), data, FL, compression='lossy', quality=90)
+    assert info5['qualities'] == [90.0, 90.0] and info5['targets'] is None
     for kw in (dict(compression='lossy', quality=80, ratio=100), dict(compression='lossless', ratio=100), dict(compression='lossy', ratio=1)):
         try:
             stackio.normalize_compression(kw['compression'], kw.get('quality'), kw.get('ratio'))
         except stackio.StackIOError:
             continue
         raise AssertionError(kw)
+    try:
+        stackio.write_ome_tiff(os.path.join(d, 'f.ome.tiff'), data, FL, compression='lossy', ratio={'nope': 30})
+    except stackio.StackIOError:
+        pass
+    else:
+        raise AssertionError('unknown channel in ratio dict accepted')
 
 
 def test_job_logs_lossy_report():
@@ -398,7 +397,7 @@ def test_job_logs_lossy_report():
     ''', pts(1), noise=True)
     assert res.status == 'completed', res.error
     r = rows(out, 'lossy_files')
-    assert len(r) == 1 and float(r[0]['achieved_ratio']) > 1 and r[0]['target_ratio'] == '100', r
+    assert len(r) == 1 and float(r[0]['achieved_ratio']) > 1 and r[0]['target_ratio'] == '' and r[0]['quality_db'] == '60.0', r
     log = open(os.path.join(out, 'job_log.txt'), encoding='utf-8').read()
     assert 'lossy JPEG2000' in log and 'smaller than raw' in log
 

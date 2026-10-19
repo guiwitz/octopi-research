@@ -555,19 +555,19 @@ class Scope:
         for r in results:
             rel = os.path.relpath(r['file'], self._dir) if self._dir else r['file']
             if r.get('mode') == 'lossy':
-                ch = r.get('channels') or []
+                ch = [c for c in (r.get('channels') or []) if c.get('rmse') is not None]
                 err = max([c['rmse'] for c in ch] or [0.0])
                 noise = max([c['noise'] for c in ch] or [0.0])
                 qtxt = ', '.join(f'{q:.0f}' for q in r.get('qualities', [r['quality_db']])) + ' dB'
                 msg = (f'{rel}: lossy JPEG2000 {qtxt}, {r["ratio"]:.0f}x smaller than raw ({r["file_bytes"] / 1e6:.2f} MB)'
                        + (f'; codec error {err:.1f} counts rms vs image noise {noise:.1f} counts (middle plane)' if ch else ''))
                 tg = r.get('targets') or []
-                short = [f'{c.get("channel_index")}: {c["ratio"]:.1f}x of {t:g}x' for c, t in zip(ch, tg) if c['ratio'] < 0.7 * t]
+                short = [f'{c.get("channel_index")}: {c["ratio"]:.1f}x of {t:g}x' for c, t in zip(r.get('channels') or [], tg) if t and c.get('ratio') is not None and c['ratio'] < 0.7 * t]
                 if short:
                     self.warn(f'{rel}: the target compression was not reached in channel {"; ".join(short)} (lowest allowed quality is {stackio.QUALITY_RANGE_DB[0]:g} dB): '
                               f'the image has too much structure or noise for that ratio')
                 self.log(msg)
-                self._write_row('lossy_files', dict(file=rel, quality_db='/'.join(f'{q:.1f}' for q in r.get('qualities', [r['quality_db']])), target_ratio='/'.join(f'{t:g}' for t in (r.get('targets') or [])),
+                self._write_row('lossy_files', dict(file=rel, quality_db='/'.join(f'{q:.1f}' for q in r.get('qualities', [r['quality_db']])), target_ratio='/'.join(f'{t:g}' if t else '' for t in (r.get('targets') or [])),
                                                     achieved_ratio=round(r['ratio'], 1), file_mb=round(r['file_bytes'] / 1e6, 3),
                                                     codec_rmse_counts=round(err, 2), image_noise_counts=round(noise, 2)))
 

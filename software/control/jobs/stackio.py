@@ -5,17 +5,16 @@ No hardware, no Qt. Needs `tifffile` (and `imagecodecs` for the lossy JPEG2000 o
 File layout: axes are always T, Z, C, Y, X (singleton axes are kept), pages in that order (C varies fastest).
 The OME metadata holds one <Plane> per page: acquisition time (DeltaT, s since the start of the movie/stack), stage
 position and exposure time. Lossless = zlib (deflate); lossy = JPEG2000 with a PSNR target ("quality", dB, relative to the
-full scale of the data type) OR a target compression ratio ("ratio"): then the quality is chosen automatically, just
-before writing, so that the file is about `ratio` times smaller than the raw pixels (see calibrate_quality). Default ratio per channel:
-100 for fluorescence channels (name contains "fluor"), 10 for everything else (bright field, dark field, ...).
+full scale of the data type, default 60 dB for every channel type) OR a target compression ratio ("ratio", a number, or a dict
+{channel: number}): then the quality is chosen automatically per channel, just before writing, so that the channel is about
+`ratio` times smaller than the raw pixels (see calibrate_quality).
 """
 import queue
 import threading
 
 import numpy as np
 
-DEFAULT_RATIO_FLUORESCENCE = 100.0     # default target compression of lossy fluorescence channels
-DEFAULT_RATIO_TRANSMITTED = 10.0       # ... of bright field, dark field and any other non-fluorescence channel
+DEFAULT_QUALITY_DB = 60.0              # default of compression="lossy", for every channel type
 RATIO_RANGE = (2.0, 2000.0)
 QUALITY_RANGE_DB = (40.0, 120.0)
 ZLIB_LEVEL = 6
@@ -36,11 +35,6 @@ def lossy_available():
         return False, f'lossy JPEG2000 needs the Python package "imagecodecs" (pip install imagecodecs): {e}'
 
 
-def default_ratio(channel_name):
-    """Default target compression of a channel: fluorescence 100x, everything else (bright field, dark field) 10x."""
-    return DEFAULT_RATIO_FLUORESCENCE if 'fluor' in str(channel_name).lower() else DEFAULT_RATIO_TRANSMITTED
-
-
 def _check_ratio(r):
     lo, hi = RATIO_RANGE
     try:
@@ -53,8 +47,8 @@ def _check_ratio(r):
 
 
 def normalize_compression(compression, quality=None, ratio=None):
-    """-> ('lossless', None, None) or ('lossy', quality_db_or_None, ratio_spec). ratio_spec (lossy without quality) is None (= default per
-    channel: 100 fluorescence, 10 others), a number (all channels) or a dict {channel name: number} (other channels: default).
+    """-> ('lossless', None, None) or ('lossy', quality_db_or_None, ratio_spec). Lossy without quality and ratio = DEFAULT_QUALITY_DB for every
+    channel. ratio_spec is None, a number (all channels) or a dict {channel name: number} (channels not in the dict get the default quality).
     Raises StackIOError for wrong values."""
     c = 'lossless' if compression is None else str(compression).strip().lower()
     if c in ('lossless', 'zlib', 'deflate', 'none'):
@@ -71,7 +65,7 @@ def normalize_compression(compression, quality=None, ratio=None):
                 raise StackIOError(f'quality must be between {lo:g} and {hi:g} dB (PSNR; higher = better, bigger files), got {q:g}')
             return 'lossy', q, None
         if ratio is None:
-            return 'lossy', None, None
+            return 'lossy', DEFAULT_QUALITY_DB, None
         if isinstance(ratio, dict):
             return 'lossy', None, {str(k): _check_ratio(v) for k, v in ratio.items()}
         return 'lossy', None, _check_ratio(ratio)
@@ -79,14 +73,12 @@ def normalize_compression(compression, quality=None, ratio=None):
 
 
 def resolve_ratios(channels, ratio_spec):
-    """Target compression per channel (list) from None / number / dict {channel: number}."""
-    if ratio_spec is None:
-        return [default_ratio(c) for c in channels]
+    """Target compression per channel (list; None = fixed default quality) from a number / dict {channel: number}."""
     if isinstance(ratio_spec, dict):
         unknown = [k for k in ratio_spec if k not in channels]
         if unknown:
             raise StackIOError(f'ratio given for channel(s) {unknown} that are not in this call: {list(channels)}')
-        return [float(ratio_spec.get(c, default_ratio(c))) for c in channels]
+        return [float(ratio_spec[c]) if c in ratio_spec else None for c in channels]
     return [float(ratio_spec)] * len(channels)
 
 
@@ -117,6 +109,10 @@ def calibrate_quality(data, ratios, tol_db=1.0):
     ratios = [float(ratios)] * C if np.isscalar(ratios) else list(ratios)
     for c in range(C):
         ratio = ratios[c]
+        if ratio is None:
+            chosen.append(DEFAULT_QUALITY_DB)
+            infos.append(dict(channel_index=c, quality_db=DEFAULT_QUALITY_DB, ratio=None, rmse=None, noise=None))
+            continue
         img = np.ascontiguousarray(data[T // 2, Z // 2, c])
         raw = img.nbytes
 
@@ -174,10 +170,10 @@ def write_ome_tiff(path, data, channels, planes=None, pixel_size_um=None, z_step
     if len(channels) != C:
         raise StackIOError(f'{len(channels)} channel names for {C} channels')
     n = T * Z * C
-    targets = resolve_ratios(channels, ratio) if (mode == 'lossy' and q is None) else None
+    targets = resolve_ratios(channels, ratio) if (mode == 'lossy' and ratio is not None) else None
     info = dict(mode=mode, quality_db=q, target_ratio=ratio, targets=targets, raw_bytes=int(data.nbytes))
     qs = [q] * C
-    if mode == 'lossy' and q is None:
+    if targets is not None:
         qs, per_channel = calibrate_quality(data, targets)
         info['channels'] = per_channel
     if mode == 'lossy':
@@ -212,7 +208,7 @@ def write_ome_tiff(path, data, channels, planes=None, pixel_size_um=None, z_step
         # lossy: every page is written separately, because every channel has its own quality (tifffile applies one compression to a call)
         if description:
             meta['Description'] = f'{description}; JPEG2000 quality ' + ', '.join(f'{c}: {v:.0f} dB' for c, v in zip(channels, qs)) + \
-                (' (chosen per channel for target compressions ' + ', '.join(f'{t:g}x' for t in targets) + ')' if targets else '')
+                (' (chosen per channel for target compressions ' + ', '.join(f'{t:g}x' if t else 'default quality' for t in targets) + ')' if targets else '')
         ox = tifffile.OmeXml()
         ox.addimage(dtype=data.dtype, shape=data.shape, storedshape=(n, 1, 1, data.shape[-2], data.shape[-1], 1), **meta)
         xml = ox.tostring().encode('ascii', 'xmlcharrefreplace').decode('ascii')     # TIFF descriptions must be 7-bit ASCII

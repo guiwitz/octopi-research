@@ -70,20 +70,21 @@ API = [
                   'Exposure, gain and illumination intensity come from the channel configuration (see the <i>Test setup</i> panel). '
                   'Files are named <code>t0003/p0002_A-2_488.tiff</code> (time point, position, ID, channel) and listed in <code>images.csv</code>.<br><br>'
                   '<b>compression</b>: <code>"lossless"</code> (default; zlib-compressed TIFF, identical pixel values) or <code>"lossy"</code> '
-                  '(16-bit JPEG2000 inside the TIFF, much smaller files, but the camera noise is partly removed). '
-                  'For lossy the size is set by <b>ratio</b> (target compression): by default <b>100x for fluorescence</b> channels and <b>10x for bright field, '
-                  'dark field and other channels</b>. Give a number to use it for all channels (<code>ratio=30</code>) or a dictionary for single channels '
-                  '(<code>ratio={"488": 50}</code>; others keep their default). The quality is chosen automatically for every channel of every file, '
-                  'just before it is written (in the background), so that the channel is about that many times smaller than the raw pixels. Or give <b>quality</b> instead (PSNR in dB, 40 to 120; the error is then about 65535 / 10^(dB/20) counts, '
-                  'e.g. 80 dB = 6.5 counts); then the compression depends on the image. Give only one of the two. '
-                  'What really happened is written to <code>job_log.txt</code> and <code>lossy_files.csv</code>: achieved ratio, quality, codec error and image noise (counts). '
+                  '(16-bit JPEG2000 inside the TIFF, much smaller files, but part of the camera noise is removed). '
+                  'The default is a fixed <b>quality of 60 dB</b> (PSNR relative to the full scale of the data type) for every channel type; the compression you get '
+                  'then depends on the image (on real Squid images roughly 100x to several 100x for fluorescence, 10x for bright field). '
+                  'Change it with <b>quality</b> (40 to 120 dB; the error is about 65535 / 10^(dB/20) counts, e.g. 60 dB = 65 counts, 80 dB = 6.5 counts; higher = better and bigger files), '
+                  'or ask for a size with <b>ratio</b> (target compression: a number for all channels, e.g. <code>ratio=30</code>, or a dictionary for single channels, '
+                  'e.g. <code>ratio={"488": 50}</code>; the others then use 60 dB): the quality is then chosen automatically per channel just before writing '
+                  '(in the background) so that the channel is about that many times smaller than the raw pixels. Give only one of quality and ratio. '
+                  'What really happened is written to <code>job_log.txt</code> and <code>lossy_files.csv</code>: achieved ratio, quality and, in ratio mode, codec error and image noise (counts). '
                   'Rule of thumb: the codec error should not be much larger than the image noise. Images with many fine details (e.g. bright field) lose more than sparse fluorescence. '
                   'Lossy needs the Python package <code>imagecodecs</code>; Test tells you if it is missing.'),
          params=[('channel', 'channel name (text), or a unique part of it'),
                  ('save', 'False = only return the image, do not write a file'),
                  ('compression', '"lossless" (default) or "lossy" (JPEG2000)'),
-                 ('quality', 'lossy only: fixed PSNR in dB (40-120) instead of ratio'),
-                 ('ratio', 'lossy only: target compression: number or {channel: number}; default 100 fluorescence, 10 bright field/dark field')],
+                 ('quality', 'lossy only: PSNR in dB (40-120), default 60'),
+                 ('ratio', 'lossy only: target compression, a number or {channel: number}, instead of quality')],
          returns='the image (NumPy array)',
          example='img = scope.capture("488")\nscope.capture("561", compression="lossy")'),
     dict(name='capture_channels', kind='method', category='Imaging',
@@ -91,7 +92,7 @@ API = [
          summary='capture() for several channels, one after the other in the given order.',
          details='Same as a loop of <code>capture</code> calls (same compression/quality for all). Returns a dictionary {channel name: image}.',
          params=[('channels', 'list of channel names'), ('save', 'False = do not write files'),
-                 ('compression', '"lossless" (default) or "lossy"'), ('quality', 'lossy only: fixed PSNR in dB'), ('ratio', 'lossy only: target compression, number or {channel: number} (default 100 fluorescence, 10 BF/DF)')],
+                 ('compression', '"lossless" (default) or "lossy"'), ('quality', 'lossy only: PSNR in dB (default 60)'), ('ratio', 'lossy only: target compression, a number or {channel: number}, instead of quality')],
          returns='dict {channel name: image}',
          example='images = scope.capture_channels(["BF", "488", "561"])'),
     dict(name='zstack', kind='method', category='Imaging',
@@ -112,8 +113,8 @@ API = [
          params=[('channels', 'channel name or list of names'), ('planes', 'number of planes'), ('step_um', 'distance between planes (um)'),
                  ('span_um', 'total span from the first to the last plane (um)'),
                  ('order', '"channel_major" (default) or "z_major"'),
-                 ('compression', '"lossless" (default) or "lossy"'), ('quality', 'lossy only: fixed PSNR in dB'),
-                 ('ratio', 'lossy only: target compression, number or {channel: number} (default 100 fluorescence, 10 BF/DF)'),
+                 ('compression', '"lossless" (default) or "lossy"'), ('quality', 'lossy only: PSNR in dB (default 60)'),
+                 ('ratio', 'lossy only: target compression, a number or {channel: number}, instead of quality'),
                  ('save', 'False = do not write a file')],
          returns='dict {channel name: array of shape (planes, Y, X)}',
          example='scope.move_to(pt)\nscope.autofocus()\nscope.zstack(["488", "561"], planes=11, step_um=1.0, order="z_major")'),
@@ -133,8 +134,8 @@ API = [
                   'File: <code>t0003/p0002_A-2_movie.ome.tiff</code>; time points of the job are separate files, one movie per call.'),
          params=[('channels', 'channel name or list of names'), ('frames', 'number of rounds'), ('interval_s', 'seconds from the start of one round to the start of the next'),
                  ('duration_s', 'total duration in seconds (needs interval_s; instead of frames)'),
-                 ('compression', '"lossless" (default) or "lossy"'), ('quality', 'lossy only: fixed PSNR in dB'),
-                 ('ratio', 'lossy only: target compression, number or {channel: number} (default 100 fluorescence, 10 BF/DF)'),
+                 ('compression', '"lossless" (default) or "lossy"'), ('quality', 'lossy only: PSNR in dB (default 60)'),
+                 ('ratio', 'lossy only: target compression, a number or {channel: number}, instead of quality'),
                  ('save', 'False = do not write a file')],
          returns='dict {channel name: array of shape (frames, Y, X)}',
          example='scope.move_to(pt)\nscope.movie(["488", "561"], duration_s=60, interval_s=2, compression="lossy")'),
