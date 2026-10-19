@@ -443,7 +443,7 @@ class OctopiGUI(QMainWindow):
         if ENABLE_TRACKING:
             self.navigationController.signal_joystick_button_pressed.connect(self.trackingControlWidget.slot_joystick_button_pressed)
         else:
-            self.navigationController.signal_joystick_button_pressed.connect(self.autofocusController.autofocus)
+            self.navigationController.signal_joystick_button_pressed.connect(self.autofocusController.autofocus_single)
 
         self.multiPointWidget.signal_acquisition_started.connect(self.navigationWidget.toggle_navigation_controls)
         self.multiPointWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
@@ -487,6 +487,7 @@ class OctopiGUI(QMainWindow):
         self.navigationController.xyPos.connect(self.navigationViewer.update_current_location)
         self.multipointController.signal_register_current_fov.connect(self.navigationViewer.register_fov)
         self.multipointController.signal_current_configuration.connect(self.liveControlWidget.set_microscope_mode)
+        self.autofocusController.signal_set_configuration.connect(self.liveControlWidget.set_microscope_mode) # single autofocus: AF channel
         self.multipointController.signal_z_piezo_um.connect(self.piezoWidget.update_displacement_um_display)
 
         if USE_NAPARI_FOR_LIVE_VIEW:

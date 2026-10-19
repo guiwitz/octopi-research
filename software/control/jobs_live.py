@@ -11,6 +11,10 @@ Messages (dicts, see api.Scope._notify):
   {'type':'timepoint', 'index', 'start', 'late', 'planned', 'n', 'interval', 'next_start'}
   {'type':'done', 'kind':'move'|'capture'|'autofocus'|'wait'|'timepoint', 'point', 'tp', 'channel', 't0', 't1'}
   {'type':'finished', 'status', 'error', 't'}
+
+The Flexible Multipoint tab uses the same view (messages sent by MultiPointWorker). There an image is not the end of a position
+(tiles, z planes, several channels), so it sends  {'type':'done', 'kind':'image', ...}  for every image (counted, no position done) and
+{'type':'done', 'kind':'position', ...} when a position is finished.
 """
 import math
 import time
@@ -36,11 +40,13 @@ def fmt_clock(epoch_s):
 class JobProgress:
     """State of a running job. `clock` returns wall-clock seconds (injectable for tests)."""
 
-    def __init__(self, clock=time.time):
+    def __init__(self, clock=time.time, noun='Job', skip_late=False):
         self._clock = clock
+        self.noun = noun              # 'Job' (JOBs tab) or 'Acquisition' (Flexible Multipoint tab)
+        self.skip_late = skip_late    # True: a late time point makes the next due time points be skipped (Flexible Multipoint), not start at once (JOBs)
         self.reset()
 
-    def reset(self, plan_events=None, plan_duration=None, points=None):
+    def reset(self, plan_events=None, plan_duration=None, points=None, plan_total_images=None):
         self.points = {p.index: p for p in (points or [])}
         self.n_tp = None
         self.plan_tp_start, self.plan_visits, self.plan_images = {}, {}, {}
@@ -60,6 +66,8 @@ class JobProgress:
                     self.plan_images[tp] = self.plan_images.get(tp, 0) + 1
         if self.plan_tp_start:
             self.n_tp = max(self.plan_tp_start) + 1
+        if plan_total_images is not None:      # given directly (a plan with one event per image would be too large)
+            self.plan_total_images = int(plan_total_images)
         # live state
         self.active = False
         self.status = None                  # None while running, then 'completed' | 'aborted' | 'failed' | 'invalid'
@@ -75,8 +83,8 @@ class JobProgress:
         self.t_msg, self.wall_msg = 0.0, self._clock()
         self.finished_t = None
 
-    def start(self, plan_events=None, plan_duration=None, points=None):
-        self.reset(plan_events, plan_duration, points)
+    def start(self, plan_events=None, plan_duration=None, points=None, plan_total_images=None):
+        self.reset(plan_events, plan_duration, points, plan_total_images)
         self.active = True
 
     # ---------------------------------------------------------------------------------------
@@ -96,11 +104,16 @@ class JobProgress:
                 self.n_tp = msg['n']
         elif typ == 'done':
             k, tp, pt = msg.get('kind'), msg.get('tp'), msg.get('point')
-            if pt is not None and k in ('move', 'capture', 'autofocus'):
+            if pt is not None and k in ('move', 'capture', 'autofocus', 'image', 'position'):
                 seen = self.visits_seen.setdefault(tp, [])
                 if pt not in seen:
                     seen.append(pt)
-            if k == 'capture':
+            if k == 'image':
+                self.images_done += 1
+                self.tp_images[tp] = self.tp_images.get(tp, 0) + 1
+            elif k == 'position':
+                self.tp_points_done.setdefault(tp, set()).add(pt)
+            elif k == 'capture':
                 self.images_done += 1
                 self.tp_images[tp] = self.tp_images.get(tp, 0) + 1
                 self.tp_points_done.setdefault(tp, set()).add(pt)
@@ -145,10 +158,10 @@ class JobProgress:
     def headline(self):
         """(text, countdown seconds or None)"""
         if self.status is not None:
-            word = {'completed': 'Job completed', 'aborted': 'Job aborted', 'failed': 'Job FAILED', 'invalid': 'Job could not start'}.get(self.status, self.status)
+            word = {'completed': self.noun + ' completed', 'aborted': self.noun + ' aborted', 'failed': self.noun + ' FAILED', 'invalid': self.noun + ' could not start'}.get(self.status, self.status)
             return word + (': ' + self.error.splitlines()[0] if self.error else ''), None
         if not self.active:
-            return 'No job running', None
+            return 'No ' + self.noun.lower() + ' running', None
         st, now = self.state, self.job_time()
         s = st.get('state')
         if s == 'paused':
@@ -169,7 +182,7 @@ class JobProgress:
             return f'Autofocus at position {self._label(st.get("point"))}   [{where}]', None
         if s == 'idle':
             return f'Running   [{where}]', None
-        return 'Job starting ...', None
+        return self.noun + ' starting ...', None
 
     def details(self):
         """list of text lines"""
@@ -183,7 +196,12 @@ class JobProgress:
                 txt += f' (started {fmt_s(self.tp_late[self.current_tp])} late)'
             if self.next_start is not None and self.state.get('state') != 'waiting':
                 rest = self.next_start - now
-                txt += f'; next time point planned in {fmt_s(rest)}' if rest > 0 else '; the next time point will start immediately (this one takes longer than the interval)'
+                if rest > 0:
+                    txt += f'; next time point planned in {fmt_s(rest)}'
+                elif self.skip_late:
+                    txt += '; this time point takes longer than the interval: time points that are already due are skipped'
+                else:
+                    txt += '; the next time point will start immediately (this one takes longer than the interval)'
             lines.append(txt)
         total = self.plan_total_images
         lines.append(f'images: {self.images_done}' + (f' of {total} planned' if total else ''))
@@ -244,10 +262,10 @@ class JobProgress:
         cur = self.state.get('point') if self.state.get('state') in ('moving', 'capturing', 'autofocus') else None
         out = []
         for p in order:
-            if p == cur:
-                out.append((p, 'current'))
-            elif p in done:
+            if p in done:
                 out.append((p, 'done'))
+            elif p == cur:
+                out.append((p, 'current'))
             else:
                 out.append((p, 'pending'))
         return out
@@ -347,10 +365,10 @@ if _QT:
     class LiveJobView(QFrame):
         """Status of the running job; feed it with on_message() (connected to MultiPointController.signal_job_status)."""
 
-        def __init__(self, parent=None):
+        def __init__(self, parent=None, noun='Job', skip_late=False):
             super().__init__(parent)
-            self.model = JobProgress()
-            self.label_head = QLabel('No job running')
+            self.model = JobProgress(noun=noun, skip_late=skip_late)
+            self.label_head = QLabel('No ' + noun.lower() + ' running')
             f = self.label_head.font(); f.setBold(True)      # same size as the rest of the GUI: it must fit the (fixed width) control panel
             self.label_head.setFont(f)
             self.label_head.setWordWrap(True)
@@ -374,9 +392,9 @@ if _QT:
             self.refresh()
 
         # --- API
-        def begin(self, plan_events=None, plan_duration=None, points=None):
+        def begin(self, plan_events=None, plan_duration=None, points=None, plan_total_images=None):
             self._countdown_total = None
-            self.model.start(plan_events, plan_duration, points)
+            self.model.start(plan_events, plan_duration, points, plan_total_images)
             self.timer.start()
             self.refresh()
 

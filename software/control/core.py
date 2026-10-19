@@ -1365,9 +1365,12 @@ class AutofocusWorker(QObject):
                 self.camera.send_trigger()
                 image = self.camera.read_frame()
             elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
-                if 'Fluorescence' in config.name and ENABLE_NL5 and NL5_USE_DOUT:
+                # towbinlab fix: 'config' was never defined in this worker, so every autofocus in hardware-trigger mode
+                # raised a NameError before the trigger was sent (no light, autofocus failed)
+                current_configuration = self.liveController.currentConfiguration
+                if ENABLE_NL5 and NL5_USE_DOUT and current_configuration is not None and 'Fluorescence' in current_configuration.name:
                     self.camera.image_is_ready = False # to remove
-                    self.microscope.nl5.start_acquisition()
+                    self.liveController.microscope.nl5.start_acquisition()
                     image = self.camera.read_frame(reset_image_ready_flag=False)
                 else:
                     self.microcontroller.send_hardware_trigger(control_illumination=True,illumination_on_time_us=self.camera.exposure_time*1000)
@@ -1439,12 +1442,15 @@ class AutoFocusController(QObject):
     autofocusFinished = Signal()
     image_to_display = Signal(np.ndarray)
     settings_changed = Signal() # emitted whenever N, deltaZ, focus measure or autofocus channel change
+    signal_set_configuration = Signal(object) # single autofocus tests: switch the live channel (connected to the live control in gui_hcs)
 
     def __init__(self,camera,navigationController,liveController):
         QObject.__init__(self)
         self.camera = camera
         self.navigationController = navigationController
         self.liveController = liveController
+        self._single_af_restore = None # channel to put back after a single autofocus test (see autofocus_single)
+        self.autofocusFinished.connect(self._restore_configuration_after_single_af)
         self.N = None
         self.deltaZ = None
         self.deltaZ_usteps = None
@@ -1532,6 +1538,36 @@ class AutoFocusController(QObject):
         self.crop_width = crop_width
         self.crop_height = crop_height
 
+    def _configuration_by_name(self,name):
+        try:
+            return next((c for c in self.liveController.configurationManager.configurations if c.name == name),None)
+        except Exception:
+            return None
+
+    def autofocus_single(self,*args):
+        """towbinlab: one autofocus started by hand (Autofocus buttons, joystick button). It uses the autofocus channel
+        of the Contrast AF tab (its illumination, intensity, exposure and gain) - not the channel that happens to be
+        selected in the live control, as before. The previous live channel is put back when the autofocus has ended.
+        (Autofocus inside a multipoint acquisition already switched to the autofocus channel itself.)"""
+        cfg = self._configuration_by_name(self.af_channel)
+        current = self.liveController.currentConfiguration
+        self._single_af_restore = None
+        if self.use_focus_map:
+            pass # no images are taken: z is interpolated
+        elif cfg is None:
+            print('*** autofocus channel "' + str(self.af_channel) + '" not found in the channel list: autofocus uses the live channel')
+        elif current is None or current.name != cfg.name:
+            self._single_af_restore = current
+            self.signal_set_configuration.emit(cfg)
+        self.autofocus(False)
+        if not self.autofocus_in_progress: # nothing was started (e.g. the thread refused): put the channel back at once
+            self._restore_configuration_after_single_af()
+
+    def _restore_configuration_after_single_af(self):
+        prev, self._single_af_restore = self._single_af_restore, None
+        if prev is not None:
+            self.signal_set_configuration.emit(prev)
+
     def autofocus(self, focus_map_override=False):
         if self.use_focus_map and (not focus_map_override):
             self.autofocus_in_progress = True
@@ -1595,6 +1631,8 @@ class AutoFocusController(QObject):
         self.thread.start()
         
     def _on_autofocus_completed(self):
+        # towbinlab: single autofocus test: put the previous live channel back before live view restarts
+        self._restore_configuration_after_single_af()
         # re-enable callback
         if self.callback_was_enabled_before_autofocus:
             self.camera.enable_callback()
@@ -1723,6 +1761,8 @@ class MultiPointWorker(QObject):
     signal_job_message = Signal(str)   # JOBs: progress messages of a job script
     signal_job_status = Signal(object) # JOBs: live status (dicts, see control/jobs_live.py)
     signal_acquisition_error = Signal(str) # stability: an error ended the acquisition (message for the user)
+    signal_update_z = Signal(int,float)    # towbinlab: (position index, z in mm) after an autofocus, for the Positions table (GUI thread)
+    signal_flex_status = Signal(object)    # towbinlab: progress messages for the Flexible Multipoint live view (same format as the JOBs, see control/jobs_live.py)
 
     def __init__(self,multiPointController):
         QObject.__init__(self)
@@ -1784,6 +1824,67 @@ class MultiPointWorker(QObject):
             self.detection_stats["Positives per 5M RBC"] = 5e6*(self.detection_stats["Total Positives"]/self.detection_stats["Total RBC"])
         self.signal_detection_stats.emit(self.detection_stats)
 
+    # --- towbinlab: progress messages for the live view and the position log -----------------------------------------
+    def _job_time(self):
+        return time.time() - self.timestamp_acquisition_started
+
+    def _flex_notify(self, msg):
+        msg.setdefault('t', self._job_time())
+        try:
+            self.signal_flex_status.emit(msg)
+        except Exception:
+            pass # the live view must never break an acquisition
+
+    def _flex_state(self, state, **kw):
+        self._flex_notify(dict(type='state', state=state, tp=self.time_point, **kw))
+
+    def _flex_done(self, kind, point, channel=None):
+        self._flex_notify(dict(type='done', kind=kind, point=point, tp=self.time_point, channel=channel))
+
+    POSITION_LOG_COLUMNS = ['time','time_point','position','id','event','x_list_mm','y_list_mm','z_list_um','x_stage_mm','y_stage_mm',
+                            'z_stage_um','z_before_af_um','z_widget_um','z_original_um','note']
+
+    def _open_position_log(self):
+        """position_log.csv in the experiment folder: where every position is according to the positions list and the stage,
+        before and after each autofocus, so that it can be checked that the focused z is used at the next time point."""
+        import csv
+        self._position_log_path = os.path.join(self.base_path,self.experiment_ID,'position_log.csv')
+        try:
+            with open(self._position_log_path,'w',newline='',encoding='utf-8') as f:
+                csv.writer(f).writerow(self.POSITION_LOG_COLUMNS)
+        except Exception as e:
+            print('position log could not be created: ' + str(e))
+            self._position_log_path = None
+
+    def _log_position(self, event, coordinate_id, note='', z_before_af_mm=None):
+        path = getattr(self,'_position_log_path',None)
+        if path is None:
+            return
+        import csv
+        def um(z_mm):
+            return '' if z_mm is None else round(float(z_mm)*1000,3)
+        def mm(v):
+            return '' if v is None else round(float(v),5)
+        try:
+            row = self.scan_coordinates_mm[coordinate_id]
+            z_list = row[2] if len(row) == 3 else None
+            z_orig = self.scan_coordinates_mm_backup[coordinate_id][2] if len(row) == 3 else None
+            try:
+                z_widget = self.microscope.multiPointWidget2.location_list[coordinate_id,2]
+            except Exception:
+                z_widget = None
+            try:
+                position_id = self.microscope.multiPointWidget2.location_ids[coordinate_id]
+            except Exception:
+                position_id = ''
+            nav = self.navigationController
+            with open(path,'a',newline='',encoding='utf-8') as f:
+                csv.writer(f).writerow([datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3], self.time_point, coordinate_id, position_id, event,
+                                        mm(row[0]), mm(row[1]), um(z_list), mm(nav.x_pos_mm), mm(nav.y_pos_mm), um(nav.z_pos_mm),
+                                        um(z_before_af_mm), um(z_widget), um(z_orig), note])
+        except Exception as e:
+            print('position log: ' + str(e)) # never break the acquisition
+
     def run_job_script(self):
         """JOBs: run the job file selected in the JOBs tab instead of the standard loops (see control/jobs)."""
         self.start_time = time.perf_counter_ns()
@@ -1836,6 +1937,7 @@ class MultiPointWorker(QObject):
                 self.signal_acquisition_error.emit(message)
             except BaseException:
                 pass
+            self._flex_notify(dict(type='finished', status='failed', error=message))
             if not self._finished_emitted:
                 self.finished.emit()
 
@@ -1874,10 +1976,18 @@ class MultiPointWorker(QObject):
         # keep copy of original positions to measure drift
         self.scan_coordinates_mm_backup = self.scan_coordinates_mm.copy()
 
+        self._open_position_log()
+
         while self.time_point < self.Nt:
             # check if abort acquisition has been requested
             if self.multiPointController.abort_acqusition_requested:
                 break
+            # progress message for the live view: this time point starts now
+            planned = self.time_point*self.dt if self.dt else None
+            started = self._job_time()
+            self._flex_notify(dict(type='timepoint', index=self.time_point, start=started, planned=planned, n=self.Nt,
+                                   late=max(0.0,started-planned) if planned is not None else 0.0, interval=self.dt if self.dt else None,
+                                   next_start=(self.time_point+1)*self.dt if (self.dt and self.time_point+1 < self.Nt) else None))
             # run single time point
             self.run_single_time_point()
             self.time_point = self.time_point + 1
@@ -1894,14 +2004,18 @@ class MultiPointWorker(QObject):
                 if self.time_point == self.Nt:
                     break # no waiting after taking the last time point
                 # wait until it's time to do the next acquisition
+                self._flex_notify(dict(type='state', state='waiting', tp=self.time_point-1, until=self.time_point*self.dt,
+                                       reason='interval', next_tp=self.time_point))
                 while time.time() < self.timestamp_acquisition_started + self.time_point*self.dt:
                     if self.multiPointController.abort_acqusition_requested:
                         break
                     time.sleep(0.05)
+                self._flex_notify(dict(type='state', state='idle', tp=self.time_point))
         self.processingHandler.processing_queue.join()
         self.processingHandler.upload_queue.join()
         elapsed_time = time.perf_counter_ns()-self.start_time
         print("Time taken for acquisition/processing: "+str(elapsed_time/10**9))
+        self._flex_notify(dict(type='finished', status='aborted' if self.multiPointController.abort_acqusition_requested else 'completed', error=''))
         self._emit_finished()
 
     def wait_till_operation_is_completed(self):
@@ -1956,6 +2070,7 @@ class MultiPointWorker(QObject):
 
             coordiante_mm = self.scan_coordinates_mm[coordinate_id]
             print(coordiante_mm)
+            self._flex_state('moving', point=coordinate_id)
 
             if self.scan_coordinates_name is None:
                 # flexible scan, use a sequencial ID
@@ -2015,6 +2130,7 @@ class MultiPointWorker(QObject):
                 # add '_' to the coordinate name
                 coordiante_name = coordiante_name + '_'
 
+            self._log_position('arrive',coordinate_id,note='at the position of the list (z of the list is the focus found at the previous time point, if autofocus is on)')
 
             self.x_scan_direction = 1
             self.dx_usteps = 0 # accumulated x displacement
@@ -2071,24 +2187,34 @@ class MultiPointWorker(QObject):
                             # if (self.NZ == 1) and (self.do_autofocus):
                                 configuration_name_AF = self.autofocusController.af_channel
                                 config_AF = next((config for config in self.configurationManager.configurations if config.name == configuration_name_AF))
+                                self._flex_state('autofocus', point=coordinate_id)
+                                z_before_af_mm = self.navigationController.z_pos_mm
+                                self.autofocusController.last_error = None
                                 self.signal_current_configuration.emit(config_AF)
                                 if (self.FOV_counter%Acquisition.NUMBER_OF_FOVS_PER_AF==0) or self.autofocusController.use_focus_map:
                                     self.autofocusController.autofocus()
                                     self.autofocusController.wait_till_autofocus_has_completed()
                                 # upate z location of scan_coordinates_mm after AF but check if drift is not too large
                                 threshold_z = 0.5 # in mm
+                                af_note = ''
                                 if len(coordiante_mm) == 3:
                                     z_dist_fraction = self.scan_coordinates_mm_backup[coordinate_id, 2] - self.navigationController.z_pos_mm
                                     if abs(z_dist_fraction) > threshold_z:
                                         print(f"Z position has changed by {z_dist_fraction} mm, which is larger than the threshold of {threshold_z} mm. "
                                           "This may indicate a problem with the stage or autofocus. No further z update will be performed.")
+                                        af_note = f'focused z NOT stored: {z_dist_fraction*1000:.1f} um from the original z of this position (limit {threshold_z*1000:.0f} um)'
                                     else:
                                         self.scan_coordinates_mm[coordinate_id,2] = self.navigationController.z_pos_mm
-                                        # update the coordinate in the widget
-                                        try:
-                                            self.microscope.multiPointWidget2._update_z(coordinate_id,self.navigationController.z_pos_mm)
-                                        except:
-                                            pass
+                                        af_note = 'focused z stored in the positions list (used at the next time point)'
+                                        # update the coordinate in the widget (signal: the table is changed in the GUI thread)
+                                        self.signal_update_z.emit(coordinate_id,float(self.navigationController.z_pos_mm))
+                                else:
+                                    af_note = 'position has no z: nothing stored'
+                                if getattr(self.autofocusController,'last_error',None):
+                                    af_note = 'AUTOFOCUS FAILED (' + str(self.autofocusController.last_error) + '); ' + af_note
+                                self._log_position('af',coordinate_id,note=af_note,z_before_af_mm=z_before_af_mm)
+                            elif self.do_autofocus:
+                                self._log_position('af_skipped',coordinate_id,note='autofocus not scheduled for this position at this time point (or not the first FOV)')
                         else:
                             # initialize laser autofocus if it has not been done
                             if self.microscope.laserAutofocusController.is_initialized==False:
@@ -2155,6 +2281,7 @@ class MultiPointWorker(QObject):
                             # iterate through selected modes
                             self.channel_counter = 0
                             for config in self.selected_configurations:
+                                self._flex_state('capturing', point=coordinate_id, channel=config.name)
                                 if config.z_offset is not None: # perform z offset for config, assume
                                                                 # z_offset is in um
                                     if config.z_offset != 0.0:
@@ -2369,7 +2496,7 @@ class MultiPointWorker(QObject):
                                             saving_path = os.path.join(current_path, file_ID + '_' + str(config.name).replace(' ','_') + '_' + str(l) + '.csv')
                                             np.savetxt(saving_path,data,delimiter=',')
                                 
-                                
+                                self._flex_done('image', coordinate_id, config.name)
                                 if config.z_offset is not None: # undo Z offset
                                                                 # assume z_offset is in um
                                     if config.z_offset != 0.0:
@@ -2579,6 +2706,9 @@ class MultiPointWorker(QObject):
                     self.navigationController.microcontroller.move_z_to_usteps(z_pos)
                     self.wait_till_operation_is_completed()
 
+            self._log_position('end',coordinate_id,note='position finished')
+            self._flex_done('position', coordinate_id)
+
         # finished region scan
         self.coordinates_pd.to_csv(os.path.join(current_path,'coordinates.csv'),index=False,header=True)
         self.navigationController.enable_joystick_button_action = True
@@ -2602,6 +2732,8 @@ class MultiPointController(QObject):
     signal_job_status = Signal(object) # JOBs: live status (dicts, see control/jobs_live.py)
     signal_acquisition_error = Signal(str) # stability: an acquisition ended because of an error (message for the user)
     acquisitionStarted = Signal()      # stability: emitted when an acquisition thread is started (input lock)
+    signal_update_z = Signal(int,float) # towbinlab: (position index, z in mm): the focused z of a position (Positions table)
+    signal_flex_status = Signal(object) # towbinlab: progress of a Flexible Multipoint acquisition (live view, see control/jobs_live.py)
 
     def __init__(self,camera,navigationController,liveController,autofocusController,configurationManager,usb_spectrometer=None,scanCoordinates=None,parent=None):
         QObject.__init__(self)
@@ -2869,6 +3001,8 @@ class MultiPointController(QObject):
         self.multiPointWorker.signal_current_configuration.connect(self.slot_current_configuration,type=Qt.BlockingQueuedConnection)
         self.multiPointWorker.signal_job_message.connect(self.signal_job_message)
         self.multiPointWorker.signal_job_status.connect(self.signal_job_status)
+        self.multiPointWorker.signal_update_z.connect(self.signal_update_z)
+        self.multiPointWorker.signal_flex_status.connect(self.signal_flex_status)
         self.multiPointWorker.signal_acquisition_error.connect(self._on_acquisition_error)
         self.multiPointWorker.signal_register_current_fov.connect(self.slot_register_current_fov)
         self.multiPointWorker.napari_layers_init.connect(self.slot_napari_layers_init)

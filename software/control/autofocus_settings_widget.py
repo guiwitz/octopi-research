@@ -99,7 +99,7 @@ class AutofocusSettingsWidget(QFrame):
         grid.setRowStretch(grid.rowCount(), 1)
         self.setLayout(grid)
 
-        self.btn_autofocus.clicked.connect(lambda: self.autofocusController.autofocus(False))
+        self.btn_autofocus.clicked.connect(lambda: self.autofocusController.autofocus_single())
         self.entry_delta.valueChanged.connect(self._on_delta_changed)
         self.entry_N.valueChanged.connect(self.autofocusController.set_N)
         self.dropdown_measure.currentIndexChanged.connect(self._on_measure_selected)

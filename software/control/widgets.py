@@ -1574,7 +1574,7 @@ class AutoFocusWidget(QFrame):
         self.setLayout(self.grid)
         
         # connections
-        self.btn_autofocus.clicked.connect(lambda : self.autofocusController.autofocus(False))
+        self.btn_autofocus.clicked.connect(lambda : self.autofocusController.autofocus_single())
         self.entry_delta.valueChanged.connect(self.set_deltaZ)
         self.entry_N.valueChanged.connect(self.autofocusController.set_N)
         self.autofocusController.autofocusFinished.connect(self.autofocus_is_finished)
@@ -2187,6 +2187,11 @@ class MultiPointWidget2(QFrame):
         grid_line3.addLayout(grid_af)
         grid_line3.addWidget(self.btn_startAcquisition)
 
+        # towbinlab: countdown to the next time point and progress, same view as in the JOBs tab (hidden until an acquisition was started)
+        from control.jobs_live import LiveJobView
+        self.live = LiveJobView(noun='Acquisition', skip_late=True)
+        self.live.setVisible(False)
+
         self.grid = QGridLayout()
         self.grid.addLayout(grid_line0,0,0)
         # self.grid.addLayout(grid_line1,1,0)
@@ -2196,6 +2201,7 @@ class MultiPointWidget2(QFrame):
         # self.grid.addLayout(grid_line5,2,0)
         self.grid.addLayout(grid_line2,4,0)
         self.grid.addLayout(grid_line3,5,0)
+        self.grid.addWidget(self.live,6,0)
         self.setLayout(self.grid)
 
         # add and display a timer - to be implemented
@@ -2215,6 +2221,8 @@ class MultiPointWidget2(QFrame):
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         self.multipointController.acquisitionFinished.connect(self.acquisition_is_finished)
+        self.multipointController.signal_flex_status.connect(self.live.on_message)
+        self.multipointController.signal_update_z.connect(self._update_z)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
 
         self.btn_add.clicked.connect(self.add_location)
@@ -2452,6 +2460,7 @@ class MultiPointWidget2(QFrame):
             self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
             self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
             self.multipointController.set_base_path(self.lineEdit_savingDir.text())
+            self._begin_live_view()
             self.multipointController.run_acquisition(self.location_list)
         else:
             self.multipointController.request_abort_aquisition()
@@ -2490,6 +2499,8 @@ class MultiPointWidget2(QFrame):
                 #to-do: update z coordinate
 
     def acquisition_is_finished(self):
+        if self.live.model.active: # the acquisition ended without a final message (e.g. a crash): do not leave the countdown running
+            self.live.on_message(dict(type='finished', status='failed', error='see the console'))
         if not self.acquisition_in_place:
             self.last_used_locations = self.location_list.copy()
             self.last_used_location_ids = self.location_ids.copy()
@@ -2796,9 +2807,37 @@ class MultiPointWidget2(QFrame):
         self.dropdown_location_list.setItemText(index,'x: ' + str(round(x,3)) + ' mm, y: ' + str(round(y,3)) + ' mm, z: ' + str(round(1000*z_mm,1)) + ' um')
 
     def _update_z(self,index,z_mm):
+        """z of position `index` after an autofocus during an acquisition: array, Positions table and dropdown.
+        Runs in the GUI thread (signal of the acquisition). Before, only the dropdown text was updated, from the
+        acquisition thread, and the Positions table kept showing the old z."""
+        if index < 0 or index >= len(self.location_list):
+            return
         self.location_list[index,2] = z_mm
+        t = self.table_location_list
+        was_blocked = t.blockSignals(True)            # cellChanged would move the stage
+        try:
+            if index < t.rowCount():
+                t.setItem(index,2,QTableWidgetItem(str(round(1000*z_mm,1))))
+        finally:
+            t.blockSignals(was_blocked)
         location_str = 'x: ' + str(round(self.location_list[index,0],3)) + ' mm, y: ' + str(round(self.location_list[index,1],3)) + ' mm, z: ' + str(round(1000*z_mm,1)) + ' um'
         self.dropdown_location_list.setItemText(index, location_str)
+
+    def _begin_live_view(self):
+        """Plan for the countdown / progress view of the acquisition that is about to start."""
+        from types import SimpleNamespace
+        Nt, dt = self.entry_Nt.value(), self.entry_dt.value()
+        n_pos = len(self.location_list)
+        n_channels = len(self.list_configurations.selectedItems())
+        images_per_position = self.entry_NX.value()*self.entry_NY.value()*self.entry_NZ.value()*n_channels
+        events = []
+        for t in range(Nt):
+            events.append(dict(kind='timepoint', tp=t, point=None, t0=t*dt, t1=t*dt))
+            events.extend(dict(kind='move', tp=t, point=p, t0=t*dt, t1=t*dt) for p in range(n_pos))
+        points = [SimpleNamespace(index=p, id=str(self.location_ids[p]) if p < len(self.location_ids) and str(self.location_ids[p]) not in ('', 'None') else '')
+                  for p in range(n_pos)]
+        self.live.setVisible(True)
+        self.live.begin(events, Nt*dt if dt > 0 else None, points, plan_total_images=Nt*n_pos*images_per_position)
 
     def export_location_list(self):
         file_path, _ = QFileDialog.getSaveFileName(self, "Export Location List", '', "CSV Files (*.csv);;All Files (*)")
