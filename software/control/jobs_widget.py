@@ -12,7 +12,7 @@ import shutil
 
 from qtpy.QtCore import Signal, Qt
 from qtpy.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog,
-                            QMessageBox, QPlainTextEdit, QDialog, QDoubleSpinBox)
+                            QMessageBox, QPlainTextEdit, QDialog, QDoubleSpinBox, QCheckBox)
 
 from control.jobs import make_points, dry_run, describe, job_documentation, JobError
 from control.jobs_live import LiveJobView
@@ -114,6 +114,11 @@ class JobsWidget(QFrame):
         self.btn_pause.setToolTip('Pause at the next safe point (between two operations). While paused you can move the stage and edit the '
                                   'positions in the Flexible Multipoint tab; "Resume job" continues where the job was (waiting times continue, '
                                   'time spent paused is not counted). Positions cannot be added or removed while paused.')
+        self.checkbox_multipage = QCheckBox('Save as multipage TIFF')
+        self.checkbox_multipage.setChecked(True)
+        self.checkbox_multipage.setToolTip('Checked: one file per point and time point, Time0003_Point0002.tiff (all channels; z-stacks and movies as ..._Zstack.tiff / ..._Movie.tiff).\n'
+                                           'Unchecked: one TIFF file per image in a folder per time point, <ID>_0_0_<z>_<channel>.tiff (as the Flexible Multipoint tab).\n'
+                                           'A job can override this per call with multipage=True/False.')
         self.label_status = QLabel('')
         self.live = LiveJobView()
         self.log = QPlainTextEdit()
@@ -123,7 +128,7 @@ class JobsWidget(QFrame):
         row1 = QHBoxLayout(); row1.addWidget(QLabel('Job file')); row1.addWidget(self.lineEdit_job, 1)
         row1.addWidget(self.btn_select_job); row1.addWidget(self.btn_example); row1.addWidget(self.btn_designer)
         row2 = QHBoxLayout(); row2.addWidget(QLabel('Saving dir')); row2.addWidget(self.lineEdit_savingDir, 1); row2.addWidget(self.btn_savingDir)
-        row2.addWidget(QLabel('Experiment ID')); row2.addWidget(self.lineEdit_experimentID)
+        row2.addWidget(QLabel('Experiment ID')); row2.addWidget(self.lineEdit_experimentID); row2.addWidget(self.checkbox_multipage)
         row3 = QHBoxLayout(); row3.addWidget(self.btn_check); row3.addWidget(self.btn_plan); row3.addWidget(self.btn_start); row3.addWidget(self.btn_pause)
         layout = QVBoxLayout()
         layout.addLayout(row1); layout.addLayout(row2); layout.addWidget(self.label_points)
@@ -155,6 +160,7 @@ class JobsWidget(QFrame):
                 d = json.load(f)
             self.lineEdit_job.setText(d.get('job_file', ''))
             self.lineEdit_savingDir.setText(d.get('saving_dir', ''))
+            self.checkbox_multipage.setChecked(bool(d.get('multipage', True)))
         except Exception:
             pass
 
@@ -162,7 +168,7 @@ class JobsWidget(QFrame):
         try:
             os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
             with open(CACHE_FILE, 'w', encoding='utf-8') as f:
-                json.dump(dict(job_file=self.lineEdit_job.text(), saving_dir=self.lineEdit_savingDir.text()), f)
+                json.dump(dict(job_file=self.lineEdit_job.text(), saving_dir=self.lineEdit_savingDir.text(), multipage=self.checkbox_multipage.isChecked()), f)
         except Exception:
             pass
 
@@ -383,7 +389,8 @@ class JobsWidget(QFrame):
         self.paused = False
         self.btn_pause.setText('Pause job')
         self.btn_pause.setEnabled(True)
-        self.mpc.run_job(self.lineEdit_job.text().strip(), self._points())
+        self._save_cache()
+        self.mpc.run_job(self.lineEdit_job.text().strip(), self._points(), multipage=self.checkbox_multipage.isChecked())
 
     def _confirm_abort(self):
         """Ask before aborting a running job (not asked if SQUID_SKIP_CONFIRM is set, as in the automated tests)."""
@@ -459,5 +466,5 @@ class JobsWidget(QFrame):
 
     def _set_controls_enabled(self, enabled):
         for w in (self.lineEdit_job, self.btn_select_job, self.btn_example, self.lineEdit_savingDir, self.btn_savingDir,
-                  self.lineEdit_experimentID, self.btn_check, self.btn_plan):
+                  self.lineEdit_experimentID, self.btn_check, self.btn_plan, self.checkbox_multipage):
             w.setEnabled(enabled)

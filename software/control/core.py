@@ -1896,7 +1896,8 @@ class MultiPointWorker(QObject):
         try:
             result = run_job(mpc.job_file, mpc.job_points, HardwareBackend(self),
                              experiment_dir=os.path.join(self.base_path,self.experiment_ID),
-                             meta=dict(experiment_id=self.experiment_ID), observer=self.signal_job_status.emit)
+                             meta=dict(experiment_id=self.experiment_ID), observer=self.signal_job_status.emit,
+                             multipage=getattr(mpc, 'job_multipage', True))
             mpc.job_result = result
             self.signal_job_message.emit('job ' + result.status + (': ' + result.error.splitlines()[0] if result.error else ''))
         except BaseException:
@@ -2784,6 +2785,7 @@ class MultiPointController(QObject):
         self.location_list = None # for flexible multipoint
         self.job_file = None # JOBs: path of the job file to run instead of the standard loops (None = standard acquisition)
         self.job_points = None # JOBs: list of control.jobs.Point
+        self.job_multipage = True # JOBs: True = multipage TIFF files (Time0003_Point0002.tiff), False = single TIFF files per image
         self.job_result = None
         self.job_pause_requested = False # JOBs: True while the running job should be paused (set from the GUI)
         self.job_new_positions = None # JOBs: positions (x,y,z list) read from the table at resume
@@ -2864,11 +2866,12 @@ class MultiPointController(QObject):
         for configuration_name in selected_configurations_name:
             self.selected_configurations.append(next((config for config in self.configurationManager.configurations if config.name == configuration_name)))
         
-    def run_job(self, job_file, points):
+    def run_job(self, job_file, points, multipage=True):
         """JOBs: run a job file (control/jobs) with the given list of control.jobs.Point. Same preparation as a
         standard acquisition (call set_base_path, set_selected_configurations and start_new_experiment first)."""
         self.job_file = job_file
         self.job_points = points
+        self.job_multipage = bool(multipage)
         self.job_result = None
         self.run_acquisition(np.array([[p.x,p.y,p.z] for p in points],dtype=float),_job=True)
 

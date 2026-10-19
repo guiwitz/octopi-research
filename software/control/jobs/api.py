@@ -243,7 +243,7 @@ class Backend:
 class Scope:
     """What a job script sees. See control/jobs/README.md for the full description."""
 
-    def __init__(self, backend, points, experiment_dir=None, clock=None, save_images=True, max_events=None, record=False, observer=None, trace_file=None):
+    def __init__(self, backend, points, experiment_dir=None, clock=None, save_images=True, max_events=None, record=False, observer=None, trace_file=None, multipage=True):
         self._backend = backend
         self._points = list(points)
         self._dir = experiment_dir
@@ -260,6 +260,8 @@ class Scope:
         self._current_point = None
         self._paused_total = 0.0                 # seconds spent paused (job time does not count them)
         self._used_paths = set()
+        self._multipage = bool(multipage)        # default of the multipage argument of capture/zstack/movie (JOBs tab checkbox)
+        self._visit = None                       # multipage captures of the current point and time point, written as ONE file (see _buffer_capture)
         self._image_counter = 0
         self._writer = None                      # background file writer (lossy / stack / movie files)
         self._csv = {}
@@ -383,6 +385,7 @@ class Scope:
         """Hold the job here (between two operations) until the backend says resume. Job time does not run while
         paused, so planned waits/intervals simply continue where they were. On resume the positions edited in the table
         meanwhile are taken over, and the stage returns to the current point."""
+        self._flush_visit()
         t_p = self._clock.now()
         pt = self._current_point
         self._state('paused', point=pt.index if pt is not None else None, t=self.elapsed)
@@ -424,6 +427,7 @@ class Scope:
 
     def _sleep_until(self, target, **state_kw):
         """Wait until job time `target` (s); abort and pause stay responsive. Returns when the time has come."""
+        self._flush_visit()                       # images taken so far are written before a (long) wait
         while True:
             self.check_abort()
             if self._backend.pause_requested():
@@ -500,6 +504,7 @@ class Scope:
             point = self._points[point]
         if not isinstance(point, Point):
             raise JobError(f'move_to needs a Point from scope.points(), got {point!r}')
+        self._flush_visit()                       # the multipage file of the previous point is complete
         t0 = self.elapsed
         self._state('moving', point=point.index)
         self._backend.move_to(point.x, point.y, point.z)
@@ -576,19 +581,79 @@ class Scope:
             self._writer = stackio.AsyncWriter()
         return self._writer
 
-    def _new_path(self, label, ext='.tiff'):
-        """Unique file path in the folder of the current time point: tNNNN/pNNNN_<id>_<label><ext>"""
+    # --- file names ---------------------------------------------------------------------------
+    # multipage (default):  <experiment>/Time0003_Point0002[_Zstack|_Movie].tiff   (all channels of the call in one file)
+    # single files:         <experiment>/<time point>/<point ID>_0_0_<k>_<channel>.tiff   (as the Flexible Multipoint tab; k = z plane)
+    # a name that already exists gets the ending _ver_2, _ver_3, ...; filename=... replaces the whole name (without extension)
+    def _use_multipage(self, multipage):
+        if multipage is None:
+            return self._multipage
+        if not isinstance(multipage, (bool, np.bool_)):
+            raise JobError(f'multipage must be True or False, got {multipage!r}')
+        return bool(multipage)
+
+    @staticmethod
+    def _clean_filename(filename):
+        if filename is None:
+            return None
+        if not isinstance(filename, str) or not filename.strip():
+            raise JobError(f'filename must be a non-empty text without extension, e.g. "my_image", got {filename!r}')
+        name = re.sub(r'(\.ome)?\.tiff?$', '', os.path.basename(filename.strip().replace('\\', '/')), flags=re.I)
+        return _safe(name)
+
+    def _stem(self, descriptor=None, filename=None):
+        """Name of a multipage file: Time0003_Point0002[_<descriptor>] (or `filename`)"""
+        if filename:
+            return filename
         pt, tp = self._current_point, self._tp
-        folder = os.path.join(self._dir, f't{tp.index:04d}' if tp else 'no_timepoint')
+        return f'Time{tp.index if tp else 0:04d}_' + (f'Point{pt.index:04d}' if pt is not None else 'Stage') + (f'_{descriptor}' if descriptor else '')
+
+    def _region(self):
+        pt = self._current_point
+        return _safe(pt.id) if (pt is not None and pt.id) else (str(pt.index) if pt is not None else 'stage')
+
+    def _new_path(self, base, ext='.tiff', single=False):
+        """Unique file path: in the experiment folder (multipage) or in the folder of the time point (single files); _ver_N if the name exists."""
+        folder = self._dir
+        if single:
+            folder = os.path.join(self._dir, str(self._tp.index) if self._tp else '0')
         os.makedirs(folder, exist_ok=True)
-        key = f'p{pt.index:04d}_{_safe(pt.id)}' if (pt is not None and pt.id) else (f'p{pt.index:04d}' if pt is not None else 'stage')
-        base = f'{key}_{_safe(label)}'
         path, n = os.path.join(folder, base + ext), 1
         while path in self._used_paths or os.path.exists(path):
             n += 1
-            path = os.path.join(folder, f'{base}_{n}{ext}')
+            path = os.path.join(folder, f'{base}_ver_{n}{ext}')
         self._used_paths.add(path)
         return path
+
+    def _buffer_capture(self, ch, image, info, t_cap, mode, q, ratio, filename):
+        """Multipage mode: the images of one point and time point (or of one `filename`) go into ONE file, written when the job moves on
+        (next point, wait, time point end, pause, job end). The file name is reserved now. -> path relative to the experiment folder"""
+        pt, tp = self._current_point, self._tp
+        key = (tp.index if tp else None, pt.index if pt is not None else None, filename, mode, q, repr(ratio))
+        v = self._visit
+        if v is not None and (v['key'] != key or ch in [it['ch'] for it in v['items']]):
+            self._flush_visit()
+            v = None
+        if v is None:
+            v = self._visit = dict(key=key, mode=mode, q=q, ratio=ratio, path=self._new_path(self._stem(None, filename)), items=[])
+        v['items'].append(dict(ch=ch, image=np.array(image), info=info, t=t_cap))
+        return os.path.relpath(v['path'], self._dir)
+
+    def _flush_visit(self):
+        v, self._visit = self._visit, None
+        if not v or not v['items']:
+            return
+        its = v['items']
+        chans = [it['ch'] for it in its]
+        data = np.stack([it['image'] for it in its])[None, None]            # (T=1, Z=1, C, Y, X)
+        planes = dict(time_s=[it['t'] - its[0]['t'] for it in its], exposure_ms=[it['info'].get('exposure_ms') or 0.0 for it in its],
+                      x_um=[(it['info'].get('x_mm') or 0.0) * 1000 for it in its], y_um=[(it['info'].get('y_mm') or 0.0) * 1000 for it in its],
+                      z_um=[(it['info'].get('z_mm') or 0.0) * 1000 for it in its])
+        px, path, mode, q, ratio = self._backend.pixel_size_um(), v['path'], v['mode'], v['q'], v['ratio']
+        self._get_writer().submit(
+            lambda: stackio.write_ome_tiff(path, data, chans, planes=planes, pixel_size_um=px, compression=mode, quality=q, ratio=ratio,
+                                           description='multipage capture: ' + ', '.join(chans) + (', lossy JPEG2000' if mode == 'lossy' else '')),
+            int(data.nbytes), self._backend.abort_requested)
 
     def _grab(self, ch):
         """One image through the backend, with the bookkeeping shared by capture, zstack and movie. -> (image, info, job time)"""
@@ -607,29 +672,35 @@ class Scope:
             self.stats['exposures'][ch] = info['exposure_ms']
         return image, info, t_cap
 
-    def capture(self, channel, save=True, compression='lossless', quality=None, ratio=None):
+    def capture(self, channel, save=True, compression='lossless', quality=None, ratio=None, multipage=None, filename=None):
         """Take one image in `channel` at the current position and return it as a NumPy array.
-        The image is saved automatically (unique file name) and listed in images.csv; save=False returns it only.
-        compression: "lossless" (default, zlib TIFF) or "lossy" (JPEG2000 in the TIFF, 16 bit); quality: PSNR in dB for lossy (default 80)."""
+        The image is saved automatically and listed in images.csv; save=False returns it only.
+        multipage (default: the JOBs tab checkbox): True = the images of this point and time point go into ONE file Time0003_Point0002.tiff
+        (written when the job moves on); False = one file per image <time point>/<ID>_0_0_0_<channel>.tiff.
+        filename="my_name": use this name (no extension) instead of the automatic one. compression: "lossless" (default) or "lossy" (JPEG2000)."""
         self._tick()
         ch = self._resolve_channel(channel)
         mode, q, ratio = self._compression(compression, quality, ratio)
+        mp, fname = self._use_multipage(multipage), self._clean_filename(filename)
         image, info, t_cap = self._grab(ch)
         pt, tp = self._current_point, self._tp
         rel = ''
         if save and self._save:
-            path = self._new_path(ch)
-            if mode == 'lossless':
-                self._backend.save_image(image, path, ch)
+            if mp:
+                rel = self._buffer_capture(ch, image, info, t_cap, mode, q, ratio, fname)
             else:
-                data = np.array(image)[None, None, None]
-                planes = dict(time_s=[0.0], exposure_ms=[info.get('exposure_ms') or 0.0], x_um=[(info.get('x_mm') or 0.0) * 1000],
-                              y_um=[(info.get('y_mm') or 0.0) * 1000], z_um=[(info.get('z_mm') or 0.0) * 1000])
-                px = self._backend.pixel_size_um()
-                self._get_writer().submit(lambda: stackio.write_ome_tiff(path, data, [ch], planes=planes, pixel_size_um=px,
-                                                                         compression='lossy', quality=q, ratio=ratio, description='lossy JPEG2000'),
-                                          data.nbytes, self._backend.abort_requested)
-            rel = os.path.relpath(path, self._dir)
+                path = self._new_path(fname or f'{self._region()}_0_0_0_{_safe(ch)}', single=True)
+                if mode == 'lossless':
+                    self._backend.save_image(image, path, ch)
+                else:
+                    data = np.array(image)[None, None, None]
+                    planes = dict(time_s=[0.0], exposure_ms=[info.get('exposure_ms') or 0.0], x_um=[(info.get('x_mm') or 0.0) * 1000],
+                                  y_um=[(info.get('y_mm') or 0.0) * 1000], z_um=[(info.get('z_mm') or 0.0) * 1000])
+                    px = self._backend.pixel_size_um()
+                    self._get_writer().submit(lambda: stackio.write_ome_tiff(path, data, [ch], planes=planes, pixel_size_um=px,
+                                                                             compression='lossy', quality=q, ratio=ratio, description='lossy JPEG2000'),
+                                              data.nbytes, self._backend.abort_requested)
+                rel = os.path.relpath(path, self._dir)
         self._write_row('images', dict(
             image_id=self._image_counter, file=rel, time_s=round(t_cap, 2), wall_time=datetime.datetime.now().isoformat(timespec='milliseconds'),
             timepoint=tp.index if tp else '', point_index=pt.index if pt else '', point_id=pt.id if pt else '',
@@ -637,9 +708,16 @@ class Scope:
             exposure_ms=info.get('exposure_ms', ''), gain=info.get('gain', ''), intensity=info.get('intensity', '')))
         return image
 
-    def capture_channels(self, channels, save=True, compression='lossless', quality=None, ratio=None):
-        """capture() for several channels in the given order; returns {channel: image}."""
-        return {self._resolve_channel(c): self.capture(c, save=save, compression=compression, quality=quality, ratio=ratio) for c in channels}
+    def capture_channels(self, channels, save=True, compression='lossless', quality=None, ratio=None, multipage=None, filename=None):
+        """capture() for several channels in the given order; returns {channel: image}. Multipage: all channels in ONE file
+        (Time0003_Point0002.tiff); otherwise one file per channel (with filename: <filename>_<channel>)."""
+        mp, fname = self._use_multipage(multipage), self._clean_filename(filename)
+        out = {}
+        for c in channels:
+            ch = self._resolve_channel(c)
+            out[ch] = self.capture(c, save=save, compression=compression, quality=quality, ratio=ratio, multipage=mp,
+                                   filename=fname if (mp or not fname) else f'{fname}_{_safe(ch)}')
+        return out
 
     # --- z-stacks and movies -----------------------------------------------------------------
     def _resolve_channel_list(self, channels, what):
@@ -667,11 +745,15 @@ class Scope:
             raise JobError(f'{what}: {n_images} images of {np.asarray(image).nbytes / 1e6:.1f} MB need {need / 1e9:.1f} GB of memory, '
                            f'more than the allowed {MAX_BUFFER_BYTES / 1e9:.0f} GB. Use fewer planes/frames.')
 
-    def _write_frames(self, path_label, kind, data, chans, rows, px, z_step_um, interval_s, mode, q, ratio, description):
-        """Write the (T,Z,C,Y,X) array in the background and add one row per page to frames.csv. -> file path relative to the experiment dir"""
+    def _write_frames(self, descriptor, kind, data, chans, rows, px, z_step_um, interval_s, mode, q, ratio, description, multipage, filename):
+        """Write the (T,Z,C,Y,X) array in the background (ONE multipage file, or one file per image) and add one row per page to frames.csv.
+        -> file path (multipage) or folder (single files), relative to the experiment dir"""
         rel = ''
-        if self._save:
-            path = self._new_path(path_label, '.ome.tiff')
+        if not self._save:
+            return rel
+        pt, tp = self._current_point, self._tp
+        if multipage:
+            path = self._new_path(self._stem(descriptor, filename))
             rel = os.path.relpath(path, self._dir)
             planes = dict(time_s=[r['dt_s'] for r in rows], exposure_ms=[r['exposure_ms'] or 0.0 for r in rows],
                           x_um=[(r['x_mm'] or 0.0) * 1000 for r in rows], y_um=[(r['y_mm'] or 0.0) * 1000 for r in rows],
@@ -680,22 +762,45 @@ class Scope:
                 lambda: stackio.write_ome_tiff(path, data, chans, planes=planes, pixel_size_um=px, z_step_um=z_step_um,
                                                time_increment_s=interval_s, compression=mode, quality=q, ratio=ratio, description=description),
                 int(data.nbytes), self._backend.abort_requested)
-            pt, tp = self._current_point, self._tp
+            files = [rel] * len(rows)
+        else:
+            files = []
             for r in rows:
-                self._write_row('frames', dict(
-                    file=rel, kind=kind, timepoint=tp.index if tp else '', point_index=pt.index if pt else '', point_id=pt.id if pt else '',
-                    group=pt.group if pt else '', **r))
+                ch = r['channel']
+                if kind == 'zstack':
+                    base = f'{filename}_Z{r["z_index"]:04d}_{_safe(ch)}' if filename else f'{self._region()}_0_0_{r["z_index"]}_{_safe(ch)}'
+                else:
+                    base = f'{filename}_F{r["t_index"]:04d}_{_safe(ch)}' if filename else f'{self._region()}_0_0_0_{_safe(ch)}_Movie_F{r["t_index"]:04d}'
+                path = self._new_path(base, single=True)
+                files.append(os.path.relpath(path, self._dir))
+                img = data[r['t_index'], r['z_index'], chans.index(ch)]
+                page = dict(time_s=[0.0], exposure_ms=[r['exposure_ms'] or 0.0], x_um=[(r['x_mm'] or 0.0) * 1000], y_um=[(r['y_mm'] or 0.0) * 1000],
+                            z_um=[(r['z_mm'] or 0.0) * 1000])
+                if mode == 'lossless':
+                    self._get_writer().submit(lambda img=img, path=path, ch=ch: self._backend.save_image(img, path, ch), int(img.nbytes), self._backend.abort_requested)
+                else:
+                    self._get_writer().submit(
+                        lambda img=img, path=path, ch=ch, page=page: stackio.write_ome_tiff(path, img[None, None, None], [ch], planes=page, pixel_size_um=px,
+                                                                                            compression='lossy', quality=q, ratio=ratio, description=kind),
+                        int(img.nbytes), self._backend.abort_requested)
+            rel = os.path.relpath(os.path.dirname(path), self._dir) + f' ({len(files)} files)' if files else ''
+        for r, f in zip(rows, files):
+            self._write_row('frames', dict(
+                file=f, kind=kind, timepoint=tp.index if tp else '', point_index=pt.index if pt else '', point_id=pt.id if pt else '',
+                group=pt.group if pt else '', **r))
         return rel
 
-    def zstack(self, channels, planes=None, step_um=None, span_um=None, order='channel_major', compression='lossless', quality=None, ratio=None, save=True):
+    def zstack(self, channels, planes=None, step_um=None, span_um=None, order='channel_major', compression='lossless', quality=None, ratio=None, save=True, multipage=None, filename=None):
         """Z-stack centred on the current z. Give two of planes, step_um, span_um. Returns {channel: array (planes, Y, X)}.
         order: "channel_major" = each channel scans the whole stack in turn; "z_major" = all channels at each plane, then the next plane.
-        All planes and channels go into ONE multipage OME-TIFF per call (axes Z, C). compression: "lossless" (default) or "lossy" (JPEG2000, quality in dB)."""
+        multipage (default: the JOBs tab checkbox): ONE multipage OME-TIFF per call, Time0003_Point0002_Zstack.tiff (axes Z, C); False = one file per image
+        <time point>/<ID>_0_0_<plane>_<channel>.tiff. filename="name" replaces the automatic name (single files: name_Z0005_<channel>). compression: "lossless" (default) or "lossy" (JPEG2000, quality in dB)."""
         self._tick()
         chans = self._resolve_channel_list(channels, 'zstack')
         if order not in ('channel_major', 'z_major'):
             raise JobError(f'zstack: order must be "channel_major" or "z_major", got {order!r}')
         mode, q, ratio = self._compression(compression, quality, ratio)
+        mp, fname = self._use_multipage(multipage), self._clean_filename(filename)
         n, step, offs = stack_positions(planes, step_um, span_um)
         x0, y0, z0 = self._backend.position()
         C = len(chans)
@@ -736,18 +841,21 @@ class Scope:
                 f'channels {chans}, ' + ('lossless' if mode == 'lossless' else 'lossy JPEG2000'))
         rel = ''
         if save:
-            rel = self._write_frames('zstack', 'zstack', data, chans, ordered, self._backend.pixel_size_um(), step, None, mode, q, ratio, desc)
+            rel = self._write_frames('Zstack', 'zstack', data, chans, ordered, self._backend.pixel_size_um(), step, None, mode, q, ratio, desc, mp, fname)
         self.log(f'z-stack: {n} planes x {C} channel(s), step {step:g} um, {self.elapsed - t_begin:.1f} s' + (f' -> {rel}' if rel else ''))
         return {c: data[0, :, ci] for ci, c in enumerate(chans)}
 
-    def movie(self, channels, frames=None, interval_s=None, duration_s=None, compression='lossless', quality=None, ratio=None, save=True):
+    def movie(self, channels, frames=None, interval_s=None, duration_s=None, compression='lossless', quality=None, ratio=None, save=True, multipage=None, filename=None):
         """Movie at the current position: `frames` rounds of imaging all `channels`, each round starting `interval_s` after the start
         of the previous one (as close as the hardware allows; interval_s=None = back to back). Give frames, or duration_s together with
-        interval_s. Returns {channel: array (frames, Y, X)}. ONE multipage OME-TIFF per call (axes T, C) with the real time of every image.
+        interval_s. Returns {channel: array (frames, Y, X)}. ONE multipage OME-TIFF per call (axes T, C) with the real time of every image:
+        multipage (default: the JOBs tab checkbox) = Time0003_Point0002_Movie.tiff; False = one file per image <time point>/<ID>_0_0_0_<channel>_Movie_F0012.tiff.
+        filename="name" replaces the automatic name (single files: name_F0012_<channel>).
         The achieved intervals are logged and stored in the file and in frames.csv. Pause takes effect after the movie, Abort stops it."""
         self._tick()
         chans = self._resolve_channel_list(channels, 'movie')
         mode, q, ratio = self._compression(compression, quality, ratio)
+        mp, fname = self._use_multipage(multipage), self._clean_filename(filename)
         if frames is not None and duration_s is not None:
             raise JobError('movie: give frames OR duration_s (with interval_s), not both')
         if interval_s is not None and (not np.isfinite(interval_s) or interval_s <= 0):
@@ -803,8 +911,8 @@ class Scope:
                 '. Page time (DeltaT) = job time when the image was requested (start of the exposure +- readout).')
         rel = ''
         if save:
-            rel = self._write_frames('movie', 'movie', data, chans, rows, self._backend.pixel_size_um(), None,
-                                     float(d.mean()) if len(d) else None, mode, q, ratio, desc)
+            rel = self._write_frames('Movie', 'movie', data, chans, rows, self._backend.pixel_size_um(), None,
+                                     float(d.mean()) if len(d) else None, mode, q, ratio, desc, mp, fname)
             if rel:
                 self.log(f'movie saved as {rel}')
         return {c: data[:, 0, ci] for ci, c in enumerate(chans)}
@@ -823,6 +931,10 @@ class Scope:
         entry[0].flush()
 
     def _close(self):
+        try:
+            self._flush_visit()
+        except Exception as e:
+            self.log(f'ERROR writing the last multipage file: {e!r}')
         if self._writer is not None:
             errs = self._writer.close()
             self._drain_writer(True)

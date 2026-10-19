@@ -120,7 +120,7 @@ def _exposure_warning(exposures):
     return None
 
 
-def run_job(job_path, points, backend, experiment_dir=None, clock=None, save_images=True, max_events=None, meta=None, record=False, observer=None, trace_file=None):
+def run_job(job_path, points, backend, experiment_dir=None, clock=None, save_images=True, max_events=None, meta=None, record=False, observer=None, trace_file=None, multipage=True):
     """Run the job file with the given backend. Never raises for problems in the job: returns a JobResult.
     points: list of Point (see api.make_points)."""
     res = JobResult()
@@ -129,12 +129,12 @@ def run_job(job_path, points, backend, experiment_dir=None, clock=None, save_ima
     started = datetime.datetime.now()
     try:
         fn = load_job(job_path)
-        scope = Scope(backend, points, experiment_dir=experiment_dir, clock=clock, save_images=save_images, max_events=max_events, record=record, observer=observer, trace_file=trace_file)
+        scope = Scope(backend, points, experiment_dir=experiment_dir, clock=clock, save_images=save_images, max_events=max_events, record=record, observer=observer, trace_file=trace_file, multipage=multipage)
         if experiment_dir is not None:
             shutil.copy2(job_path, os.path.join(experiment_dir, 'job.py'))
             _write_positions(os.path.join(experiment_dir, 'positions_initial.csv'), points)
             _write_meta(experiment_dir, meta, job_path, started, 'running', scope)
-        scope.log(f'job {os.path.basename(job_path)} starts: {len(points)} points in {len(scope.groups)} group(s), channels: {scope.channels}')
+        scope.log(f'job {os.path.basename(job_path)} starts: {len(points)} points in {len(scope.groups)} group(s), channels: {scope.channels}; saving: ' + ('multipage TIFF files' if multipage else 'single TIFF files'))
         try:
             fn(scope)
             res.status = 'completed'

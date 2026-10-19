@@ -104,7 +104,7 @@ def test_zstack_channel_major_files_and_metadata():
     fr = rows(out, 'frames')
     assert len(fr) == 6 and len({r['file'] for r in fr}) == 1
     f = os.path.join(out, fr[0]['file'])
-    assert f.endswith('.ome.tiff') and os.path.isfile(f)
+    assert os.path.basename(f) == 'Time0000_Point0000_Zstack.tiff' and os.path.isfile(f)
     with tifffile.TiffFile(f) as tf:
         assert len(tf.pages) == 6 and tf.is_ome
         a = tf.asarray().reshape(3, 2, 8, 10)                              # Z, C
@@ -170,7 +170,7 @@ def test_zstack_in_timelapse_one_file_per_timepoint_and_point():
     assert res.status == 'completed', res.error
     files = sorted({r['file'] for r in rows(out, 'frames')})
     assert len(files) == 4 and all(os.path.isfile(os.path.join(out, f)) for f in files), files
-    assert files[0].startswith('t0000') and files[-1].startswith('t0001')
+    assert files[0].startswith('Time0000_Point0000') and files[-1].startswith('Time0001_Point0001'), files
 
 
 def test_movie_timing_metadata_and_shape():
@@ -261,7 +261,7 @@ def test_default_single_capture_unchanged():
         def run_job(scope):
             scope.move_to(scope.points()[0])
             scope.capture("488")
-    ''', pts(1))
+    ''', pts(1), multipage=False)
     f = rows(out, 'images')[0]['file']
     assert open(os.path.join(out, f), 'rb').read() == b'x'                  # went through backend.save_image as before
 
@@ -409,6 +409,113 @@ def test_job_logs_lossy_report():
     assert len(r) == 1 and float(r[0]['achieved_ratio']) > 1 and r[0]['target_ratio'] == '' and r[0]['quality_db'] != '', r
     log = open(os.path.join(out, 'job_log.txt'), encoding='utf-8').read()
     assert 'lossy JPEG2000' in log and 'smaller than raw' in log
+
+
+def _names(out, col='file', table='images'):
+    return [r[col].replace('\\', '/') for r in rows(out, table)]
+
+
+def test_multipage_capture_channels_one_file_per_point_and_timepoint():
+    res, be, out = run('''
+        def run_job(scope):
+            for t in scope.timepoints(2, interval=60):
+                for pt in scope.points():
+                    scope.move_to(pt)
+                    scope.capture_channels(["BF", "488"])
+    ''', pts(2))
+    assert res.status == 'completed', res.error
+    n = _names(out)
+    assert len(n) == 8 and sorted(set(n)) == ['Time0000_Point0000.tiff', 'Time0000_Point0001.tiff', 'Time0001_Point0000.tiff', 'Time0001_Point0001.tiff'], n
+    with tifffile.TiffFile(os.path.join(out, n[0])) as tf:
+        assert len(tf.pages) == 2 and tf.is_ome and 'BF LED matrix full' in tf.ome_metadata and 'Fluorescence 488 nm Ex' in tf.ome_metadata
+    assert not [f for f in os.listdir(out) if os.path.isdir(os.path.join(out, f))], 'multipage files are written flat into the experiment folder'
+
+
+def test_single_files_follow_flexible_multipoint_layout_and_ver_counter():
+    res, be, out = run('''
+        def run_job(scope):
+            for t in scope.timepoints(2, interval=60):
+                scope.move_to(scope.points()[0])
+                scope.capture("488")
+                scope.capture("488")
+    ''', pts(1), multipage=False)
+    assert res.status == 'completed', res.error
+    n = _names(out)
+    assert n == ['0/A-0_0_0_0_Fluorescence_488_nm_Ex.tiff', '0/A-0_0_0_0_Fluorescence_488_nm_Ex_ver_2.tiff',
+                 '1/A-0_0_0_0_Fluorescence_488_nm_Ex.tiff', '1/A-0_0_0_0_Fluorescence_488_nm_Ex_ver_2.tiff'], n
+    assert all(os.path.isfile(os.path.join(out, f)) for f in n)
+
+
+def test_same_channel_twice_in_multipage_gets_ver_2():
+    res, be, out = run('''
+        def run_job(scope):
+            scope.move_to(scope.points()[0])
+            scope.capture("488")
+            scope.capture("BF")
+            scope.capture("488")
+    ''', pts(1))
+    assert _names(out) == ['Time0000_Point0000.tiff', 'Time0000_Point0000.tiff', 'Time0000_Point0000_ver_2.tiff'], _names(out)
+    assert all(os.path.isfile(os.path.join(out, f)) for f in set(_names(out)))
+
+
+def test_zstack_and_movie_names_multipage_and_single():
+    res, be, out = run('''
+        def run_job(scope):
+            scope.move_to(scope.points()[0])
+            scope.zstack(["488", "BF"], planes=2, step_um=1.0)
+            scope.movie("488", frames=2, interval_s=1.0)
+            scope.zstack(["488"], planes=2, step_um=1.0, multipage=False)
+            scope.movie(["488"], frames=2, interval_s=1.0, multipage=False)
+    ''', pts(1))
+    assert res.status == 'completed', res.error
+    n = sorted(set(_names(out, table='frames')))
+    assert n == ['0/A-0_0_0_0_Fluorescence_488_nm_Ex.tiff', '0/A-0_0_0_0_Fluorescence_488_nm_Ex_Movie_F0000.tiff',
+                 '0/A-0_0_0_0_Fluorescence_488_nm_Ex_Movie_F0001.tiff', '0/A-0_0_0_1_Fluorescence_488_nm_Ex.tiff',
+                 'Time0000_Point0000_Movie.tiff', 'Time0000_Point0000_Zstack.tiff'], n
+    assert all(os.path.isfile(os.path.join(out, f)) for f in n)
+
+
+def test_filename_argument():
+    res, be, out = run('''
+        def run_job(scope):
+            scope.move_to(scope.points()[0])
+            scope.capture("488", filename="my_first.ome.tiff")
+            scope.capture("488", filename="my_first")
+            scope.capture_channels(["BF", "488"], filename="both")
+            scope.capture_channels(["BF", "488"], filename="split", multipage=False)
+            scope.zstack("488", planes=2, step_um=1.0, filename="stack", multipage=False)
+            scope.movie("488", frames=2, filename="mov")
+    ''', pts(1))
+    assert res.status == 'completed', res.error
+    n = _names(out) + _names(out, table='frames')
+    assert n[0] == 'my_first.tiff' and n[1] == 'my_first_ver_2.tiff' and n[2] == n[3] == 'both.tiff', n
+    assert n[4:6] == ['0/split_BF_LED_matrix_full.tiff', '0/split_Fluorescence_488_nm_Ex.tiff'], n
+    assert n[6:8] == ['0/stack_Z0000_Fluorescence_488_nm_Ex.tiff', '0/stack_Z0001_Fluorescence_488_nm_Ex.tiff'] and n[8:] == ['mov.tiff'] * 2, n
+    assert all(os.path.isfile(os.path.join(out, f)) for f in set(n))
+    bad, _, _ = run('''
+        def run_job(scope):
+            scope.move_to(scope.points()[0])
+            scope.capture("488", filename="")
+    ''', pts(1))
+    assert bad.status == 'failed' and 'filename' in bad.error
+
+
+def test_multipage_lossy_capture_and_lint_of_naming_args():
+    from control.jobs.lint import lint
+    ch = list(CHANNELS)
+    bad = 'def run_job(scope):\n    scope.move_to(scope.points()[0])\n    scope.capture("488", filename="")\n    scope.capture("488", multipage="yes")\n'
+    msgs = ' | '.join(i.message for i in lint(bad, channels=ch) if i.severity == 'error')
+    assert 'filename must be' in msgs and 'multipage must be' in msgs, msgs
+    if LOSSY_OK:
+        res, be, out = run('''
+        def run_job(scope):
+            scope.move_to(scope.points()[0])
+            scope.capture_channels(["BF", "488"], compression="lossy")
+    ''', pts(1), noise=True)
+        assert res.status == 'completed', res.error
+        f = os.path.join(out, 'Time0000_Point0000.tiff')
+        with tifffile.TiffFile(f) as tf:
+            assert len(tf.pages) == 2 and tf.pages[0].compression.name.startswith('JPEG2000')
 
 
 if __name__ == '__main__':

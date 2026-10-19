@@ -99,13 +99,14 @@ def test_loop_files_and_metadata():
                     scope.move_to(pt)
                     scope.capture("BF")
                     scope.capture("488")
-    ''', pts(2))
+    ''', pts(2), multipage=False)
     assert res.status == 'completed', res.error
     assert res.stats['images'] == 12 and res.stats['per_channel'] == {'BF LED matrix full': 6, 'Fluorescence 488 nm Ex': 6}
     r = rows(out, 'images')
     assert len(r) == 12 and len({x['file'] for x in r}) == 12      # unique file names
     assert all(os.path.isfile(os.path.join(out, x['file'])) for x in r)
     assert r[0]['point_id'] == 'A-0' and r[0]['timepoint'] == '0' and r[0]['x_mm'] == '0.0'
+    assert r[0]['file'].replace('\\', '/') == '0/A-0_0_0_0_BF_LED_matrix_full.tiff', r[0]['file']      # single files: <time point>/<ID>_0_0_<z>_<channel>.tiff
     for f in ('job.py', 'job_log.txt', 'job_meta.json', 'positions_initial.csv', 'positions_final.csv'):
         assert os.path.isfile(os.path.join(out, f)), f
     meta = json.load(open(os.path.join(out, 'job_meta.json')))

@@ -191,7 +191,11 @@ class _Linter:
                 self._check_channel_expr(arg)
             if name in ('zstack', 'movie'):
                 self._check_compression_args(node, name, kw)
-        elif name == 'points' and self.groups is not None:
+        if name in ('capture', 'capture_channels', 'zstack', 'movie'):
+            self._check_naming_args(kw)
+        if name in ('capture', 'capture_channels'):
+            self._check_compression_args(node, name, kw)
+        if name == 'points' and self.groups is not None:
             for a in node.args:
                 for el in (a.elts if isinstance(a, (ast.List, ast.Tuple)) else [a]):
                     if isinstance(el, ast.Constant) and isinstance(el.value, str) and el.value not in self.groups:
@@ -204,6 +208,13 @@ class _Linter:
         elif name == 'move_to' and node.args and isinstance(node.args[0], ast.Name):
             if self._loop_var_kinds.get(node.args[0].id) == 'TimePoint':
                 self.add(node.args[0], 'error', 'move_to needs a position (from scope.points()), not a time point.')
+
+    def _check_naming_args(self, kw):
+        fn, mp = kw.get('filename'), kw.get('multipage')
+        if isinstance(fn, ast.Constant) and (not isinstance(fn.value, str) or not fn.value.strip()):
+            self.add(fn, 'error', 'filename must be a non-empty text without extension, e.g. filename="my_image".')
+        if isinstance(mp, ast.Constant) and not isinstance(mp.value, bool) and mp.value is not None:
+            self.add(mp, 'error', 'multipage must be True or False.')
 
     def _check_compression_args(self, node, name, kw):
         c = kw.get('compression')

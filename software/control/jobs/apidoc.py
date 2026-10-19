@@ -62,13 +62,13 @@ API = [
 
     # --- Imaging --------------------------------------------------------------------------------
     dict(name='capture', kind='method', category='Imaging',
-         signature='scope.capture(channel, save=True, compression="lossless", quality=None, ratio=None)',
+         signature='scope.capture(channel, save=True, compression="lossless", quality=None, ratio=None, multipage=None, filename=None)',
          summary='Take one image in a channel at the current position and return it as a NumPy array. The image is saved automatically.',
          details=('The channel name is the name from the channel configuration; any <b>unique part</b> of it works, '
                   'upper/lower case does not matter (<code>"488"</code> finds <i>Fluorescence 488 nm Ex</i>). '
                   'Unknown or ambiguous names are errors and the message lists the choices.<br><br>'
                   'Exposure, gain and illumination intensity come from the channel configuration (see the <i>Test setup</i> panel). '
-                  'Files are named <code>t0003/p0002_A-2_488.tiff</code> (time point, position, ID, channel) and listed in <code>images.csv</code>.<br><br>'
+                  '<b>File names</b> (see the <i>Save as multipage TIFF</i> checkbox of the JOBs tab; <b>multipage=True/False</b> overrides it for this call): multipage = ''<code>Time0003_Point0002.tiff</code> in the experiment folder, ONE file for all images taken at that point and time point (channels as pages; written when the job moves on); ''otherwise one file per image, <code>3/A-2_0_0_0_Fluorescence_488_nm_Ex.tiff</code> (time point folder, point ID, 0_0_z, channel; as the Flexible Multipoint tab). ''A name that already exists gets <code>_ver_2</code>, <code>_ver_3</code>, ... <b>filename="my_name"</b> replaces the automatic name (no extension), e.g. for special cases where the automatic name is ambiguous. ''Everything is listed in <code>images.csv</code>.<br><br>'
                   '<b>compression</b>: <code>"lossless"</code> (default; zlib-compressed TIFF, identical pixel values) or <code>"lossy"</code> '
                   '(16-bit JPEG2000 inside the TIFF, much smaller files, but part of the camera noise is removed). '
                   'The default is a <b>noise-relative quality</b>: for every channel the quality is chosen automatically, just before writing (in the background), so that the '
@@ -85,19 +85,23 @@ API = [
                  ('save', 'False = only return the image, do not write a file'),
                  ('compression', '"lossless" (default) or "lossy" (JPEG2000)'),
                  ('quality', 'lossy only: PSNR in dB (40-120), default 60'),
-                 ('ratio', 'lossy only: target compression, a number or {channel: number}, instead of quality')],
+                 ('ratio', 'lossy only: target compression, a number or {channel: number}, instead of quality'),
+                 ('multipage', 'True = one multipage file per point and time point; False = one file per image; default: JOBs tab checkbox'),
+                 ('filename', 'own file name without extension (replaces the automatic one)')],
          returns='the image (NumPy array)',
          example='img = scope.capture("488")\nscope.capture("561", compression="lossy")'),
     dict(name='capture_channels', kind='method', category='Imaging',
-         signature='scope.capture_channels(channels, save=True, compression="lossless", quality=None, ratio=None)',
+         signature='scope.capture_channels(channels, save=True, compression="lossless", quality=None, ratio=None, multipage=None, filename=None)',
          summary='capture() for several channels, one after the other in the given order.',
          details='Same as a loop of <code>capture</code> calls (same compression/quality for all). Returns a dictionary {channel name: image}.',
          params=[('channels', 'list of channel names'), ('save', 'False = do not write files'),
-                 ('compression', '"lossless" (default) or "lossy"'), ('quality', 'lossy only: PSNR in dB (default 60)'), ('ratio', 'lossy only: target compression, a number or {channel: number}, instead of quality')],
+                 ('compression', '"lossless" (default) or "lossy"'), ('quality', 'lossy only: PSNR in dB (default 60)'), ('ratio', 'lossy only: target compression, a number or {channel: number}, instead of quality'),
+                 ('multipage', 'True = all channels in ONE file Time0003_Point0002.tiff; False = one file per channel; default: JOBs tab checkbox'),
+                 ('filename', 'own file name without extension (single files: name_<channel>)')],
          returns='dict {channel name: image}',
          example='images = scope.capture_channels(["BF", "488", "561"])'),
     dict(name='zstack', kind='method', category='Imaging',
-         signature='scope.zstack(channels, planes=None, step_um=None, span_um=None, order="channel_major", compression="lossless", quality=None, ratio=None, save=True)',
+         signature='scope.zstack(channels, planes=None, step_um=None, span_um=None, order="channel_major", compression="lossless", quality=None, ratio=None, save=True, multipage=None, filename=None)',
          summary='Z-stack centred on the current z position, in one or several channels, saved as ONE multipage OME-TIFF.',
          details=('Call <code>move_to</code> (and autofocus) first: the stack is centred on the <b>current z</b>, i.e. the focused z after an autofocus. '
                   'Give <b>two of</b> <code>planes</code>, <code>step_um</code>, <code>span_um</code> (span = (planes - 1) x step; all three are accepted if they agree). '
@@ -108,7 +112,7 @@ API = [
                   'but more channel switching).<br><br>'
                   'The stage always scans upwards (increasing z) and returns to the centre afterwards (also after Abort). '
                   'The z offset of each channel from the channel configuration is added to its plane positions, as in the standard acquisition.<br><br>'
-                  'File: <code>t0003/p0002_A-2_zstack.ome.tiff</code>, axes Z and C, with the real z position, time and exposure of every page in the OME metadata '
+                  'File (multipage): <code>Time0003_Point0002_Zstack.tiff</code> (<code>multipage=False</code>: one file per image, <code>3/A-2_0_0_&lt;plane&gt;_&lt;channel&gt;.tiff</code>; <code>filename="name"</code>: <code>name_Z0005_&lt;channel&gt;</code>; existing names get <code>_ver_2</code>), axes Z and C, with the real z position, time and exposure of every page in the OME metadata '
                   'and in <code>frames.csv</code>. <b>compression</b> / <b>quality</b> as in <code>capture</code> (default lossless; lossy = JPEG2000 inside the multipage TIFF). '
                   'The whole stack is held in memory until it is written (limit 4 GB).'),
          params=[('channels', 'channel name or list of names'), ('planes', 'number of planes'), ('step_um', 'distance between planes (um)'),
@@ -116,11 +120,13 @@ API = [
                  ('order', '"channel_major" (default) or "z_major"'),
                  ('compression', '"lossless" (default) or "lossy"'), ('quality', 'lossy only: PSNR in dB (default 60)'),
                  ('ratio', 'lossy only: target compression, a number or {channel: number}, instead of quality'),
-                 ('save', 'False = do not write a file')],
+                 ('save', 'False = do not write a file'),
+                 ('multipage', 'True = ONE multipage file per call; False = one file per image; default: JOBs tab checkbox'),
+                 ('filename', 'own file name without extension (replaces the automatic one)')],
          returns='dict {channel name: array of shape (planes, Y, X)}',
          example='scope.move_to(pt)\nscope.autofocus()\nscope.zstack(["488", "561"], planes=11, step_um=1.0, order="z_major")'),
     dict(name='movie', kind='method', category='Imaging',
-         signature='scope.movie(channels, frames=None, interval_s=None, duration_s=None, compression="lossless", quality=None, ratio=None, save=True)',
+         signature='scope.movie(channels, frames=None, interval_s=None, duration_s=None, compression="lossless", quality=None, ratio=None, save=True, multipage=None, filename=None)',
          summary='Fast time series at the current position (one or several channels), saved as ONE multipage OME-TIFF with the real time of every image.',
          details=('Each round images all channels in the given order; rounds start <code>interval_s</code> seconds apart (start to start), scheduled against '
                   'a fixed clock so errors do not add up. <code>interval_s=None</code> = back to back, as fast as the camera allows. '
@@ -132,12 +138,14 @@ API = [
                   'The movie is held in memory and written after the last frame (limit 4 GB; about 300 full 16-bit frames). '
                   'Pause takes effect after the movie, Abort stops it at once (nothing is saved). '
                   '<b>compression</b> / <b>quality</b> as in <code>capture</code>: lossy JPEG2000 is encoded in the background while the job continues.<br><br>'
-                  'File: <code>t0003/p0002_A-2_movie.ome.tiff</code>; time points of the job are separate files, one movie per call.'),
+                  'File (multipage): <code>Time0003_Point0002_Movie.tiff</code> (<code>multipage=False</code>: one file per image, <code>3/A-2_0_0_0_&lt;channel&gt;_Movie_F0012.tiff</code>; <code>filename="name"</code>: <code>name_F0012_&lt;channel&gt;</code>); time points of the job are separate files, one movie per call.'),
          params=[('channels', 'channel name or list of names'), ('frames', 'number of rounds'), ('interval_s', 'seconds from the start of one round to the start of the next'),
                  ('duration_s', 'total duration in seconds (needs interval_s; instead of frames)'),
                  ('compression', '"lossless" (default) or "lossy"'), ('quality', 'lossy only: PSNR in dB (default 60)'),
                  ('ratio', 'lossy only: target compression, a number or {channel: number}, instead of quality'),
-                 ('save', 'False = do not write a file')],
+                 ('save', 'False = do not write a file'),
+                 ('multipage', 'True = ONE multipage file per call; False = one file per image; default: JOBs tab checkbox'),
+                 ('filename', 'own file name without extension (replaces the automatic one)')],
          returns='dict {channel name: array of shape (frames, Y, X)}',
          example='scope.move_to(pt)\nscope.movie(["488", "561"], duration_s=60, interval_s=2, compression="lossy")'),
 
@@ -416,7 +424,8 @@ prevent the start in the JOBs tab. That is why you should always press <b>Test</
 _topic('Files that are written', """
 <h2>Files in the experiment folder</h2>
 <table>
-<tr><td><code>t0000/, t0001/ ...</code></td><td>images of each time point, named <code>p&lt;index&gt;_&lt;id&gt;_&lt;channel&gt;.tiff</code></td></tr>
+<tr><td><code>Time0000_Point0000.tiff, ...</code></td><td>multipage files (checkbox <i>Save as multipage TIFF</i>, default): one per point and time point, <code>..._Zstack.tiff</code>, <code>..._Movie.tiff</code></td></tr>
+<tr><td><code>0/, 1/ ...</code></td><td>single files (checkbox off): one folder per time point, <code>&lt;ID&gt;_0_0_&lt;z&gt;_&lt;channel&gt;.tiff</code>; an existing name gets <code>_ver_2</code></td></tr>
 <tr><td><code>images.csv</code></td><td>one row per image: file, time, time point, position, channel, actual x/y/z, exposure, gain, intensity</td></tr>
 <tr><td><code>autofocus.csv</code></td><td>one row per autofocus: z before/after, duration</td></tr>
 <tr><td><code>job.py</code></td><td>copy of the job that was run</td></tr>
