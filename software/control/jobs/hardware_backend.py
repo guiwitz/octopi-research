@@ -130,12 +130,21 @@ class HardwareBackend(Backend):
         self.w.wait_till_operation_is_completed()
 
     # --- autofocus: mirrors the contrast-AF block of run_single_time_point
-    def autofocus(self, channel=None):
+    def autofocus(self, channel=None, focus_measure=None):
         name = channel or self.af.af_channel
         config = self._config(name)
         self.w.signal_current_configuration.emit(config)        # blocking: GUI applies the AF channel
-        self.af.autofocus()
-        self.af.wait_till_autofocus_has_completed()
+        previous = self.af.focus_measure
+        if focus_measure is not None:
+            from control import autofocus_settings
+            if focus_measure not in autofocus_settings.REGISTRY.keys():
+                raise JobError(f'unknown focus measure {focus_measure!r}; available: {list(autofocus_settings.REGISTRY.keys())}')
+            self.af.focus_measure = focus_measure                # attribute only (no GUI signal); restored below
+        try:
+            self.af.autofocus()
+            self.af.wait_till_autofocus_has_completed()
+        finally:
+            self.af.focus_measure = previous
         return self.nav.z_pos_mm
 
     # --- imaging: mirrors the single-channel block of run_single_time_point

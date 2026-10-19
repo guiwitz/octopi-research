@@ -36,7 +36,7 @@ class DryRunBackend(Backend):
         info.update(x_mm=self._pos[0], y_mm=self._pos[1], z_mm=self._pos[2])
         return np.zeros((8, 8), dtype=np.uint16), info
 
-    def autofocus(self, channel=None):
+    def autofocus(self, channel=None, focus_measure=None):
         self.clock.sleep(self._af_s)
         return self._pos[2]
 

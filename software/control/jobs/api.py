@@ -139,7 +139,7 @@ class Backend:
     def capture(self, channel):         # -> (image ndarray, info dict)
         raise NotImplementedError
 
-    def autofocus(self, channel=None):  # -> z in mm after focusing
+    def autofocus(self, channel=None, focus_measure=None):  # -> z in mm after focusing
         raise NotImplementedError
 
     def save_image(self, image, path, channel):
@@ -428,16 +428,17 @@ class Scope:
         self.stats['moves'] += 1
 
     # --- autofocus ---------------------------------------------------------------------------
-    def autofocus(self, channel=None):
+    def autofocus(self, channel=None, focus_measure=None):
         """Contrast autofocus at the current position, with the settings of the Autofocus tab
         (focus measure, number of planes, step). channel: autofocus channel, default = the one of the Autofocus tab.
+        focus_measure: e.g. "GLVA" or "LAPE", for this autofocus only (default = the one of the Autofocus tab, which stays unchanged).
         The focused z is remembered for the current point, so later visits start there. Returns z in mm."""
         self._tick()
         ch = self._resolve_channel(channel) if channel else None
         z_before = self._backend.position()[2]
         t_start = self.elapsed
         self._state('autofocus', point=self._current_point.index if self._current_point else None)
-        z_after = self._backend.autofocus(ch)
+        z_after = self._backend.autofocus(ch) if focus_measure is None else self._backend.autofocus(ch, focus_measure=focus_measure)
         pt = self._current_point
         if pt is not None and pt.z_initial is not None and abs(z_after - pt.z_initial) > AF_MAX_Z_DRIFT_MM:
             self.warn(f'autofocus moved z by {z_after - pt.z_initial:.3f} mm at point {pt.index} ({pt.id}); '

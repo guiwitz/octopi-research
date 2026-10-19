@@ -31,6 +31,7 @@ class TestBackend(Backend):
         self.cleaned = False
         self.pos = (0, 0, 0)
         self.moves, self.messages = [], []
+        self.af_calls = []
 
     def channels(self): return list(self._channels)
     def move_to(self, x, y, z): self.clock.sleep(self.move_s); self.pos = (x, y, z); self.moves.append((x, y, z))
@@ -42,8 +43,9 @@ class TestBackend(Backend):
         info = dict(self._channels[channel]); info.update(x_mm=self.pos[0], y_mm=self.pos[1], z_mm=self.pos[2])
         return np.full((4, 4), self.n_captures, dtype=np.uint16), info
 
-    def autofocus(self, channel=None):
+    def autofocus(self, channel=None, focus_measure=None):
         self.clock.sleep(5)
+        self.af_calls.append((channel, focus_measure))
         self.pos = (self.pos[0], self.pos[1], self.pos[2] + self.af_z_shift)
         return self.pos[2]
 
@@ -139,6 +141,27 @@ def test_staggered_autofocus_count():
     for a in af:
         per_t.setdefault(a['timepoint'], []).append(int(a['point_index']))
     assert all(len(v) == 2 for v in per_t.values()), per_t               # 20 % of 10 points per time point
+
+
+def test_template_staggered_af_bf_gfp_rfp():
+    src = open(os.path.join(SOFTWARE_DIR, 'job_examples', '04_staggered_af_bf_gfp_rfp.py')).read()
+    n_pts, n_tp = 10, 12
+    src = src.replace('N_TIMEPOINTS = 120', f'N_TIMEPOINTS = {n_tp}')
+    res, be, out = run(src, pts(n_pts, ids=[f'X{i}' for i in range(n_pts)]))   # IDs are ignored: one group
+    assert res.status == 'completed', res.error
+    assert all(c == ('Fluorescence 561 nm Ex', 'GLVA') for c in be.af_calls), be.af_calls[:3]
+    af = rows(out, 'autofocus')
+    per_t = {}
+    for a in af:
+        per_t.setdefault(int(a['timepoint']), []).append(int(a['point_index']))
+    assert sorted(per_t[0]) == list(range(n_pts))                              # first time point: all positions
+    for t in range(1, n_tp):                                                   # later: staggered, every 5th time point
+        assert sorted(per_t.get(t, [])) == [k for k in range(n_pts) if (t + k) % 5 == 0], (t, per_t.get(t))
+    imgs = rows(out, 'images')
+    assert len(imgs) == n_pts * n_tp * 3
+    assert [x['channel'] for x in imgs[:3]] == ['BF LED matrix full', 'Fluorescence 488 nm Ex', 'Fluorescence 561 nm Ex']
+    tp_start = {int(x['timepoint']): float(x['time_s']) for x in imgs if x['point_index'] == '0' and x['channel'] == 'BF LED matrix full'}
+    assert all(abs(tp_start[t] - tp_start[0] - 60 * t) < 20 for t in range(n_tp))   # 1 min start to start
 
 
 def test_interval_start_to_start():
