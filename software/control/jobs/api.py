@@ -16,7 +16,11 @@ import datetime
 
 import numpy as np
 
+from control.jobs import stackio
+
 AF_MAX_Z_DRIFT_MM = 0.5     # as in the standard acquisition: a larger focus shift is not stored for later visits
+MAX_STACK_SPAN_UM = 2000.0  # a z-stack may not be larger than this (safety against typing mm instead of um)
+MAX_BUFFER_BYTES = 4 * 1024 ** 3   # a z-stack or movie is held in memory until it is written: refuse more than this
 
 
 class JobError(Exception):
@@ -137,6 +141,44 @@ def _safe(s):
     return re.sub(r'[^A-Za-z0-9._+-]+', '_', str(s)).strip('_') or 'x'
 
 
+
+def stack_positions(planes=None, step_um=None, span_um=None):
+    """Z positions of a stack centred on 0: give any TWO of planes, step_um, span_um (all three are accepted if consistent).
+    Returns (planes, step_um, [offsets in um, ascending]); span = (planes - 1) * step. Raises JobError for anything else."""
+    given = [v is not None for v in (planes, step_um, span_um)]
+    if sum(given) < 2 and not (planes == 1):
+        raise JobError('z-stack: give two of planes, step_um and span_um (e.g. planes=11, step_um=1.0)')
+    if planes is not None:
+        if isinstance(planes, bool) or int(planes) != planes or planes < 1:
+            raise JobError(f'z-stack: planes must be a whole number >= 1, got {planes!r}')
+        planes = int(planes)
+    for name, v in (('step_um', step_um), ('span_um', span_um)):
+        if v is not None and (not np.isfinite(v) or v < 0 or (name == 'step_um' and v == 0 and planes != 1)):
+            raise JobError(f'z-stack: {name} must be > 0, got {v!r}')
+    if planes is None:
+        if step_um is None or step_um <= 0:
+            raise JobError('z-stack: step_um must be > 0')
+        n = span_um / step_um
+        if abs(n - round(n)) > 1e-6 * max(1.0, n):
+            raise JobError(f'z-stack: span_um={span_um:g} is not a multiple of step_um={step_um:g}; the span must hold a whole number of steps '
+                           f'(e.g. span_um={round(n) * step_um:g} gives {round(n) + 1} planes)')
+        planes = int(round(n)) + 1
+        step = float(step_um)
+    elif step_um is not None:
+        step = float(step_um)
+        if span_um is not None and abs(span_um - (planes - 1) * step) > 1e-6 * max(1.0, span_um):
+            raise JobError(f'z-stack: planes={planes}, step_um={step:g} and span_um={span_um:g} do not agree '
+                           f'(span = (planes - 1) * step = {(planes - 1) * step:g}); give only two of them')
+    elif span_um is not None:
+        step = float(span_um) / (planes - 1) if planes > 1 else 0.0
+    else:
+        step = 0.0                       # planes == 1
+    span = (planes - 1) * step
+    if span > MAX_STACK_SPAN_UM:
+        raise JobError(f'z-stack: span {span:g} um is larger than the allowed {MAX_STACK_SPAN_UM:g} um (units are micrometres)')
+    offs = [(i - (planes - 1) / 2.0) * step for i in range(planes)]
+    return planes, step, offs
+
 # ------------------------------------------------------------------------------------------------
 # backend interface (implemented by the hardware backend and by the dry-run backend)
 # ------------------------------------------------------------------------------------------------
@@ -158,6 +200,16 @@ class Backend:
 
     def autofocus(self, channel=None, focus_measure=None):  # -> z in mm after focusing
         raise NotImplementedError
+
+    def move_z(self, z):                # absolute z move in mm (x and y stay), returns when settled
+        x, y, _ = self.position()
+        self.move_to(x, y, z)
+
+    def channel_z_offset_um(self, name):   # z offset of a channel (um) that z-stacks add to the plane positions
+        return 0.0
+
+    def pixel_size_um(self):            # pixel size for the image metadata (None = unknown)
+        return None
 
     def save_image(self, image, path, channel):
         raise NotImplementedError
@@ -209,11 +261,12 @@ class Scope:
         self._paused_total = 0.0                 # seconds spent paused (job time does not count them)
         self._used_paths = set()
         self._image_counter = 0
+        self._writer = None                      # background file writer (lossy / stack / movie files)
         self._csv = {}
         self._log_file = None
         self._channel_names = list(backend.channels())
         self.stats = dict(images=0, autofocus=0, moves=0, timepoints=0, late_timepoints=0, max_late_s=0.0,
-                          per_channel={}, per_group={}, exposures={}, warnings=[], paused_s=0.0)
+                          per_channel={}, per_group={}, exposures={}, warnings=[], paused_s=0.0, stacks=0, movies=0)
         self._groups = {}
         for p in self._points:
             self._groups.setdefault(p.group, []).append(p)
@@ -480,30 +533,44 @@ class Scope:
         return z_after
 
     # --- imaging -----------------------------------------------------------------------------
-    def capture(self, channel, save=True):
-        """Take one image in `channel` at the current position and return it as a NumPy array.
-        The image is saved automatically (unique file name) and listed in images.csv; save=False returns it only."""
-        self._tick()
-        ch = self._resolve_channel(channel)
+    @staticmethod
+    def _compression(compression, quality):
+        """Validate compression/quality BEFORE anything is acquired. -> ('lossless', None) or ('lossy', dB)."""
+        try:
+            mode, q = stackio.normalize_compression(compression, quality)
+            if mode == 'lossy':
+                stackio.check_lossy_ok()
+        except stackio.StackIOError as e:
+            raise JobError(str(e))
+        return mode, q
+
+    def _get_writer(self):
+        if self._writer is None:
+            self._writer = stackio.AsyncWriter()
+        return self._writer
+
+    def _new_path(self, label, ext='.tiff'):
+        """Unique file path in the folder of the current time point: tNNNN/pNNNN_<id>_<label><ext>"""
+        pt, tp = self._current_point, self._tp
+        folder = os.path.join(self._dir, f't{tp.index:04d}' if tp else 'no_timepoint')
+        os.makedirs(folder, exist_ok=True)
+        key = f'p{pt.index:04d}_{_safe(pt.id)}' if (pt is not None and pt.id) else (f'p{pt.index:04d}' if pt is not None else 'stage')
+        base = f'{key}_{_safe(label)}'
+        path, n = os.path.join(folder, base + ext), 1
+        while path in self._used_paths or os.path.exists(path):
+            n += 1
+            path = os.path.join(folder, f'{base}_{n}{ext}')
+        self._used_paths.add(path)
+        return path
+
+    def _grab(self, ch):
+        """One image through the backend, with the bookkeeping shared by capture, zstack and movie. -> (image, info, job time)"""
         t_cap = self.elapsed
         self._state('capturing', point=self._current_point.index if self._current_point else None, channel=ch)
         image, info = self._backend.capture(ch)
         info = dict(info or {})
-        pt, tp = self._current_point, self._tp
+        pt = self._current_point
         self._image_counter += 1
-        rel = ''
-        if save and self._save:
-            folder = os.path.join(self._dir, f't{tp.index:04d}' if tp else 'no_timepoint')
-            os.makedirs(folder, exist_ok=True)
-            key = f'p{pt.index:04d}_{_safe(pt.id)}' if (pt is not None and pt.id) else (f'p{pt.index:04d}' if pt is not None else 'stage')
-            base = f'{key}_{_safe(ch)}'
-            path, n = os.path.join(folder, base + '.tiff'), 1
-            while path in self._used_paths or os.path.exists(path):
-                n += 1
-                path = os.path.join(folder, f'{base}_{n}.tiff')
-            self._used_paths.add(path)
-            self._backend.save_image(image, path, ch)
-            rel = os.path.relpath(path, self._dir)
         self._rec('capture', t_cap, point=pt, channel=ch)
         self.stats['images'] += 1
         self.stats['per_channel'][ch] = self.stats['per_channel'].get(ch, 0) + 1
@@ -511,6 +578,31 @@ class Scope:
             self.stats['per_group'][pt.group] = self.stats['per_group'].get(pt.group, 0) + 1
         if info.get('exposure_ms') is not None:
             self.stats['exposures'][ch] = info['exposure_ms']
+        return image, info, t_cap
+
+    def capture(self, channel, save=True, compression='lossless', quality=None):
+        """Take one image in `channel` at the current position and return it as a NumPy array.
+        The image is saved automatically (unique file name) and listed in images.csv; save=False returns it only.
+        compression: "lossless" (default, zlib TIFF) or "lossy" (JPEG2000 in the TIFF, 16 bit); quality: PSNR in dB for lossy (default 80)."""
+        self._tick()
+        ch = self._resolve_channel(channel)
+        mode, q = self._compression(compression, quality)
+        image, info, t_cap = self._grab(ch)
+        pt, tp = self._current_point, self._tp
+        rel = ''
+        if save and self._save:
+            path = self._new_path(ch)
+            if mode == 'lossless':
+                self._backend.save_image(image, path, ch)
+            else:
+                data = np.array(image)[None, None, None]
+                planes = dict(time_s=[0.0], exposure_ms=[info.get('exposure_ms') or 0.0], x_um=[(info.get('x_mm') or 0.0) * 1000],
+                              y_um=[(info.get('y_mm') or 0.0) * 1000], z_um=[(info.get('z_mm') or 0.0) * 1000])
+                px = self._backend.pixel_size_um()
+                self._get_writer().submit(lambda: stackio.write_ome_tiff(path, data, [ch], planes=planes, pixel_size_um=px,
+                                                                         compression='lossy', quality=q, description=f'lossy JPEG2000, PSNR target {q:g} dB'),
+                                          data.nbytes, self._backend.abort_requested)
+            rel = os.path.relpath(path, self._dir)
         self._write_row('images', dict(
             image_id=self._image_counter, file=rel, time_s=round(t_cap, 2), wall_time=datetime.datetime.now().isoformat(timespec='milliseconds'),
             timepoint=tp.index if tp else '', point_index=pt.index if pt else '', point_id=pt.id if pt else '',
@@ -518,9 +610,177 @@ class Scope:
             exposure_ms=info.get('exposure_ms', ''), gain=info.get('gain', ''), intensity=info.get('intensity', '')))
         return image
 
-    def capture_channels(self, channels, save=True):
+    def capture_channels(self, channels, save=True, compression='lossless', quality=None):
         """capture() for several channels in the given order; returns {channel: image}."""
-        return {self._resolve_channel(c): self.capture(c, save=save) for c in channels}
+        return {self._resolve_channel(c): self.capture(c, save=save, compression=compression, quality=quality) for c in channels}
+
+    # --- z-stacks and movies -----------------------------------------------------------------
+    def _resolve_channel_list(self, channels, what):
+        names = [channels] if isinstance(channels, str) else list(channels)
+        if not names:
+            raise JobError(f'{what}: no channel given')
+        chans = [self._resolve_channel(c) for c in names]
+        if len(set(chans)) != len(chans):
+            raise JobError(f'{what}: a channel is listed twice: {chans}')
+        return chans
+
+    def _move_z(self, z_mm, state, check=True):
+        if state['z'] is not None and abs(state['z'] - z_mm) < 1e-6:
+            return
+        if check:
+            self.check_abort()
+        self._backend.move_z(z_mm)
+        state['z'] = z_mm
+
+    def _check_buffer(self, image, n_images, what):
+        if np.ndim(image) != 2:
+            raise JobError(f'{what}: only single-plane (grayscale) images are supported, got shape {np.shape(image)}')
+        need = int(np.asarray(image).nbytes) * n_images
+        if need > MAX_BUFFER_BYTES:
+            raise JobError(f'{what}: {n_images} images of {np.asarray(image).nbytes / 1e6:.1f} MB need {need / 1e9:.1f} GB of memory, '
+                           f'more than the allowed {MAX_BUFFER_BYTES / 1e9:.0f} GB. Use fewer planes/frames.')
+
+    def _write_frames(self, path_label, kind, data, chans, rows, px, z_step_um, interval_s, mode, q, description):
+        """Write the (T,Z,C,Y,X) array in the background and add one row per page to frames.csv. -> file path relative to the experiment dir"""
+        rel = ''
+        if self._save:
+            path = self._new_path(path_label, '.ome.tiff')
+            rel = os.path.relpath(path, self._dir)
+            planes = dict(time_s=[r['dt_s'] for r in rows], exposure_ms=[r['exposure_ms'] or 0.0 for r in rows],
+                          x_um=[(r['x_mm'] or 0.0) * 1000 for r in rows], y_um=[(r['y_mm'] or 0.0) * 1000 for r in rows],
+                          z_um=[(r['z_mm'] or 0.0) * 1000 for r in rows])
+            self._get_writer().submit(
+                lambda: stackio.write_ome_tiff(path, data, chans, planes=planes, pixel_size_um=px, z_step_um=z_step_um,
+                                               time_increment_s=interval_s, compression=mode, quality=q, description=description),
+                int(data.nbytes), self._backend.abort_requested)
+            pt, tp = self._current_point, self._tp
+            for r in rows:
+                self._write_row('frames', dict(
+                    file=rel, kind=kind, timepoint=tp.index if tp else '', point_index=pt.index if pt else '', point_id=pt.id if pt else '',
+                    group=pt.group if pt else '', **r))
+        return rel
+
+    def zstack(self, channels, planes=None, step_um=None, span_um=None, order='channel_major', compression='lossless', quality=None, save=True):
+        """Z-stack centred on the current z. Give two of planes, step_um, span_um. Returns {channel: array (planes, Y, X)}.
+        order: "channel_major" = each channel scans the whole stack in turn; "z_major" = all channels at each plane, then the next plane.
+        All planes and channels go into ONE multipage OME-TIFF per call (axes Z, C). compression: "lossless" (default) or "lossy" (JPEG2000, quality in dB)."""
+        self._tick()
+        chans = self._resolve_channel_list(channels, 'zstack')
+        if order not in ('channel_major', 'z_major'):
+            raise JobError(f'zstack: order must be "channel_major" or "z_major", got {order!r}')
+        mode, q = self._compression(compression, quality)
+        n, step, offs = stack_positions(planes, step_um, span_um)
+        x0, y0, z0 = self._backend.position()
+        C = len(chans)
+        offsets = {c: float(self._backend.channel_z_offset_um(c) or 0.0) for c in chans}
+        zs = {c: [z0 + (o + offsets[c]) / 1000.0 for o in offs] for c in chans}
+        data, rows = None, {}
+        state = dict(z=z0)
+        t_first = None
+        t_begin = self.elapsed
+        order_list = ([(i, ci) for ci in range(C) for i in range(n)] if order == 'channel_major'
+                      else [(i, ci) for i in range(n) for ci in range(C)])
+        try:
+            for i, ci in order_list:
+                ch = chans[ci]
+                self.check_abort()
+                self._events += 1
+                if self._max_events and self._events > self._max_events:
+                    raise JobError(f'the job did not finish after {self._max_events} operations (endless loop?)')
+                self._move_z(zs[ch][i], state)
+                image, info, t_cap = self._grab(ch)
+                if data is None:
+                    self._check_buffer(image, n * C, 'zstack')
+                    data = np.zeros((1, n, C) + np.shape(image), dtype=np.asarray(image).dtype)
+                    t_first = t_cap
+                data[0, i, ci] = image
+                rows[(i, ci)] = dict(frame=i * C + ci, t_index=0, z_index=i, channel=ch, time_s=round(t_cap, 3), dt_s=round(t_cap - t_first, 4),
+                                     z_mm=info.get('z_mm', zs[ch][i]), x_mm=info.get('x_mm', x0), y_mm=info.get('y_mm', y0),
+                                     exposure_ms=info.get('exposure_ms'), gain=info.get('gain', ''), intensity=info.get('intensity', ''))
+        finally:
+            try:
+                self._move_z(z0, state, check=False)     # back to the centre (also after an error or abort)
+            except BaseException:
+                pass
+        self.stats['stacks'] += 1
+        # pages are written in (Z, C) order
+        ordered = [rows[(i, ci)] for i in range(n) for ci in range(C)]
+        desc = (f'z-stack: {n} planes, step {step:g} um, span {(n - 1) * step:g} um, centre z {z0 * 1000:.2f} um, order {order}, '
+                f'channels {chans}, ' + ('lossless' if mode == 'lossless' else f'lossy JPEG2000 {q:g} dB'))
+        rel = ''
+        if save:
+            rel = self._write_frames('zstack', 'zstack', data, chans, ordered, self._backend.pixel_size_um(), step, None, mode, q, desc)
+        self.log(f'z-stack: {n} planes x {C} channel(s), step {step:g} um, {self.elapsed - t_begin:.1f} s' + (f' -> {rel}' if rel else ''))
+        return {c: data[0, :, ci] for ci, c in enumerate(chans)}
+
+    def movie(self, channels, frames=None, interval_s=None, duration_s=None, compression='lossless', quality=None, save=True):
+        """Movie at the current position: `frames` rounds of imaging all `channels`, each round starting `interval_s` after the start
+        of the previous one (as close as the hardware allows; interval_s=None = back to back). Give frames, or duration_s together with
+        interval_s. Returns {channel: array (frames, Y, X)}. ONE multipage OME-TIFF per call (axes T, C) with the real time of every image.
+        The achieved intervals are logged and stored in the file and in frames.csv. Pause takes effect after the movie, Abort stops it."""
+        self._tick()
+        chans = self._resolve_channel_list(channels, 'movie')
+        mode, q = self._compression(compression, quality)
+        if frames is not None and duration_s is not None:
+            raise JobError('movie: give frames OR duration_s (with interval_s), not both')
+        if interval_s is not None and (not np.isfinite(interval_s) or interval_s <= 0):
+            raise JobError(f'movie: interval_s must be > 0, got {interval_s!r}')
+        if duration_s is not None:
+            if interval_s is None:
+                raise JobError('movie: duration_s needs interval_s')
+            frames = int(round(duration_s / interval_s))
+        if frames is None:
+            raise JobError('movie: give frames (or duration_s and interval_s)')
+        if isinstance(frames, bool) or int(frames) != frames or frames < 1:
+            raise JobError(f'movie: frames must be a whole number >= 1, got {frames!r}')
+        frames = int(frames)
+        C = len(chans)
+        data, rows, starts = None, [], []
+        t_begin = self.elapsed
+        for n in range(frames):
+            self.check_abort()
+            self._events += 1
+            if self._max_events and self._events > self._max_events:
+                raise JobError(f'the job did not finish after {self._max_events} operations (endless loop?)')
+            if interval_s is not None and n > 0:
+                target = t_begin + n * interval_s
+                self._state('waiting', until=target, reason='movie')
+                if not self._clock.wait_until(self._t0 + target, lambda: bool(self._backend.abort_requested())):
+                    raise JobAborted()
+            starts.append(self.elapsed)
+            for ci, ch in enumerate(chans):
+                image, info, t_cap = self._grab(ch)
+                if data is None:
+                    self._check_buffer(image, frames * C, 'movie')
+                    data = np.zeros((frames, 1, C) + np.shape(image), dtype=np.asarray(image).dtype)
+                data[n, 0, ci] = image
+                rows.append(dict(frame=n * C + ci, t_index=n, z_index=0, channel=ch, time_s=round(t_cap, 3), dt_s=round(t_cap - t_begin, 4),
+                                 z_mm=info.get('z_mm', ''), x_mm=info.get('x_mm', ''), y_mm=info.get('y_mm', ''),
+                                 exposure_ms=info.get('exposure_ms'), gain=info.get('gain', ''), intensity=info.get('intensity', '')))
+        self.stats['movies'] += 1
+        # timing report
+        st = np.asarray(starts)
+        d = np.diff(st) if len(st) > 1 else np.array([])
+        report = f'movie: {frames} frame(s) x {C} channel(s)'
+        if len(d):
+            report += f', achieved interval {d.mean():.3f} s (sd {d.std():.3f}, min {d.min():.3f}, max {d.max():.3f})'
+            if interval_s is not None:
+                sched = t_begin + np.arange(frames) * interval_s
+                dev = st - sched
+                report += f' for requested {interval_s:g} s; start-time error vs schedule: max {np.abs(dev).max() * 1000:.0f} ms'
+                if d.mean() > interval_s * 1.02 or (dev > max(0.05, 0.1 * interval_s)).any():
+                    self.warn(f'movie could not keep the requested interval of {interval_s:g} s: achieved {d.mean():.3f} s on average '
+                              f'(longest {d.max():.3f} s). One round takes about {np.median([e for e in np.diff(st)]):.2f} s here; use a longer interval or fewer channels.')
+        self.log(report)
+        desc = (report + f'. Channels {chans}, ' + ('lossless' if mode == 'lossless' else f'lossy JPEG2000 {q:g} dB') +
+                '. Page time (DeltaT) = job time when the image was requested (start of the exposure +- readout).')
+        rel = ''
+        if save:
+            rel = self._write_frames('movie', 'movie', data, chans, rows, self._backend.pixel_size_um(), None,
+                                     float(d.mean()) if len(d) else None, mode, q, desc)
+            if rel:
+                self.log(f'movie saved as {rel}')
+        return {c: data[:, 0, ci] for ci, c in enumerate(chans)}
 
     # --- bookkeeping -------------------------------------------------------------------------
     def _write_row(self, table, row):
@@ -536,6 +796,10 @@ class Scope:
         entry[0].flush()
 
     def _close(self):
+        if self._writer is not None:
+            w, self._writer = self._writer, None
+            for e in w.close():
+                self.log(f'ERROR writing an image file: {e}')
         for f, _ in self._csv.values():
             f.close()
         self._csv = {}

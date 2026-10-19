@@ -135,8 +135,10 @@ def run_job(scope):
 | `scope.timepoints(n, interval=None)` | loop; yields `TimePoint` with `.index`, `.start` (s since job start), `.late` (s). `n=None`: until aborted |
 | `scope.move_to(point)` | move the stage (same backlash/safety handling as the standard acquisition) |
 | `scope.autofocus(channel=None)` | contrast autofocus with the settings of the Autofocus tab; stores the focused z in the point; returns z (mm) |
-| `scope.capture("488")` | one image in a channel; saved automatically; returns the image as NumPy array. `save=False`: do not save |
+| `scope.capture("488")` | one image in a channel; saved automatically; returns the image as NumPy array. `save=False`: do not save. `compression="lossy", quality=80`: JPEG2000 (see below) |
 | `scope.capture_channels(["BF LED matrix full", "488"])` | several channels in that order; returns `{channel: image}` |
+| `scope.zstack(channels, planes=, step_um=, span_um=, order=, compression=, quality=)` | z-stack centred on the current z; give two of planes/step_um/span_um; one multipage OME-TIFF; returns `{channel: (planes, Y, X)}` |
+| `scope.movie(channels, frames=, interval_s=, duration_s=, compression=, quality=)` | fast time series at the current position, one multipage OME-TIFF with the real time of every image; returns `{channel: (frames, Y, X)}` |
 | `scope.wait(seconds)` | wait (abortable) |
 | `scope.wait_until(seconds)` | wait until this many seconds after the job start |
 | `scope.elapsed` | seconds since the job start |
@@ -158,12 +160,32 @@ and the following interval counts from that start.
 **Errors in the job:** the runner reports them (with the line in your file), turns the illumination off and
 ends the experiment cleanly. Errors found by the dry run prevent the start.
 
+## Z-stacks, movies and compression
+
+* **Z-stack** (`scope.zstack`): centred on the *current* z (after `move_to`, and after `autofocus` the focused z). Two of `planes`, `step_um`,
+  `span_um` (span = (planes - 1) x step). The stage scans upwards and returns to the centre. `order="channel_major"` (default): each channel
+  scans the whole stack; `"z_major"`: all channels at each plane, then the next plane. The channel's z offset (channel configuration) is added.
+  All planes and channels of one call are ONE file `t0003/p0002_A-2_zstack.ome.tiff` (OME axes Z, C).
+* **Movie** (`scope.movie`): rounds of all `channels`, each starting `interval_s` after the start of the previous (scheduled against a fixed
+  clock; `interval_s=None` = back to back). ONE file per call (`..._movie.ome.tiff`, axes T, C). The real time of every image is in the OME
+  metadata (`DeltaT`) and in `frames.csv`; the achieved interval (mean, sd, min, max) is logged and written into the file description. If the
+  hardware cannot keep the interval a warning is issued. Time points of the job are separate files, as before. Pause takes effect after the movie.
+* **Saving:** `compression="lossless"` (default; zlib-compressed TIFF, bit-identical) or `"lossy"` (16-bit JPEG2000 inside the same TIFF).
+  `quality` (lossy only) is the PSNR target in dB relative to the full scale of the data type (default 80, allowed 40 to 120). On 16-bit data
+  80 dB means about 6 counts rms error and files about 4x smaller than lossless zlib (measured with synthetic fluorescence images); higher = better and bigger.
+  JPEG2000 encoding takes about 1.4 s per 2048 x 3088 frame; it runs in a background thread. Lossy needs `pip install imagecodecs`
+  (a missing package is reported by the check and before anything is acquired).
+* **Reading lossy files:** `tifffile` + `imagecodecs` (Python, napari via its tifffile reader), Bio-Formats (Fiji). Stacks and movies are held in
+  memory until written (limit 4 GB).
+* OME `PhysicalSizeX/Y` is the camera sensor pixel size from the configuration (as in the standard saving), not corrected for magnification.
+
 ## What is written to the experiment folder
 
 | file | content |
 |---|---|
 | `t0000/`, `t0001/`, ... | images of each time point (`no_timepoint/` for images outside `scope.timepoints`), named `p<index>_<id>_<channel>.tiff` (a number is appended if the same image name occurs twice); OME-TIFF as in the standard acquisition |
-| `images.csv` | one row per image: file, time since start, wall time, time point, point index/ID/group, channel, actual stage x/y/z, exposure, gain, intensity |
+| `frames.csv` | one row per image of a z-stack or movie: file, kind, frame/z/t index, channel, job time, time since the start of the stack/movie, stage x/y/z, exposure, gain, intensity |
+| `images.csv` | one row per single image (`capture`): file, time since start, wall time, time point, point index/ID/group, channel, actual stage x/y/z, exposure, gain, intensity |
 | `autofocus.csv` | one row per autofocus: time, point, channel, z before/after, duration |
 | `job.py` | copy of the job file that was run |
 | `job_log.txt` | what happened and when (incl. late time points, warnings) |
@@ -173,13 +195,13 @@ ends the experiment cleanly. Errors found by the dry run prevent the start.
 
 ## Limits of this first version
 
-* XY points with several channels, autofocus, scheduling. No Z stacks, movies, tiled scans (NX x NY) yet;
+* XY points with several channels, autofocus, scheduling, z-stacks, movies. No tiled scans (NX x NY), no movie of z-stacks (T x Z);
   RGB and USB-spectrometer channels are not available.
 * **Known issue:** with channels of *different exposure times* the camera may use the previous channel's exposure
   after a channel switch (see `tests/diagnose_exposure.py` on the `squid-improvements` branch). Until it is resolved,
   use the same exposure for all channels of a job; the check reports a warning otherwise.
 * No napari / tiled-preview updates during a job; the live image display is updated.
-* Image saving is synchronous (as in the standard acquisition).
+* Single images are saved synchronously (as in the standard acquisition); lossy files, z-stacks and movies are written in a background thread.
 * The job file is arbitrary Python, so it can do anything Python can; `scope` is the only supported way to control the microscope.
 
 Examples: `software/job_examples/`.  Tests: `tests/test_jobs_api.py` (no hardware), `tests/e2e_jobs.py` (simulation or real microscope).

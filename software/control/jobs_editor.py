@@ -589,7 +589,8 @@ class CodeEditor(QPlainTextEdit):
         # strings: channels, groups, focus measures
         pats = [
             (r'''(?:capture|autofocus)\(\s*(?:channel\s*=\s*)?(["'])([^"']*)$''', 'channel'),
-            (r'''capture_channels\(\s*(?:channels\s*=\s*)?[\[(][^\])]*?(["'])([^"']*)$''', 'channel'),
+            (r'''(?:zstack|movie)\(\s*(?:channels\s*=\s*)?(["'])([^"']*)$''', 'channel'),
+            (r'''(?:capture_channels|zstack|movie)\(\s*(?:channels\s*=\s*)?[\[(][^\])]*?(["'])([^"']*)$''', 'channel'),
             (r'''\bchannel\s*=\s*(["'])([^"']*)$''', 'channel'),
             (r'''^\s*[A-Za-z_]*CHANNEL[A-Za-z_]*\s*=.*?(["'])([^"']*)$''', 'channel'),
             (r'''\.points\([^)]*?(["'])([^"']*)$''', 'group'),

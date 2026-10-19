@@ -62,24 +62,73 @@ API = [
 
     # --- Imaging --------------------------------------------------------------------------------
     dict(name='capture', kind='method', category='Imaging',
-         signature='scope.capture(channel, save=True)',
+         signature='scope.capture(channel, save=True, compression="lossless", quality=None)',
          summary='Take one image in a channel at the current position and return it as a NumPy array. The image is saved automatically.',
          details=('The channel name is the name from the channel configuration; any <b>unique part</b> of it works, '
                   'upper/lower case does not matter (<code>"488"</code> finds <i>Fluorescence 488 nm Ex</i>). '
                   'Unknown or ambiguous names are errors and the message lists the choices.<br><br>'
                   'Exposure, gain and illumination intensity come from the channel configuration (see the <i>Test setup</i> panel). '
-                  'Files are named <code>t0003/p0002_A-2_488.tiff</code> (time point, position, ID, channel) and listed in <code>images.csv</code>.'),
+                  'Files are named <code>t0003/p0002_A-2_488.tiff</code> (time point, position, ID, channel) and listed in <code>images.csv</code>.<br><br>'
+                  '<b>compression</b>: <code>"lossless"</code> (default; zlib-compressed TIFF, identical pixel values) or <code>"lossy"</code> '
+                  '(16-bit JPEG2000 inside the TIFF, much smaller files, small errors). <b>quality</b> is only for lossy: the PSNR target in dB '
+                  '(default 80; higher = better and bigger, allowed 40 to 120). At 80 dB the error is about 6 counts (rms) on a 16-bit image, '
+                  'about 6x smaller than the raw data. Lossy needs the Python package <code>imagecodecs</code>; Test tells you if it is missing.'),
          params=[('channel', 'channel name (text), or a unique part of it'),
-                 ('save', 'False = only return the image, do not write a file')],
+                 ('save', 'False = only return the image, do not write a file'),
+                 ('compression', '"lossless" (default) or "lossy" (JPEG2000)'),
+                 ('quality', 'lossy only: PSNR in dB (default 80)')],
          returns='the image (NumPy array)',
-         example='img = scope.capture("488")\nif img.mean() < 100:\n    scope.warn("image is dark")'),
+         example='img = scope.capture("488")\nscope.capture("561", compression="lossy", quality=85)'),
     dict(name='capture_channels', kind='method', category='Imaging',
-         signature='scope.capture_channels(channels, save=True)',
+         signature='scope.capture_channels(channels, save=True, compression="lossless", quality=None)',
          summary='capture() for several channels, one after the other in the given order.',
-         details='Same as a loop of <code>capture</code> calls. Returns a dictionary {channel name: image}.',
-         params=[('channels', 'list of channel names'), ('save', 'False = do not write files')],
+         details='Same as a loop of <code>capture</code> calls (same compression/quality for all). Returns a dictionary {channel name: image}.',
+         params=[('channels', 'list of channel names'), ('save', 'False = do not write files'),
+                 ('compression', '"lossless" (default) or "lossy"'), ('quality', 'lossy only: PSNR in dB (default 80)')],
          returns='dict {channel name: image}',
          example='images = scope.capture_channels(["BF", "488", "561"])'),
+    dict(name='zstack', kind='method', category='Imaging',
+         signature='scope.zstack(channels, planes=None, step_um=None, span_um=None, order="channel_major", compression="lossless", quality=None, save=True)',
+         summary='Z-stack centred on the current z position, in one or several channels, saved as ONE multipage OME-TIFF.',
+         details=('Call <code>move_to</code> (and autofocus) first: the stack is centred on the <b>current z</b>, i.e. the focused z after an autofocus. '
+                  'Give <b>two of</b> <code>planes</code>, <code>step_um</code>, <code>span_um</code> (span = (planes - 1) x step; all three are accepted if they agree). '
+                  'Examples: <code>planes=11, step_um=1.0</code>, or <code>planes=11, span_um=10</code>, or <code>step_um=1, span_um=10</code>. '
+                  'With an even number of planes the centre lies between two planes. Spans above 2000 um are refused.<br><br>'
+                  '<b>order</b>: <code>"channel_major"</code> (default) = every channel scans the whole stack, then the next channel; '
+                  '<code>"z_major"</code> = at each plane all channels are taken, then z moves on (fewer z moves, better registration between colours, '
+                  'but more channel switching).<br><br>'
+                  'The stage always scans upwards (increasing z) and returns to the centre afterwards (also after Abort). '
+                  'The z offset of each channel from the channel configuration is added to its plane positions, as in the standard acquisition.<br><br>'
+                  'File: <code>t0003/p0002_A-2_zstack.ome.tiff</code>, axes Z and C, with the real z position, time and exposure of every page in the OME metadata '
+                  'and in <code>frames.csv</code>. <b>compression</b> / <b>quality</b> as in <code>capture</code> (default lossless; lossy = JPEG2000 inside the multipage TIFF). '
+                  'The whole stack is held in memory until it is written (limit 4 GB).'),
+         params=[('channels', 'channel name or list of names'), ('planes', 'number of planes'), ('step_um', 'distance between planes (um)'),
+                 ('span_um', 'total span from the first to the last plane (um)'),
+                 ('order', '"channel_major" (default) or "z_major"'),
+                 ('compression', '"lossless" (default) or "lossy"'), ('quality', 'lossy only: PSNR in dB (default 80)'),
+                 ('save', 'False = do not write a file')],
+         returns='dict {channel name: array of shape (planes, Y, X)}',
+         example='scope.move_to(pt)\nscope.autofocus()\nscope.zstack(["488", "561"], planes=11, step_um=1.0, order="z_major")'),
+    dict(name='movie', kind='method', category='Imaging',
+         signature='scope.movie(channels, frames=None, interval_s=None, duration_s=None, compression="lossless", quality=None, save=True)',
+         summary='Fast time series at the current position (one or several channels), saved as ONE multipage OME-TIFF with the real time of every image.',
+         details=('Each round images all channels in the given order; rounds start <code>interval_s</code> seconds apart (start to start), scheduled against '
+                  'a fixed clock so errors do not add up. <code>interval_s=None</code> = back to back, as fast as the camera allows. '
+                  'Give <code>frames</code>, or <code>duration_s</code> together with <code>interval_s</code> (frames = duration / interval).<br><br>'
+                  'If one round takes longer than the interval the next round starts immediately and a warning reports the achieved interval. '
+                  'The achieved interval (mean, sd, min, max) and the start-time error are logged, written into the OME description and, '
+                  'per image, as DeltaT in the OME metadata and in <code>frames.csv</code> (time the image was requested, +- exposure and readout). '
+                  'For multi-colour movies all channels should have the same exposure (see the exposure warning of Test).<br><br>'
+                  'The movie is held in memory and written after the last frame (limit 4 GB; about 300 full 16-bit frames). '
+                  'Pause takes effect after the movie, Abort stops it at once (nothing is saved). '
+                  '<b>compression</b> / <b>quality</b> as in <code>capture</code>: lossy JPEG2000 is encoded in the background while the job continues.<br><br>'
+                  'File: <code>t0003/p0002_A-2_movie.ome.tiff</code>; time points of the job are separate files, one movie per call.'),
+         params=[('channels', 'channel name or list of names'), ('frames', 'number of rounds'), ('interval_s', 'seconds from the start of one round to the start of the next'),
+                 ('duration_s', 'total duration in seconds (needs interval_s; instead of frames)'),
+                 ('compression', '"lossless" (default) or "lossy"'), ('quality', 'lossy only: PSNR in dB (default 80)'),
+                 ('save', 'False = do not write a file')],
+         returns='dict {channel name: array of shape (frames, Y, X)}',
+         example='scope.move_to(pt)\nscope.movie(["488", "561"], duration_s=60, interval_s=2, compression="lossy")'),
 
     # --- Autofocus ------------------------------------------------------------------------------
     dict(name='autofocus', kind='method', category='Autofocus',
@@ -404,6 +453,12 @@ the user has to provide (positions, channels).</p>
 # Snippets
 # ------------------------------------------------------------------------------------------------
 SNIPPETS = [
+    ('Z-stack at every position',
+     '11 planes, 1 um apart, centred on the (autofocused) z; two channels, one multipage TIFF per position.',
+     'scope.move_to(pt)\nscope.autofocus()\nscope.zstack(["488", "561"], planes=11, step_um=1.0)\n'),
+    ('Movie at a position',
+     'Two minutes, one round every 2 s, two colours, saved as lossy JPEG2000 to save disk space.',
+     'scope.move_to(pt)\nscope.movie(["488", "561"], duration_s=120, interval_s=2, compression="lossy")\n'),
     ('Time lapse over all positions',
      'Every position, one channel, at regular intervals.',
      'for t in scope.timepoints(10, interval=60):\n    for pt in scope.points():\n        scope.move_to(pt)\n        scope.capture("488")\n'),

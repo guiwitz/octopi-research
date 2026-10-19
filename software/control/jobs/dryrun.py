@@ -27,6 +27,10 @@ class DryRunBackend(Backend):
         self.clock.sleep(self._move_s)
         self._pos = (x, y, z if z is not None else self._pos[2])
 
+    def move_z(self, z):
+        self.clock.sleep(0.15)
+        self._pos = (self._pos[0], self._pos[1], z)
+
     def position(self):
         return self._pos
 

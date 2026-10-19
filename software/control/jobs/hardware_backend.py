@@ -123,6 +123,24 @@ class HardwareBackend(Backend):
             time.sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
         self._last_xy = (x, y)
 
+    def move_z(self, z):
+        """z-only absolute move (mirrors the z part of move_to: backlash cleared after moving down, stabilisation time)."""
+        nav, w = self.nav, self.w
+        going_down = z < nav.z_pos_mm
+        nav.move_z_to(z)
+        w.wait_till_operation_is_completed()
+        if going_down and nav.get_pid_control_flag(2) is False:
+            self._clear_z_backlash()
+        time.sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+
+    def channel_z_offset_um(self, name):
+        """Z offset (um) of the channel from the channel configuration; the standard acquisition applies it, z-stacks do too."""
+        return float(self._config(name).z_offset or 0.0)
+
+    def pixel_size_um(self):
+        from control._def import CAMERA_PIXEL_SIZE_UM, CAMERA_SENSOR
+        return CAMERA_PIXEL_SIZE_UM.get(CAMERA_SENSOR)
+
     def _clear_z_backlash(self):
         steps = max(160, 20 * self.nav.z_microstepping)
         self.nav.move_z_usteps(-steps)

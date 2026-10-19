@@ -281,6 +281,41 @@ def main():
             record('job log shows pause and resume', 'job PAUSED' in log and 'job RESUMED' in log)
             record('job log shows the changed position', 'changed while the job was paused' in log)
 
+        # --- 2b. z-stack and movie through the real hardware backend (simulation), lossless and lossy
+        job_zs = write_job('job_zs.py', f'''
+            def run_job(scope):
+                pt = scope.points()[0]
+                scope.move_to(pt)
+                z0 = scope.zstack({[ch1, ch2]!r}, planes=3, step_um=2.0, order="z_major")
+                scope.movie({ch1!r}, frames=3, interval_s=0.6, compression="lossy", quality=85)
+                scope.capture({ch1!r}, compression="lossy")
+        ''')
+        res = jw.check_job()
+        d3, finished = run_job_tab(job_zs, 'jobs_e2e_zs')
+        record('z-stack/movie job finished', finished and d3 is not None)
+        if d3:
+            meta = json.load(open(os.path.join(d3, 'job_meta.json')))
+            record('z-stack/movie job status completed', meta['status'] == 'completed', str(meta.get('error')))
+            fr = rows(d3, 'frames')
+            record('frames.csv: 6 stack pages + 3 movie frames', len(fr) == 9, str(len(fr)))
+            zs_rows = [r for r in fr if r['kind'] == 'zstack']
+            zz = sorted({round(float(r['z_mm']) * 1000, 1) for r in zs_rows})
+            record('z planes 2 um apart', len(zz) == 3 and abs((zz[1] - zz[0]) - 2.0) < 0.6 and abs((zz[2] - zz[1]) - 2.0) < 0.6, str(zz))
+            try:
+                import tifffile
+                files = sorted({r['file'] for r in fr})
+                with tifffile.TiffFile(os.path.join(d3, [f for f in files if 'zstack' in f][0])) as tf:
+                    record('z-stack file: 6 pages, lossless, OME', len(tf.pages) == 6 and tf.pages[0].compression.name == 'ADOBE_DEFLATE' and tf.is_ome)
+                with tifffile.TiffFile(os.path.join(d3, [f for f in files if 'movie' in f][0])) as tf:
+                    record('movie file: 3 pages, JPEG2000, OME with times', len(tf.pages) == 3 and tf.pages[0].compression.name == 'JPEG2000' and 'DeltaT=' in tf.ome_metadata)
+                    tms = [float(r['dt_s']) for r in fr if r['kind'] == 'movie']
+                    record('movie frames about 0.6 s apart', len(tms) == 3 and all(abs(b - a - 0.6) < 0.25 for a, b in zip(tms, tms[1:])), str(tms))
+            except Exception as e:
+                record('z-stack/movie files readable', False, repr(e))
+            ims = rows(d3, 'images')
+            record('single lossy capture listed', len(ims) == 1)
+        record('illumination off after z-stack/movie job', not win.liveController.illumination_on)
+
         # --- 3. broken jobs are refused
         popups.clear()
         _, _ = run_job_tab(write_job('bad1.py', 'def run_job(scope)\n    pass\n'), 'jobs_e2e_bad1')

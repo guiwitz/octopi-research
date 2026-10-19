@@ -182,11 +182,15 @@ class _Linter:
             arg = kw.get('channel', node.args[0] if node.args else None)
             if arg is not None:
                 self._check_channel_expr(arg)
-        elif name == 'capture_channels':
+        elif name in ('capture_channels', 'zstack', 'movie'):
             arg = kw.get('channels', node.args[0] if node.args else None)
             if isinstance(arg, (ast.List, ast.Tuple)):
                 for el in arg.elts:
                     self._check_channel_expr(el)
+            elif arg is not None:
+                self._check_channel_expr(arg)
+            if name in ('zstack', 'movie'):
+                self._check_compression_args(node, name, kw)
         elif name == 'points' and self.groups is not None:
             for a in node.args:
                 for el in (a.elts if isinstance(a, (ast.List, ast.Tuple)) else [a]):
@@ -200,6 +204,19 @@ class _Linter:
         elif name == 'move_to' and node.args and isinstance(node.args[0], ast.Name):
             if self._loop_var_kinds.get(node.args[0].id) == 'TimePoint':
                 self.add(node.args[0], 'error', 'move_to needs a position (from scope.points()), not a time point.')
+
+    def _check_compression_args(self, node, name, kw):
+        c = kw.get('compression')
+        if isinstance(c, ast.Constant) and isinstance(c.value, str) and c.value.lower() not in ('lossless', 'lossy'):
+            self.add(c, 'error', f'compression must be "lossless" or "lossy", not {c.value!r}.')
+        if name == 'zstack':
+            given = [k for k in ('planes', 'step_um', 'span_um') if k in kw]
+            npos = len(node.args) - 1
+            if not any(isinstance(a, ast.Starred) for a in node.args) and len(given) + max(0, npos) < 2:
+                self.add(node, 'error', 'zstack needs two of planes, step_um and span_um, e.g. planes=11, step_um=1.0.')
+        elif name == 'movie' and not any(isinstance(a, ast.Starred) for a in node.args):
+            if len(node.args) < 2 and 'frames' not in kw and 'duration_s' not in kw:
+                self.add(node, 'error', 'movie needs frames=... (or duration_s=... together with interval_s=...).')
 
     def _check_channel_expr(self, node):
         if self.channels is None:
@@ -236,7 +253,7 @@ class _Linter:
             return
         calls = [c for stmt in node.body for c in ast.walk(stmt) if isinstance(c, ast.Call) and self._is_scope_attr(c.func, scope_name)]
         names = {c.func.attr for c in calls}
-        if names & {'capture', 'autofocus', 'capture_channels'} and 'move_to' not in names:
+        if names & {'capture', 'autofocus', 'capture_channels', 'zstack', 'movie'} and 'move_to' not in names:
             self.add(node, 'warning', 'This loop over positions images or focuses but never calls scope.move_to(...): every image would be taken at the same place. '
                                       'Add  scope.move_to(pt)  first.')
 
