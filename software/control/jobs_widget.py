@@ -83,8 +83,8 @@ class JobsWidget(QFrame):
         self._n_points_at_start = 0
         self._build()
         self._load_cache()
-        self.mpc.signal_job_message.connect(self.append_log)
-        self.mpc.signal_job_status.connect(self.live.on_message)
+        self.mpc.signal_job_message.connect(self._on_job_message)
+        self.mpc.signal_job_status.connect(self._on_live_message)
         self.mpc.signal_job_status.connect(self._on_job_status)
         self.mpc.acquisitionFinished.connect(self.acquisition_is_finished)
 
@@ -176,6 +176,18 @@ class JobsWidget(QFrame):
                 json.dump(dict(job_file=self.lineEdit_job.text(), saving_dir=self.lineEdit_savingDir.text(), save_as=self.combo_save_as.currentData()), f)
         except Exception:
             pass
+
+    # --- messages of the running job; runs started by the Single measurement tab (mpc.job_owner == 'single') are not shown here
+    def _mine(self):
+        return getattr(self.mpc, 'job_owner', 'jobs') != 'single'
+
+    def _on_job_message(self, text):
+        if self._mine():
+            self.append_log(text)
+
+    def _on_live_message(self, msg):
+        if self._mine():
+            self.live.on_message(msg)
 
     # --- helpers
     def append_log(self, text):
@@ -395,6 +407,7 @@ class JobsWidget(QFrame):
         self.btn_pause.setText('Pause job')
         self.btn_pause.setEnabled(True)
         self._save_cache()
+        self.mpc.job_owner = 'jobs'
         self.mpc.run_job(self.lineEdit_job.text().strip(), self._points(), save_as=self.combo_save_as.currentData())
 
     def _confirm_abort(self):

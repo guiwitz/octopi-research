@@ -178,7 +178,7 @@ class _Linter:
                 self.add(node, 'error', f'scope.{name}: {e}. Usage: {apidoc.api_by_name().get(name, {}).get("signature", "")}')
         # arguments with meaning
         kw = {k.arg: k.value for k in node.keywords if k.arg}
-        if name == 'capture' or name == 'autofocus':
+        if name in ('capture', 'autofocus', 'fast_movie'):
             arg = kw.get('channel', node.args[0] if node.args else None)
             if arg is not None:
                 self._check_channel_expr(arg)
@@ -191,8 +191,10 @@ class _Linter:
                 self._check_channel_expr(arg)
             if name in ('zstack', 'movie'):
                 self._check_compression_args(node, name, kw)
-        if name in ('capture', 'capture_channels', 'zstack', 'movie'):
+        if name in ('capture', 'capture_channels', 'zstack', 'movie', 'fast_movie'):
             self._check_naming_args(kw)
+        if name == 'fast_movie':
+            self._check_fast_movie_args(node, kw)
         if name in ('capture', 'capture_channels'):
             self._check_compression_args(node, name, kw)
         if name == 'points' and self.groups is not None:
@@ -215,6 +217,20 @@ class _Linter:
             self.add(fn, 'error', 'filename must be a non-empty text without extension, e.g. filename="my_image".')
         if isinstance(mp, ast.Constant) and mp.value is not None and mp.value not in ('multipage', 'merge', 'single'):
             self.add(mp, 'error', 'save_as must be "multipage", "merge" or "single".')
+
+    def _check_fast_movie_args(self, node, kw):
+        c = kw.get('compression')
+        if isinstance(c, ast.Constant) and isinstance(c.value, str) and c.value.lower() not in ('none', 'lossless', 'lossy'):
+            self.add(c, 'error', f'compression must be "none", "lossless" or "lossy", not {c.value!r}.')
+        b = kw.get('bits')
+        if isinstance(b, ast.Constant) and b.value not in (None, 8, 16):
+            self.add(b, 'error', 'bits must be 8 or 16.')
+        if not any(isinstance(a, ast.Starred) for a in node.args) and not any(k.arg is None for k in node.keywords):
+            if ('frames' in kw) == ('duration_s' in kw) and len(node.args) < 4:
+                self.add(node, 'error', 'fast_movie needs frames=... OR duration_s=... (one of them), e.g. scope.fast_movie("488", fps=25, duration_s=5).')
+        f = kw.get('fps')
+        if isinstance(f, ast.Constant) and isinstance(f.value, (int, float)) and not isinstance(f.value, bool) and f.value <= 0:
+            self.add(f, 'error', 'fps must be > 0.')
 
     def _check_compression_args(self, node, name, kw):
         c = kw.get('compression')
@@ -264,7 +280,7 @@ class _Linter:
             return
         calls = [c for stmt in node.body for c in ast.walk(stmt) if isinstance(c, ast.Call) and self._is_scope_attr(c.func, scope_name)]
         names = {c.func.attr for c in calls}
-        if names & {'capture', 'autofocus', 'capture_channels', 'zstack', 'movie'} and 'move_to' not in names:
+        if names & {'capture', 'autofocus', 'capture_channels', 'zstack', 'movie', 'fast_movie'} and 'move_to' not in names:
             self.add(node, 'warning', 'This loop over positions images or focuses but never calls scope.move_to(...): every image would be taken at the same place. '
                                       'Add  scope.move_to(pt)  first.')
 

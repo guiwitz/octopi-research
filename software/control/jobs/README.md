@@ -139,6 +139,7 @@ def run_job(scope):
 | `scope.capture_channels(["BF LED matrix full", "488"])` | several channels in that order; returns `{channel: image}` |
 | `scope.zstack(channels, planes=, step_um=, span_um=, order=, compression=, quality=, ratio=, save_as=, filename=)` | z-stack centred on the current z; give two of planes/step_um/span_um; one multipage OME-TIFF; returns `{channel: (planes, Y, X)}` |
 | `scope.movie(channels, frames=, interval_s=, duration_s=, compression=, quality=, ratio=, save_as=, filename=)` | fast time series at the current position, one multipage OME-TIFF with the real time of every image; returns `{channel: (frames, Y, X)}` |
+| `scope.fast_movie(channel, fps=25, duration_s=, frames=, roi=, bits=, exposure_ms=, gain=, compression="none", save_as=, filename=)` | video-rate movie in one channel (camera free running, frames in memory, written afterwards, uncompressed by default); the camera settings are restored; returns `{channel: (frames, Y, X)}` |
 | `scope.wait(seconds)` | wait (abortable) |
 | `scope.wait_until(seconds)` | wait until this many seconds after the job start |
 | `scope.elapsed` | seconds since the job start |
@@ -170,6 +171,12 @@ ends the experiment cleanly. Errors found by the dry run prevent the start.
   clock; `interval_s=None` = back to back). ONE file per call (`Time0003_Point0002_Movie.tiff`, axes T, C; `save_as="single"`: one file per image). The real time of every image is in the OME
   metadata (`DeltaT`) and in `frames.csv`; the achieved interval (mean, sd, min, max) is logged and written into the file description. If the
   hardware cannot keep the interval a warning is issued. Time points of the job are separate files, as before. Pause takes effect after the movie.
+* **Fast movie** (`scope.fast_movie`): video-rate recording (e.g. 25 fps) in ONE channel. The camera runs freely at `fps` (FLIR cameras), the light is on only
+  while it records, frames are collected in memory (nothing is processed or written during the recording) and written afterwards, **uncompressed** by default
+  (`Time0003_Point0002_FastMovie.tiff`). `roi=2000` = 2000x2000 pixels in the sensor centre; `bits=8` or `16`; `exposure_ms`/`gain` only for this movie. All
+  camera settings are restored afterwards (also after errors). Camera frame number and clock of every frame go to `fast_frames.csv` and the OME `DeltaT`; lost
+  frames, the achieved frame rate, saturation and too dark 8-bit images are reported as warnings. Limit: 4 GB in memory (2000x2000 at 8 bit: 40 s at 25 fps).
+  Check on the microscope computer that `cat /sys/module/usbcore/parameters/usbfs_memory_mb` is large (1000); the log notes if it is not.
 * **Saving:** `compression="lossless"` (default; zlib-compressed TIFF, bit-identical) or `"lossy"` (16-bit JPEG2000 inside the same TIFF).
   Lossy by default uses a **noise-relative quality**: per channel, shortly before the file is written (background thread), the pixel noise is estimated
   from the middle image (every 4th row/column, ~0.1 s) and the JPEG2000 quality is set so that the codec error is about **1x that noise**
@@ -195,6 +202,7 @@ ends the experiment cleanly. Errors found by the dry run prevent the start.
 | `0/`, `1/`, ... | **single files** (*Save as* single files): folder per time point (`0/` outside `scope.timepoints`), `<point ID>_0_0_<z plane>_<channel>.tiff` as in the Flexible Multipoint tab; movie frames `<ID>_0_0_0_<channel>_Movie_F0012.tiff` |
 | `_ver_2`, `_ver_3` | appended when a name already exists (e.g. the same channel captured twice at a point). `filename="my_name"` (no extension) replaces the automatic name in `capture`, `capture_channels`, `zstack`, `movie`; single files then get `my_name_<channel>`, `my_name_Z0005_<channel>`, `my_name_F0012_<channel>` |
 | `lossy_files.csv` | one row per lossy file: quality, target and achieved compression, codec error and image noise (counts) |
+| `fast_frames.csv` | one row per frame of a fast movie: file, frame, camera frame number, camera time, interval to the previous frame |
 | `frames.csv` | one row per image of a z-stack or movie: file, kind, frame/z/t index, channel, job time, time since the start of the stack/movie, stage x/y/z, exposure, gain, intensity |
 | `images.csv` | one row per single image (`capture`): file, time since start, wall time, time point, point index/ID/group, channel, actual stage x/y/z, exposure, gain, intensity |
 | `autofocus.csv` | one row per autofocus: time, point, channel, z before/after, duration |

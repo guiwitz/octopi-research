@@ -1114,6 +1114,234 @@ class Camera(object):
             self.enable_callback()
         return numpy_image
     
+    # ------------------------------------------------------------------------------------------------
+    # towbinlab: fast acquisition (movies at video rate)
+    # ------------------------------------------------------------------------------------------------
+    def _snapshot_state(self):
+        """Everything fast_acquire changes, so that it can be put back exactly (also after an error)."""
+        nm = self.camera.GetNodeMap()
+        st = dict(streaming=bool(self.is_streaming), callback=bool(self.callback_is_enabled), trigger_mode=self.trigger_mode,
+                  pixel_format=self.pixel_format, exposure_time=self.exposure_time, analog_gain=self.analog_gain)
+
+        def val(name, kind):
+            n = kind(nm.GetNode(name))
+            return n.GetValue() if (n is not None and PySpin.IsReadable(n)) else None
+        st['roi'] = tuple(val(k, PySpin.CIntegerPtr) for k in ('OffsetX', 'OffsetY', 'Width', 'Height'))
+        st['rate'] = val('AcquisitionFrameRate', PySpin.CFloatPtr)
+        st['rate_enable'] = val('AcquisitionFrameRateEnable', PySpin.CBooleanPtr)
+        st['throughput'] = val('DeviceLinkThroughputLimit', PySpin.CIntegerPtr)
+        st['stream'] = {}
+        try:
+            tl = self.camera.GetTLStreamNodeMap()
+            n = PySpin.CEnumerationPtr(tl.GetNode('StreamBufferCountMode'))
+            if n is not None and PySpin.IsReadable(n):
+                st['stream']['StreamBufferCountMode'] = n.GetIntValue()
+            n = PySpin.CIntegerPtr(tl.GetNode('StreamBufferCountManual'))
+            if n is not None and PySpin.IsReadable(n):
+                st['stream']['StreamBufferCountManual'] = n.GetValue()
+        except Exception:
+            pass
+        return st
+
+    def _set_stream_buffers(self, count):
+        """Enlarge the Spinnaker stream buffer (frames waiting for the program) so that short stalls of the host do not lose frames. -> count used or None"""
+        try:
+            tl = self.camera.GetTLStreamNodeMap()
+            mode = PySpin.CEnumerationPtr(tl.GetNode('StreamBufferCountMode'))
+            manual = PySpin.CIntegerPtr(tl.GetNode('StreamBufferCountManual'))
+            if not (PySpin.IsWritable(mode) and PySpin.IsWritable(manual)):
+                return None
+            entry = mode.GetEntryByName('Manual')
+            if entry is None or not PySpin.IsReadable(entry):
+                return None
+            mode.SetIntValue(entry.GetValue())
+            n = int(min(max(count, manual.GetMin()), manual.GetMax()))
+            manual.SetValue(n)
+            return n
+        except PySpin.SpinnakerException as ex:
+            print('FLIR fast acquisition: stream buffers not set (' + str(ex) + ')')
+            return None
+
+    def _restore_state(self, st):
+        """Put the camera back as it was before fast_acquire. Every step is tried even if an earlier one fails. -> list of problems (empty = ok)"""
+        problems = []
+
+        def step(what, fn):
+            try:
+                fn()
+            except Exception as ex:             # keep restoring
+                problems.append(what + ': ' + str(ex))
+        nm = self.camera.GetNodeMap()
+        try:
+            if self.camera.IsStreaming():
+                self.stop_streaming()
+        except Exception as ex:
+            problems.append('stop streaming: ' + str(ex))
+        try:
+            tl = self.camera.GetTLStreamNodeMap()
+            for name, v in st['stream'].items():
+                if name == 'StreamBufferCountMode':
+                    step(name, lambda v=v: PySpin.CEnumerationPtr(tl.GetNode(name)).SetIntValue(v))
+                else:
+                    step(name, lambda v=v: PySpin.CIntegerPtr(tl.GetNode(name)).SetValue(v))
+        except Exception as ex:
+            problems.append('stream buffers: ' + str(ex))
+        # ROI: offsets to 0 first so that the full size fits, then size, then the offsets
+        ox, oy, w, h = st['roi']
+        if None not in st['roi']:
+            step('ROI', lambda: (self.set_ROI(offset_x=0, offset_y=0), self.set_ROI(width=w, height=h), self.set_ROI(offset_x=ox, offset_y=oy)))
+        if st['pixel_format'] and st['pixel_format'] != self.pixel_format:
+            step('pixel format', lambda: self.set_pixel_format(st['pixel_format']))
+        self.exposure_time = st['exposure_time']
+        mode = st['trigger_mode']
+        if mode == TriggerMode.HARDWARE:
+            step('trigger mode', self.set_hardware_triggered_acquisition)
+        elif mode == TriggerMode.SOFTWARE:
+            step('trigger mode', self.set_software_triggered_acquisition)
+        elif mode == TriggerMode.CONTINUOUS:
+            step('trigger mode', self.set_continuous_acquisition)
+        step('exposure', self.update_camera_exposure_time)
+        step('gain', lambda: self.set_analog_gain(st['analog_gain']))
+        if st['rate'] is not None:
+            step('frame rate', lambda: PySpin.CFloatPtr(nm.GetNode('AcquisitionFrameRate')).SetValue(
+                min(st['rate'], PySpin.CFloatPtr(nm.GetNode('AcquisitionFrameRate')).GetMax())))
+        if st['rate_enable'] is not None:
+            step('frame rate enable', lambda: PySpin.CBooleanPtr(nm.GetNode('AcquisitionFrameRateEnable')).SetValue(st['rate_enable']))
+        if st['callback']:
+            step('callback', self.enable_callback)
+        if st['streaming']:
+            step('start streaming', self.start_streaming)
+        for p in problems:
+            print('*** FLIR fast acquisition: could not restore ' + p)
+        return problems
+
+    def fast_acquire(self, n_frames, fps, bits=None, roi=None, exposure_ms=None, gain=None, should_abort=None, on_frame=None,
+                     max_bytes=4 * 1024 ** 3, buffers=64, on_started=None, on_stopped=None):
+        """Record `n_frames` back to back at `fps` with the camera free running, into one preallocated array (no disk access, no processing in the loop).
+
+        bits: 8 or 16 (None = keep the current pixel format); roi: side of a square or (width, height) in pixels, centred on the sensor (None = keep);
+        exposure_ms / gain: None = keep. The illumination has to be on already (the caller switches it). EVERYTHING that is changed (pixel format, ROI,
+        trigger mode, exposure, gain, frame rate, stream buffers, streaming, callback) is put back afterwards, also after an error or abort.
+        on_started(info) is called when streaming has started (info = what was set), on_frame(i, image) after every frame (keep it short),
+        on_stopped() right after the last frame (before the camera is put back), e.g. to switch the illumination off.
+        Returns dict: frames (n, h, w) of the frames received, frame_ids, timestamps_ns (camera clock), incomplete, timeouts, aborted, error,
+        fps_requested, fps_set, exposure_ms, gain, pixel_format, roi (x, y, w, h), buffers, restore_problems."""
+        if self.is_color:
+            raise ValueError('fast acquisition supports monochrome cameras only')
+        n_frames = int(n_frames)
+        if n_frames < 1 or not fps or fps <= 0:
+            raise ValueError('fast_acquire: n_frames must be >= 1 and fps > 0')
+        fmt = None if bits is None else {8: 'MONO8', 16: 'MONO16'}.get(int(bits))
+        if bits is not None and fmt is None:
+            raise ValueError('fast_acquire: bits must be 8 or 16')
+        out = dict(frames=None, frame_ids=[], timestamps_ns=[], incomplete=0, timeouts=0, aborted=False, error=None, fps_requested=float(fps),
+                   fps_set=None, exposure_ms=None, gain=None, pixel_format=None, roi=None, buffers=None, restore_problems=[])
+        st = self._snapshot_state()
+        try:
+            if self.is_streaming:
+                self.stop_streaming()
+            if self.callback_is_enabled:
+                self.disable_callback()
+            nm = self.camera.GetNodeMap()
+            # sensor region, centred
+            if roi is not None:
+                w_req, h_req = (roi, roi) if np.isscalar(roi) else (roi[0], roi[1])
+                wmax = PySpin.CIntegerPtr(nm.GetNode('WidthMax')).GetValue()
+                hmax = PySpin.CIntegerPtr(nm.GetNode('HeightMax')).GetValue()
+                w_req, h_req = min(int(w_req), wmax), min(int(h_req), hmax)
+                self.set_ROI(offset_x=0, offset_y=0)
+                self.set_ROI(width=w_req, height=h_req)
+                w_got = PySpin.CIntegerPtr(nm.GetNode('Width')).GetValue()
+                h_got = PySpin.CIntegerPtr(nm.GetNode('Height')).GetValue()
+                self.set_ROI(offset_x=(wmax - w_got) // 2, offset_y=(hmax - h_got) // 2)
+            if fmt is not None and fmt != self.pixel_format:
+                self.set_pixel_format(fmt)
+            self.set_continuous_acquisition()              # free running; also re-applies the exposure without the strobe margin
+            if exposure_ms is not None:
+                self.set_exposure_time(float(exposure_ms))
+            if gain is not None:
+                self.set_analog_gain(float(gain))
+            out['exposure_ms'], out['gain'] = self.exposure_time, self.analog_gain
+            roi_now = tuple(PySpin.CIntegerPtr(nm.GetNode(k)).GetValue() for k in ('OffsetX', 'OffsetY', 'Width', 'Height'))
+            out['roi'] = (roi_now[0], roi_now[1], roi_now[2], roi_now[3])
+            h, w = roi_now[3], roi_now[2]
+            out['pixel_format'] = self.pixel_format
+            nbytes = n_frames * h * w * max(1, int(self.pixel_size_byte))
+            if nbytes > max_bytes:
+                raise ValueError(f'fast_acquire: {n_frames} frames of {w}x{h} need {nbytes / 1e9:.1f} GB of memory, more than the allowed {max_bytes / 1e9:.1f} GB')
+            # frame rate: the exposure has to fit into the frame period
+            exp_us = PySpin.CFloatPtr(nm.GetNode('ExposureTime')).GetValue()
+            if exp_us > 1e6 / fps:
+                raise ValueError(f'fast_acquire: exposure {exp_us / 1000:.1f} ms is longer than the frame period {1000 / fps:.1f} ms at {fps:g} fps')
+            en = PySpin.CBooleanPtr(nm.GetNode('AcquisitionFrameRateEnable'))
+            if PySpin.IsWritable(en):
+                en.SetValue(True)
+            rate = PySpin.CFloatPtr(nm.GetNode('AcquisitionFrameRate'))
+            if PySpin.IsWritable(rate):
+                rate.SetValue(float(min(max(fps, rate.GetMin()), rate.GetMax())))
+                out['fps_set'] = rate.GetValue()
+            thr = PySpin.CIntegerPtr(nm.GetNode('DeviceLinkThroughputLimit'))
+            if PySpin.IsWritable(thr):
+                thr.SetValue(thr.GetMax())
+            out['buffers'] = self._set_stream_buffers(buffers)
+            self.start_streaming()
+            if on_started is not None:
+                on_started(dict(out))
+            buf, n = None, 0
+            try:
+                timeout_ms = int(2000 + 1.5 * exp_us / 1000 + 2000.0 / fps)
+                failed_in_row = 0
+                while n < n_frames:
+                    if should_abort is not None and should_abort():
+                        out['aborted'] = True
+                        break
+                    try:
+                        raw = self.camera.GetNextImage(timeout_ms)
+                    except PySpin.SpinnakerException as ex:
+                        out['timeouts'] += 1
+                        failed_in_row += 1
+                        print('*** FLIR fast acquisition: no image within ' + str(timeout_ms) + ' ms (' + str(ex) + ')')
+                        if failed_in_row >= 3:
+                            out['error'] = 'camera delivered no image 3 times in a row: ' + str(ex)
+                            break
+                        continue
+                    try:
+                        if raw.IsIncomplete():
+                            out['incomplete'] += 1
+                            print('Image incomplete with image status %d ...' % raw.GetImageStatus())
+                            failed_in_row += 1
+                            if failed_in_row >= 3 and n == 0:
+                                out['error'] = 'only incomplete images received'
+                                break
+                            continue
+                        failed_in_row = 0
+                        arr = raw.GetNDArray()
+                        if self.pixel_format == 'MONO12':
+                            arr = arr << 4
+                        if buf is None:
+                            buf = np.empty((n_frames,) + arr.shape, dtype=arr.dtype)
+                        buf[n] = arr
+                        out['frame_ids'].append(int(raw.GetFrameID()))
+                        try:
+                            out['timestamps_ns'].append(int(raw.GetTimeStamp()))
+                        except Exception:
+                            out['timestamps_ns'].append(0)
+                    finally:
+                        raw.Release()
+                    if on_frame is not None:
+                        on_frame(n, buf[n])
+                    n += 1
+                out['frames'] = buf[:n] if buf is not None else None
+            finally:
+                if on_stopped is not None:
+                    try:
+                        on_stopped()
+                    except Exception as ex:
+                        print('*** FLIR fast acquisition: on_stopped failed: ' + str(ex))
+        finally:
+            out['restore_problems'] = self._restore_state(st)
+        return out
+
     def set_ROI(self,offset_x=None,offset_y=None,width=None,height=None):
 
         # stop streaming if streaming is on

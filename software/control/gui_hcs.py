@@ -289,6 +289,8 @@ class OctopiGUI(QMainWindow):
         self.multiPointWidget2 = widgets.MultiPointWidget2(self.navigationController,self.navigationViewer,self.multipointController,self.configurationManager,scanCoordinates=None) # =self.scanCoordinates
         from control.jobs_widget import JobsWidget
         self.jobsWidget = JobsWidget(self.multipointController,self.configurationManager,self.multiPointWidget2) # JOBs: scripted acquisition on the positions of the flexible multipoint tab
+        from control.single_measurement_widget import SingleMeasurementWidget
+        self.singleMeasurementWidget = SingleMeasurementWidget(self.multipointController,self.configurationManager,self.multiPointWidget2) # quick single capture / fast timelapse at the current position
         self.piezoWidget = widgets.PiezoWidget(self.navigationController)
         self.wellplateFormatWidget = widgets.WellplateFormatWidget()
         self.objectivesWidget = widgets.ObjectivesWidget(self.objectiveStore)
@@ -338,6 +340,7 @@ class OctopiGUI(QMainWindow):
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.recordTabWidget.addTab(self.multiPointWidget2, "Flexible Multipoint")
             self.recordTabWidget.addTab(self.jobsWidget, "JOBs")
+            self.recordTabWidget.addTab(self.singleMeasurementWidget, "Single measurement")
         if ENABLE_SPINNING_DISK_CONFOCAL:
             self.recordTabWidget.addTab(self.spinningDiskConfocalWidget,"Spinning Disk Confocal")
         if ENABLE_TRACKING:
@@ -454,6 +457,8 @@ class OctopiGUI(QMainWindow):
             self.jobsWidget.signal_acquisition_started.connect(self.navigationWidget.toggle_navigation_controls)
             self.jobsWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
             self.jobsWidget.signal_job_paused.connect(self.toggleJobPause)
+            self.singleMeasurementWidget.signal_acquisition_started.connect(self.navigationWidget.toggle_navigation_controls)
+            self.singleMeasurementWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
         # stability: tell the user when an acquisition ended because of an error (it used to hang silently)
         self.multipointController.signal_acquisition_error.connect(self.show_acquisition_error)
         # stability: lock mouse / keyboard input while an acquisition runs (lifted while a JOB is paused)
@@ -728,6 +733,9 @@ class OctopiGUI(QMainWindow):
         jw = getattr(self, 'jobsWidget', None)
         if jw is not None:
             allowed += [jw.btn_start, jw.btn_pause, jw.log]
+        sw = getattr(self, 'singleMeasurementWidget', None)
+        if sw is not None:
+            allowed += [sw.btn_abort, sw.log]
         return allowed
 
     def _on_acquisition_started_lock(self):

@@ -149,6 +149,31 @@ API = [
          returns='dict {channel name: array of shape (frames, Y, X)}',
          example='scope.move_to(pt)\nscope.movie(["488", "561"], duration_s=60, interval_s=2, compression="lossy")'),
 
+    dict(name='fast_movie', kind='method', category='Imaging',
+         signature='scope.fast_movie(channel, fps=25, duration_s=None, frames=None, roi=None, bits=None, exposure_ms=None, gain=None, compression="none", save=True, save_as=None, filename=None)',
+         summary='Video-rate movie (e.g. 25 frames/s) in one channel at the current position, frames kept in memory and written afterwards (uncompressed by default).',
+         details=('The camera runs freely at <code>fps</code> with the light on only while it records; nothing is processed and nothing is written during the '
+                  'recording, so frames are not lost to the disk. Give <code>duration_s</code> or <code>frames</code>.<br><br>'
+                  '<b>roi</b>: region in the centre of the sensor, e.g. <code>roi=2000</code> for 2000x2000 pixels (smaller regions are faster). '
+                  '<b>bits</b>: <code>8</code> or <code>16</code>; 8 bit reads out about twice as fast and halves the data, but saturates at 255 - check the '
+                  'saturation warning and lower <code>exposure_ms</code>, <code>gain</code> or the channel intensity. <b>exposure_ms</b> and <b>gain</b> '
+                  'apply to this movie only; all camera settings (bit depth, region, trigger mode, exposure, gain, frame rate) are restored afterwards, '
+                  'also after an error, so the next images are as before.<br><br>'
+                  'The exposure must be shorter than the frame period (1/fps). The camera frame number and clock of every frame are stored '
+                  '(<code>fast_frames.csv</code>, DeltaT in the OME metadata); lost frames, the achieved frame rate, saturation and dark images are reported as warnings. '
+                  'The movie must fit in memory (limit 4 GB: 2000x2000 at 8 bit = 1000 frames = 40 s at 25 fps). '
+                  'Abort keeps the frames recorded so far; Pause takes effect after the movie.<br><br>'
+                  'File: <code>Time0003_Point0002_FastMovie.tiff</code>, uncompressed (<code>compression="lossless"</code> or <code>"lossy"</code> are possible and slow '
+                  'to write). <code>save_as</code> and <code>filename</code> as for <code>movie</code> (single files: <code>3/A-2_0_0_0_&lt;channel&gt;_FastMovie_F0012.tiff</code>). '
+                  'Only for FLIR cameras (other cameras: software-triggered frames, slow and irregular).'),
+         params=[('channel', 'channel name'), ('fps', 'frames per second'), ('duration_s', 'duration in seconds (instead of frames)'), ('frames', 'number of frames'),
+                 ('roi', 'region in the centre of the sensor: side length or (width, height) in pixels; None = current'), ('bits', '8 or 16; None = current'),
+                 ('exposure_ms', 'exposure for this movie; None = the channel\'s value'), ('gain', 'analog gain for this movie; None = the channel\'s value'),
+                 ('compression', '"none" (default), "lossless" or "lossy"'), ('save', 'False = do not write a file'),
+                 ('save_as', '"multipage" (directly), "merge" or "single"; default: JOBs tab setting'), ('filename', 'own file name without extension')],
+         returns='dict {channel name: array of shape (frames, Y, X)}',
+         example='scope.move_to(pt)\nscope.fast_movie("488", fps=25, duration_s=5, roi=2000, bits=8)'),
+
     # --- Autofocus ------------------------------------------------------------------------------
     dict(name='autofocus', kind='method', category='Autofocus',
          signature='scope.autofocus(channel=None, focus_measure=None)',
@@ -479,6 +504,9 @@ SNIPPETS = [
     ('Movie at a position',
      'Two minutes, one round every 2 s, two colours, saved as lossy JPEG2000 to save disk space.',
      'scope.move_to(pt)\nscope.movie(["488", "561"], duration_s=120, interval_s=2, compression="lossy")\n'),
+    ('Video-rate movie (25 fps)',
+     '5 s at 25 frames/s, 2000x2000 pixels, 8 bit, uncompressed; the camera settings are restored afterwards.',
+     'scope.move_to(pt)\nscope.fast_movie("488", fps=25, duration_s=5, roi=2000, bits=8)\n'),
     ('Time lapse over all positions',
      'Every position, one channel, at regular intervals.',
      'for t in scope.timepoints(10, interval=60):\n    for pt in scope.points():\n        scope.move_to(pt)\n        scope.capture("488")\n'),

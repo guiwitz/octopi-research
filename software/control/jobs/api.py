@@ -214,6 +214,11 @@ class Backend:
     def save_image(self, image, path, channel):
         raise NotImplementedError
 
+    def fast_movie(self, channel, n_frames, fps, bits=None, roi=None, exposure_ms=None, gain=None):
+        """Video-rate recording in one channel. -> dict(frames (n, Y, X), frame_ids, timestamps_s, fps_set, exposure_ms, gain, pixel_format,
+        incomplete, timeouts, aborted, error, notes, restore_problems, x_mm, y_mm, z_mm)"""
+        raise JobError('this microscope backend cannot record fast movies')
+
     def abort_requested(self):
         return False
 
@@ -793,11 +798,12 @@ class Scope:
             raise JobError(f'{what}: {n_images} images of {np.asarray(image).nbytes / 1e6:.1f} MB need {need / 1e9:.1f} GB of memory, '
                            f'more than the allowed {MAX_BUFFER_BYTES / 1e9:.0f} GB. Use fewer planes/frames.')
 
-    def _write_frames(self, descriptor, kind, data, chans, rows, px, z_step_um, interval_s, mode, q, ratio, description, save_as, filename):
+    def _write_frames(self, descriptor, kind, data, chans, rows, px, z_step_um, interval_s, mode, q, ratio, description, save_as, filename, raw=False):
         """Write the (T,Z,C,Y,X) array in the background and add one row per page to frames.csv.
         save_as "multipage": ONE multipage file; "single": one file per image; "merge": one file per image first, merged into the multipage file
-        later (when the job waits), then deleted. -> file path (multipage, merge) or folder (single files), relative to the experiment dir"""
+        later (when the job waits), then deleted. raw: no compression at all (fast movies). -> file path (multipage, merge) or folder (single files), relative to the experiment dir"""
         rel = ''
+        cmode = 'none' if raw else mode
         if not self._save:
             return rel
         pt, tp = self._current_point, self._tp
@@ -809,7 +815,7 @@ class Scope:
             rel = os.path.relpath(path, self._dir)
             self._get_writer().submit(
                 lambda: stackio.write_ome_tiff(path, data, chans, planes=planes, pixel_size_um=px, z_step_um=z_step_um,
-                                               time_increment_s=interval_s, compression=mode, quality=q, ratio=ratio, description=description),
+                                               time_increment_s=interval_s, compression=cmode, quality=q, ratio=ratio, description=description),
                 int(data.nbytes), self._backend.abort_requested)
             files = [rel] * len(rows)
         else:
@@ -820,14 +826,19 @@ class Scope:
                 if kind == 'zstack':
                     base = f'{filename}_Z{r["z_index"]:04d}_{_safe(ch)}' if (filename and not merge) else f'{self._region()}_0_0_{r["z_index"]}_{_safe(ch)}'
                 else:
-                    base = f'{filename}_F{r["t_index"]:04d}_{_safe(ch)}' if (filename and not merge) else f'{self._region()}_0_0_0_{_safe(ch)}_Movie_F{r["t_index"]:04d}'
+                    base = f'{filename}_F{r["t_index"]:04d}_{_safe(ch)}' if (filename and not merge) else f'{self._region()}_0_0_0_{_safe(ch)}_{descriptor}_F{r["t_index"]:04d}'
                 spath = self._new_path(base, single=True)
                 files.append(os.path.relpath(spath, self._dir))
                 parts[(r['t_index'], r['z_index'], chans.index(ch))] = spath
                 img = data[r['t_index'], r['z_index'], chans.index(ch)]
                 page = dict(time_s=[0.0], exposure_ms=[r['exposure_ms'] or 0.0], x_um=[(r['x_mm'] or 0.0) * 1000], y_um=[(r['y_mm'] or 0.0) * 1000],
                             z_um=[(r['z_mm'] or 0.0) * 1000])
-                if mode == 'lossless' or merge:         # merge: single files are always lossless; the merged file gets the requested compression
+                if raw:                                  # uncompressed single page (fast movies)
+                    self._get_writer().submit(
+                        lambda img=img, spath=spath, ch=ch, page=page: stackio.write_ome_tiff(spath, img[None, None, None], [ch], planes=page, pixel_size_um=px,
+                                                                                              compression='none', description=kind),
+                        int(img.nbytes), self._backend.abort_requested)
+                elif mode == 'lossless' or merge:       # merge: single files are always lossless; the merged file gets the requested compression
                     self._get_writer().submit(lambda img=img, spath=spath, ch=ch: self._backend.save_image(img, spath, ch), int(img.nbytes), self._backend.abort_requested)
                 else:
                     self._get_writer().submit(
@@ -838,7 +849,7 @@ class Scope:
                 path = self._new_path(self._stem(descriptor, filename))
                 rel = os.path.relpath(path, self._dir)
                 src = stackio.PageFiles(parts, data.shape[:3], data.dtype, data.shape[3:])
-                self._defer(lambda: self._merge_job(path, src, chans, planes, px, z_step_um, interval_s, mode, q, ratio, description))
+                self._defer(lambda: self._merge_job(path, src, chans, planes, px, z_step_um, interval_s, cmode, q, ratio, description))
                 files = [rel] * len(rows)
             else:
                 rel = os.path.relpath(os.path.dirname(spath), self._dir) + f' ({len(files)} files)' if files else ''
@@ -976,6 +987,124 @@ class Scope:
             if rel:
                 self.log(f'movie saved as {rel}')
         return {c: data[:, 0, ci] for ci, c in enumerate(chans)}
+
+    def fast_movie(self, channel, fps=25, duration_s=None, frames=None, roi=None, bits=None, exposure_ms=None, gain=None,
+                   compression='none', save=True, save_as=None, filename=None):
+        """Video-rate movie at the current position in ONE channel: the camera runs freely at `fps` with the light on, the frames are collected in
+        memory (no processing, no disk access while recording) and written afterwards. Returns {channel: array (frames, Y, X)}.
+        Give duration_s or frames. roi: region in the centre of the sensor, a side length (2000 = 2000x2000 pixels) or (width, height);
+        None = the current camera region. bits: 8 or 16 (None = the current setting); 8 bit halves data and readout time, but saturates at 255.
+        exposure_ms / gain: only for this movie (None = the channel's values); the camera settings are restored afterwards.
+        compression: "none" (default, uncompressed), "lossless" or "lossy". save_as, filename: as for movie().
+        The camera frame number and clock of every frame are stored (fast_frames.csv, OME DeltaT); dropped frames, the achieved frame rate
+        and saturation are reported. Pause takes effect after the movie, Abort stops it (the frames recorded so far are kept)."""
+        self._tick()
+        ch = self._resolve_channel(channel)
+        if isinstance(fps, bool) or not isinstance(fps, (int, float)) or not np.isfinite(fps) or fps <= 0:
+            raise JobError(f'fast_movie: fps must be a number > 0, got {fps!r}')
+        if (frames is None) == (duration_s is None):
+            raise JobError('fast_movie: give frames OR duration_s')
+        if duration_s is not None:
+            if not isinstance(duration_s, (int, float)) or isinstance(duration_s, bool) or not np.isfinite(duration_s) or duration_s <= 0:
+                raise JobError(f'fast_movie: duration_s must be a number > 0, got {duration_s!r}')
+            frames = int(round(duration_s * fps))
+        if isinstance(frames, bool) or int(frames) != frames or frames < 1:
+            raise JobError(f'fast_movie: frames must be a whole number >= 1, got {frames!r}')
+        frames = int(frames)
+        if bits not in (None, 8, 16):
+            raise JobError(f'fast_movie: bits must be 8 or 16, got {bits!r}')
+        if roi is not None:
+            side = [roi] if np.isscalar(roi) else list(roi)
+            if len(side) not in (1, 2) or any(isinstance(s, bool) or int(s) != s or s < 16 for s in side):
+                raise JobError(f'fast_movie: roi must be a side length or (width, height) in pixels (at least 16), got {roi!r}')
+            roi = int(side[0]) if len(side) == 1 else (int(side[0]), int(side[1]))
+        for name, v in (('exposure_ms', exposure_ms), ('gain', gain)):
+            if v is not None and (isinstance(v, bool) or not np.isfinite(v) or v < 0 or (name == 'exposure_ms' and v == 0)):
+                raise JobError(f'fast_movie: {name} must be a positive number, got {v!r}')
+        comp = 'none' if compression is None else str(compression).strip().lower()
+        if comp not in ('none', 'lossless', 'lossy'):
+            raise JobError(f'fast_movie: compression must be "none", "lossless" or "lossy", got {compression!r}')
+        mode, q, ratio = self._compression('lossless' if comp == 'none' else comp, None, None)
+        mp, fname = self._use_save_as(save_as), self._clean_filename(filename)
+        self.check_abort()
+        self._events += 1
+        if self._max_events and self._events > self._max_events:
+            raise JobError(f'the job did not finish after {self._max_events} operations (endless loop?)')
+        t_begin = self.elapsed
+        self._state('capturing', point=self._current_point.index if self._current_point else None, channel=ch)
+        res = self._backend.fast_movie(ch, frames, float(fps), bits=bits, roi=roi, exposure_ms=exposure_ms, gain=gain)
+        data = res.get('frames')
+        got = 0 if data is None else len(data)
+        if got == 0:
+            raise JobError(f'fast_movie: the camera delivered no frames ({res.get("error") or "unknown reason"})')
+        pt = self._current_point
+        self._rec('capture', t_begin, point=pt, channel=ch)
+        self.stats['movies'] += 1
+        self.stats['images'] += got
+        self.stats['per_channel'][ch] = self.stats['per_channel'].get(ch, 0) + got
+        if pt is not None:
+            self.stats['per_group'][pt.group] = self.stats['per_group'].get(pt.group, 0) + got
+        if res.get('exposure_ms') is not None:
+            self.stats['exposures'][ch] = res['exposure_ms']
+        # --- what happened: timing, lost frames, brightness
+        ids = np.asarray(res.get('frame_ids') or [], dtype=np.int64)
+        lost = int(np.clip(np.diff(ids) - 1, 0, None).sum()) if len(ids) > 1 else 0
+        ts = np.asarray(res.get('timestamps_s') or [], dtype=float)
+        have_ts = len(ts) == got and got > 1 and np.ptp(ts) > 0
+        dt = (ts - ts[0]) if have_ts else np.arange(got) / float(fps)
+        d = np.diff(ts) if have_ts else np.array([])
+        achieved = float(1.0 / d.mean()) if len(d) else None
+        problems = []
+        if lost:
+            problems.append(f'{lost} frame(s) lost (gaps in the camera frame numbers)')
+        if res.get('incomplete'):
+            problems.append(f'{res["incomplete"]} incomplete frame(s) skipped')
+        if res.get('timeouts'):
+            problems.append(f'{res["timeouts"]} timeout(s) waiting for the camera')
+        if got < frames:
+            problems.append(('aborted' if res.get('aborted') else 'stopped') + f' after {got} of {frames} frames' + (f' ({res["error"]})' if res.get('error') else ''))
+        if achieved is not None and abs(achieved - fps) > 0.03 * fps:
+            problems.append(f'achieved {achieved:.2f} fps instead of {fps:g}')
+        if len(d) and d.max() > 1.5 / fps:
+            problems.append(f'longest frame interval {d.max() * 1000:.0f} ms (nominal {1000 / fps:.0f} ms)')
+        for p in res.get('restore_problems') or []:
+            problems.append('camera setting not restored: ' + p)
+        sample = np.asarray(data[np.linspace(0, got - 1, min(got, 5)).astype(int)])
+        dmax = float(np.iinfo(sample.dtype).max) if sample.dtype.kind in 'ui' else 1.0
+        levels = [dmax] + ([16383.0, 4095.0] if sample.dtype == np.uint16 else [])
+        sat = max(float((sample == lv).mean()) for lv in levels)
+        top = float(np.percentile(sample[:, ::8, ::8], 99.9))
+        brightness = f'brightest 0.1% of pixels at {top:.0f} of {dmax:.0f}'
+        if sat >= 0.001:
+            self.warn(f'fast_movie {ch}: {sat * 100:.1f}% of the pixels are saturated. Reduce exposure_ms, gain or the illumination intensity and repeat.')
+        elif sample.dtype == np.uint8 and top < 40:
+            self.warn(f'fast_movie {ch}: the image is dark ({brightness}); 8-bit frames have only 256 grey levels, so use more light or exposure.')
+        for p in problems:
+            self.warn(f'fast_movie {ch}: {p}')
+        for n in res.get('notes') or []:
+            self.warn(f'fast_movie {ch}: {n}')
+        h, w = data.shape[-2:]
+        rep = (f'fast movie {ch}: {got} frames {w}x{h} {res.get("pixel_format") or str(data.dtype)}, {achieved:.2f} fps' if achieved else
+               f'fast movie {ch}: {got} frames {w}x{h} {res.get("pixel_format") or str(data.dtype)}') + \
+              f' (requested {fps:g}' + (f', camera set to {res["fps_set"]:.2f}' if res.get('fps_set') else '') + \
+              f'), exposure {res.get("exposure_ms") if res.get("exposure_ms") is not None else "?"} ms, {brightness}, {lost} lost'
+        self.log(rep)
+        rel = ''
+        if save:
+            x, y, z = res.get('x_mm', ''), res.get('y_mm', ''), res.get('z_mm', '')
+            rows = [dict(frame=i, t_index=i, z_index=0, channel=ch, time_s=round(t_begin + float(dt[i]), 4), dt_s=round(float(dt[i]), 5),
+                         z_mm=z, x_mm=x, y_mm=y, exposure_ms=res.get('exposure_ms'), gain=res.get('gain', ''), intensity=res.get('intensity', ''))
+                    for i in range(got)]
+            desc = rep + '. DeltaT = camera clock since the first frame. ' + ('Uncompressed.' if comp == 'none' else ('Lossless.' if mode == 'lossless' else 'Lossy JPEG2000.'))
+            if self._save:
+                rel = self._write_frames('FastMovie', 'movie', np.asarray(data)[:, None, None], [ch], rows, self._backend.pixel_size_um(), None,
+                                         (1.0 / achieved) if achieved else 1.0 / fps, mode, q, ratio, desc, mp, fname, raw=(comp == 'none'))
+                for i in range(got):
+                    self._write_row('fast_frames', dict(file=rel, frame=i, camera_frame_id=int(ids[i]) if i < len(ids) else '',
+                                                        camera_time_s=round(float(dt[i]), 6), interval_ms=round(float(d[i - 1]) * 1000, 3) if (i and have_ts) else ''))
+                if rel:
+                    self.log(f'fast movie saved as {rel}')
+        return {ch: data}
 
     # --- bookkeeping -------------------------------------------------------------------------
     def _write_row(self, table, row):

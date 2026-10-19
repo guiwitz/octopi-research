@@ -233,10 +233,11 @@ def write_ome_tiff(path, data, channels, planes=None, pixel_size_um=None, z_step
                    compression='lossless', quality=None, ratio=None, description=None):
     """Write `data` (T, Z, C, Y, X) as a multipage OME-TIFF.
 
-    channels: list of C names. planes: optional dict of lists with one entry per page in file order
+    compression: "lossless" (zlib), "lossy" (JPEG2000) or "none" (uncompressed). channels: list of C names. planes: optional dict of lists with one entry per page in file order
     (keys: time_s, z_um, x_um, y_um, exposure_ms). description: free text stored as the image description (OME)."""
     import tifffile
-    mode, q, ratio = normalize_compression(compression, quality, ratio)
+    raw = isinstance(compression, str) and compression.strip().lower() in ('none', 'raw', 'uncompressed')   # no compression at all (fast movies)
+    mode, q, ratio = normalize_compression('lossless' if raw else compression, quality, ratio)
     if mode == 'lossy':
         check_lossy_ok()
     data = data if isinstance(data, PageFiles) else np.asarray(data)
@@ -280,7 +281,7 @@ def write_ome_tiff(path, data, channels, planes=None, pixel_size_um=None, z_step
                 raise StackIOError(f'plane metadata {k!r} has {len(v)} entries, expected {n}')
         meta['Plane'] = pl
     if mode == 'lossless' and isinstance(data, np.ndarray):
-        tifffile.imwrite(path, data, ome=True, metadata=meta, bigtiff=True, **_tiff_args(mode, None, data.shape[-2]))
+        tifffile.imwrite(path, data, ome=True, metadata=meta, bigtiff=True, **({} if raw else _tiff_args(mode, None, data.shape[-2])))
     else:
         # lossy: every page is written separately, because every channel has its own quality (tifffile applies one compression to a call);
         # also used for lossless data that is read page by page from files (PageFiles)
@@ -297,7 +298,7 @@ def write_ome_tiff(path, data, channels, planes=None, pixel_size_um=None, z_step
                 for z in range(Z):
                     for c in range(C):
                         tw.write(data[t, z, c], photometric='minisblack', metadata=None, contiguous=False,
-                                 description=xml if k == 0 else None, **_tiff_args(mode, qs[c], data.shape[-2]))
+                                 description=xml if k == 0 else None, **({} if raw else _tiff_args(mode, qs[c], data.shape[-2])))
                         k += 1
     import os
     info['file'] = path

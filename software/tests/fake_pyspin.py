@@ -256,6 +256,7 @@ class FakeCamera:
         self.log = []             # (time, event, details)
         self.fault = dict(drop_triggers=0, incomplete_frames=0)
         self.dropped_full_buffer = 0
+        self.paced = False         # True: free running at AcquisitionFrameRate (when enabled), else ~30 fps as before
         self.concurrent_calls = 0
         self._inside = 0
         self._thread = None
@@ -542,6 +543,8 @@ class FakeCamera:
                 ready = []
                 if self.n_trigger_mode.symbolic == 'Off':        # continuous: frame period = max(exposure, 1/fps)
                     period = max(self._exposure_s() + READOUT_S, 1.0 / 30.0)
+                    if self.paced and self.nodemap.GetNode('AcquisitionFrameRateEnable').value:
+                        period = max(1.0 / self.nodemap.GetNode('AcquisitionFrameRate').value, self._exposure_s())
                     if now - self._last_continuous >= period:
                         self._last_continuous = now
                         ready.append(dict(trigger=0, exposure_ms=self.n_exposure.value / 1000.0, gain=self.n_gain.value, source='continuous'))

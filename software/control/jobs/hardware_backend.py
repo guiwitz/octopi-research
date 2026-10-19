@@ -15,6 +15,15 @@ from control._def import (TriggerMode, SCAN_STABILIZATION_TIME_MS_Y, SCAN_STABIL
                           ENABLE_NL5, NL5_USE_DOUT, MULTIPOINT_BF_SAVING_OPTION)
 from control.jobs.api import Backend, JobError
 
+def usbfs_memory_mb():
+    """Linux USB buffer limit in MB (None if unknown): the FLIR driver needs a large one for fast recordings"""
+    try:
+        with open('/sys/module/usbcore/parameters/usbfs_memory_mb') as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
 LONG_MOVE_MM = 13           # as in the standard acquisition: for jumps longer than this the objective is lifted first
 SAFE_Z_MM = 2
 
@@ -226,6 +235,71 @@ class HardwareBackend(Backend):
             self.mcu.send_hardware_trigger(control_illumination=True, illumination_on_time_us=cam.exposure_time * 1000)
             return cam.read_frame()
         raise JobError('JOBs support the software and the hardware trigger mode, not continuous mode')
+
+    # --- video-rate movie: the camera runs freely (Camera.fast_acquire), the light is on only while it records
+    def fast_movie(self, channel, n_frames, fps, bits=None, roi=None, exposure_ms=None, gain=None):
+        from control.jobs.api import MAX_BUFFER_BYTES
+        w, cam, live = self.w, self.camera, self.live
+        config = self._config(channel)
+        w.signal_current_configuration.emit(config)             # blocking: GUI applies exposure, gain, illumination source, filter
+        w.wait_till_operation_is_completed()
+        notes = []
+        mb = usbfs_memory_mb()
+        if mb is not None and mb < 200:
+            notes.append(f'the USB buffer limit of this computer is only {mb} MB (usbfs_memory_mb); if frames are lost, raise it to 1000 '
+                         f'(GRUB: usbcore.usbfs_memory_mb=1000)')
+        step = max(1, int(round(fps / 5.0)))            # about 5 pictures per second in the live display
+
+        def show(i, img):
+            if i % step == 0:
+                small = img[::2, ::2]
+                shown = (small.astype(np.uint16) << 8) if small.dtype == np.uint8 else small
+                w.image_to_display.emit(np.ascontiguousarray(shown))
+
+        def light_on(_info=None):
+            live.turn_on_illumination()
+            w.wait_till_operation_is_completed()
+        x, y, z = self.position()
+        try:
+            if hasattr(cam, 'fast_acquire'):
+                try:
+                    res = cam.fast_acquire(n_frames, fps, bits=bits, roi=roi, exposure_ms=exposure_ms, gain=gain, should_abort=self.abort_requested,
+                                           on_frame=show, max_bytes=MAX_BUFFER_BYTES, on_started=light_on, on_stopped=live.turn_off_illumination)
+                except ValueError as e:
+                    raise JobError(str(e))
+                ts = [t / 1e9 for t in res['timestamps_ns']]
+            else:
+                res, ts = self._generic_fast_movie(config, n_frames, fps, show, notes), None
+                ts = res.pop('timestamps_s')
+        finally:
+            live.turn_off_illumination()
+        frames = res['frames']
+        if frames is not None and len(frames):
+            ang, flip = self.camera.rotate_image_angle, self.camera.flip_image
+            if ang or flip:                         # as for single images
+                frames = np.stack([utils.rotate_and_flip_image(f, rotate_image_angle=ang, flip_image=flip) for f in frames])
+        res.update(frames=frames, timestamps_s=ts, notes=notes + res.get('notes', []), intensity=config.illumination_intensity, x_mm=x, y_mm=y, z_mm=z)
+        return res
+
+    def _generic_fast_movie(self, config, n_frames, fps, show, notes):
+        """Cameras without a fast mode (simulation, other makes): software-triggered frames paced in software. Slower, with irregular timing."""
+        notes.append('this camera has no fast mode: frames are software-triggered, the frame rate and its regularity are limited')
+        frames, ts, t0 = [], [], time.time()
+        for i in range(n_frames):
+            if self.abort_requested():
+                break
+            wait = t0 + i / float(fps) - time.time()
+            if wait > 0:
+                time.sleep(wait)
+            img = self._trigger_and_read(config)
+            if img is None:
+                continue
+            frames.append(img)
+            ts.append(time.time() - t0)
+            show(len(frames) - 1, img)
+        return dict(frames=np.stack(frames) if frames else None, frame_ids=list(range(len(frames))), timestamps_s=ts, fps_set=None,
+                    exposure_ms=config.exposure_time, gain=config.analog_gain, pixel_format=str(getattr(self.camera, 'pixel_format', '') or ''),
+                    incomplete=0, timeouts=0, aborted=self.abort_requested(), error=None, restore_problems=[])
 
     def save_image(self, image, path, channel):
         from control.towbin_funs import save_single_plane_tiff
