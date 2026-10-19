@@ -5,6 +5,7 @@ Nothing here talks to the microcontroller or camera in a new way; each method mi
 (noted in the docstrings), so behaviour and safety handling (backlash, z lift for long moves, stabilisation
 times, illumination on/off) are the same as in the standard acquisition. Runs in the MultiPointWorker thread.
 """
+import os
 import time
 
 import numpy as np
@@ -137,8 +138,19 @@ class HardwareBackend(Backend):
         previous = self.af.focus_measure
         if focus_measure is not None:
             from control import autofocus_settings
-            if focus_measure not in autofocus_settings.REGISTRY.keys():
-                raise JobError(f'unknown focus measure {focus_measure!r}; available: {list(autofocus_settings.REGISTRY.keys())}')
+            reg = autofocus_settings.REGISTRY
+            if '::' in focus_measure and not reg.is_custom(focus_measure):      # "file.py::function" (relative to the software folder)
+                path, func = focus_measure.rsplit('::', 1)
+                if not os.path.isabs(path):
+                    path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), path)
+                focus_measure = reg.make_key(path, func)
+            if reg.is_custom(focus_measure):
+                try:
+                    reg.get(focus_measure)                                       # loads the file if needed
+                except Exception as e:
+                    raise JobError(f'focus measure {focus_measure!r} not usable: {e}')
+            elif focus_measure not in reg.keys():
+                raise JobError(f'unknown focus measure {focus_measure!r}; available: {reg.keys()}')
             self.af.focus_measure = focus_measure                # attribute only (no GUI signal); restored below
         try:
             self.af.autofocus()
