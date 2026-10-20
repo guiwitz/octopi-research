@@ -256,6 +256,8 @@ class FakeCamera:
         self.log = []             # (time, event, details)
         self.fault = dict(drop_triggers=0, incomplete_frames=0)
         self.dropped_full_buffer = 0
+        self.exposure_lag = False   # True: like the real Blackfly S: an exposure written now is used from the SECOND trigger on (the first uses the one latched before)
+        self._latched = None
         self.paced = False         # True: free running at AcquisitionFrameRate (when enabled), else ~30 fps as before
         self.concurrent_calls = 0
         self._inside = 0
@@ -489,7 +491,13 @@ class FakeCamera:
                 self._log('trigger_ignored', source=source, why='trigger mode ' + self.n_trigger_mode.symbolic + '/' + self.n_trigger_source.symbolic)
                 return
             self.n_triggers += 1
-            meta = dict(trigger=self.n_triggers, exposure_ms=self.n_exposure.value / 1000.0, gain=self.n_gain.value,
+            if self.exposure_lag:
+                cur = self.n_exposure.value
+                use = cur if self._latched is None else self._latched
+                self._latched = cur
+            else:
+                use = self.n_exposure.value
+            meta = dict(trigger=self.n_triggers, exposure_ms=use / 1000.0, gain=self.n_gain.value,
                         source=source, t_trigger=time.time())
             if self.fault['drop_triggers'] > 0:
                 self.fault['drop_triggers'] -= 1
