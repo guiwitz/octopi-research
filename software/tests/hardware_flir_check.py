@@ -45,6 +45,7 @@ def main():
     ap.add_argument('--fake', action='store_true', help='use the fake PySpin (no camera needed)')
     ap.add_argument('--fake-no-sequencer', action='store_true', help='with --fake: a camera without Sequencer')
     ap.add_argument('--quick', action='store_true')
+    ap.add_argument('--no-empty-frame', action='store_true', help='do not use the "Empty frame in between" option (shows the raw one-frame exposure lag)')
     ap.add_argument('--pixel-format', default='MONO16')
     ap.add_argument('--out', default=HERE)
     a = ap.parse_args()
@@ -234,6 +235,7 @@ def main():
 
     # 1. open and settings
     cam = cf.Camera(sn=None)
+    cam.exposure_lag_fix = not a.no_empty_frame   # the option of the Camera tab; on by default here
     cam.open()
     try:
         info = cf.get_device_info(cam.camera)
