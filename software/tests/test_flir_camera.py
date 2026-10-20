@@ -105,13 +105,14 @@ def test_stale_frame_in_buffer_is_detected():
     cam.set_exposure_time(5)
     cam.send_trigger()                          # extra trigger, never read
     time.sleep(0.1)
-    img = snap(cam, 40)
+    img = snap(cam)                             # same exposure (a change would first send a throw-away frame)
     assert exposure_of(img) == 5                # the stale one comes first (oldest first)
-    assert len(fake.buffer) == 1 or snap(cam, 40) is not None
+    assert len(fake.buffer) == 1 or snap(cam) is not None
 
 
 def test_timeout_returns_none_then_raises():
     cam, fake = new_camera()
+    cam.set_exposure_time(5)                    # before the faults: a changed exposure sends a throw-away frame that would use them up
     fake.fault['drop_triggers'] = 3
     assert snap(cam, 5) is None
     assert snap(cam, 5) is None
@@ -125,6 +126,7 @@ def test_timeout_returns_none_then_raises():
 
 def test_incomplete_frame_returns_none():
     cam, fake = new_camera()
+    cam.set_exposure_time(5)
     fake.fault['incomplete_frames'] = 1
     assert snap(cam, 5) is None
     assert exposure_of(snap(cam, 6)) == 6

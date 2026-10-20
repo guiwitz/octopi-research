@@ -466,6 +466,13 @@ class Camera(object):
         self.flip_image = flip_image
 
         self.exposure_time = 1 # unit: ms
+        # towbinlab: the camera uses the exposure that was written BEFORE THE PREVIOUS trigger (measured on a Blackfly S: hardware_exposure_lag_check.py,
+        # every frame carried the exposure of the frame before). Gain is not affected. Fix: after an exposure change, one dark throw-away frame
+        # (see _flush_exposure_lag). _written_us = exposure last written, _latched_us = the one the camera will use for the next frame (None = unknown)
+        self.exposure_lag_fix = True
+        self._written_us = None
+        self._latched_us = None
+        self._flushing = False
         self.analog_gain = 0
         self.frame_ID = -1
         self.frame_ID_software = -1
@@ -684,6 +691,29 @@ class Camera(object):
             # add an additional 500 us so that the illumination can fully turn off before rows start to end exposure
             camera_exposure_time = self.exposure_delay_us + self.exposure_time*1000 + self._readout_time_us() + 500 # add an additional 500 us so that the illumination can fully turn off before rows start to end exposure
             node_exposure_time.SetValue(camera_exposure_time)
+        self._written_us = node_exposure_time.GetValue() if PySpin.IsReadable(node_exposure_time) else None
+        self._flush_exposure_lag()
+
+    def _flush_exposure_lag(self):
+        """The camera applies a new exposure one trigger late (see __init__). So that the NEXT real image has the exposure that was just set, one throw-away
+        frame is triggered now, while the light is off (the acquisition switches it on only for the real image). It is exposed with the OLD exposure; costs
+        its exposure + readout, only after a change. Not done in live view (callback on), not streaming, other trigger modes (hardware trigger: not handled)."""
+        if not self.exposure_lag_fix or self._flushing or self._written_us is None or self._latched_us == self._written_us:
+            return
+        if self.trigger_mode != TriggerMode.SOFTWARE or not self.is_streaming or self.callback_is_enabled:
+            return
+        old_ms = 12000.0 if self._latched_us is None else self._latched_us / 1000.0
+        self._flushing = True
+        try:
+            self.send_trigger()
+            try:
+                raw = self.camera.GetNextImage(int(2000 + 1.5 * old_ms))
+                raw.Release()
+            except PySpin.SpinnakerException as ex:
+                print('*** FLIR camera: throw-away frame after an exposure change not received (' + str(ex) + ')')
+                self._latched_us = None
+        finally:
+            self._flushing = False
 
     def _readout_time_us(self):
         """Time from the first to the last row starting its exposure (rolling shutter)."""
@@ -996,6 +1026,7 @@ class Camera(object):
             return
         node_trigger_mode.SetIntValue(node_trigger_mode_off.GetValue())
         self.trigger_mode = TriggerMode.CONTINUOUS
+        self._latched_us = None      # free-running frames use their own exposure
         self.update_camera_exposure_time()
 
     def set_triggered_acquisition_flir(self, source, activation=None):
@@ -1009,6 +1040,7 @@ class Camera(object):
         node_trigger_source_option = PySpin.CEnumEntryPtr(node_trigger_source.GetEntryByName(str(source)))
 
         node_trigger_mode.SetIntValue(node_trigger_mode_on.GetValue())
+        self._latched_us = None      # unknown after a change of the trigger mode
 
         if not PySpin.IsWritable(node_trigger_source) or not PySpin.IsReadable(node_trigger_source_option):
             print("Cannot set Trigger source")
@@ -1045,6 +1077,7 @@ class Camera(object):
                 print('Trigger node not writable')
                 return
             node_trigger.Execute()
+            self._latched_us = self._written_us
         else:
         	print('trigger not sent - camera is not streaming')
 
@@ -1340,6 +1373,7 @@ class Camera(object):
                         print('*** FLIR fast acquisition: on_stopped failed: ' + str(ex))
         finally:
             out['restore_problems'] = self._restore_state(st)
+            self._latched_us = None      # the free-running frames used their own exposure: the next real image needs a throw-away frame first
         return out
 
     def set_ROI(self,offset_x=None,offset_y=None,width=None,height=None):

@@ -112,3 +112,57 @@ def test_incomplete_frames_are_skipped_and_counted():
 if __name__ == '__main__':
     import pytest
     sys.exit(pytest.main([__file__, '-q']))
+
+
+# ---- exposure lag: the Blackfly S uses an exposure written now one trigger LATE; Camera.set_exposure_time sends a throw-away frame ----
+
+def _exp_of_next_frame(cam, fake):
+    cam.send_trigger()
+    img = cam.camera.GetNextImage(2000)
+    ms = img.GetChunkData().GetExposureTime() / 1000.0
+    img.Release()
+    return ms
+
+
+def _lag_camera(fix=True):
+    cam, fake = new_camera('MONO16')
+    fake.exposure_lag = True
+    cam.exposure_lag_fix = fix
+    return cam, fake
+
+
+def test_exposure_lag_without_fix_is_one_frame_late():
+    cam, fake = _lag_camera(fix=False)
+    got = []
+    for e in (12, 22, 100, 12):
+        cam.set_exposure_time(e)
+        got.append(_exp_of_next_frame(cam, fake))
+    assert got[1:] == [12, 22, 100], got   # each frame carries the previous exposure
+
+
+def test_exposure_lag_fix_every_frame_has_its_exposure():
+    cam, fake = _lag_camera()
+    got = []
+    for e in (12, 22, 100, 12, 22, 100):
+        cam.set_exposure_time(e)
+        got.append(_exp_of_next_frame(cam, fake))
+    assert got == [12, 22, 100, 12, 22, 100], got
+    assert fake.n_triggers == 12   # one throw-away frame per change
+
+
+def test_exposure_lag_fix_no_extra_frame_when_unchanged():
+    cam, fake = _lag_camera()
+    cam.set_exposure_time(20)
+    n = fake.n_triggers
+    cam.set_exposure_time(20)
+    cam.set_exposure_time(20)
+    assert fake.n_triggers == n
+    assert _exp_of_next_frame(cam, fake) == 20
+
+
+def test_exposure_lag_fix_after_fast_acquire():
+    cam, fake = _lag_camera()
+    cam.set_exposure_time(30)
+    cam.fast_acquire(10, fps=25, bits=8, roi=1024, exposure_ms=8, gain=0)
+    cam.set_exposure_time(30)   # same value as before, but the free-running frames used 8 ms
+    assert _exp_of_next_frame(cam, fake) == 30
