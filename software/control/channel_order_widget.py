@@ -14,10 +14,10 @@ from qtpy.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QGridLayout, QTab
 class _Table(QTableWidget):
     """small preferred size (the default 256 x 192 widens the control panel); the tables get the space that is there"""
     def sizeHint(self):
-        return QSize(100, 120)
+        return QSize(240, 170)
 
     def minimumSizeHint(self):
-        return QSize(60, 70)
+        return QSize(200, 150)
 
 
 class _Item:
@@ -48,19 +48,22 @@ class ChannelOrderWidget(QWidget):
 
         def make_table():
             t = _Table(0, 2)
-            t.setHorizontalHeaderLabels(['Available', 'ms'])
+            t.setHorizontalHeaderLabels(['Available illuminations', 'ms'])
             t.verticalHeader().setVisible(False)
             t.setEditTriggers(QAbstractItemView.NoEditTriggers)
             t.setSelectionBehavior(QAbstractItemView.SelectRows)
             t.setSelectionMode(QAbstractItemView.ExtendedSelection)
             t.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
             t.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-            t.setMinimumHeight(90)
-            t.setMaximumHeight(190)
+            t.setMinimumHeight(150)
+            t.setMaximumHeight(230)
+            t.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            t.setWordWrap(False)
+            t.verticalHeader().setDefaultSectionSize(22)
             return t
         self.table_avail = make_table()
         self.table_used = make_table()
-        self.table_used.setHorizontalHeaderLabels(['Used (in order)', 'ms'])
+        self.table_used.setHorizontalHeaderLabels(['Used, in acquisition order', 'ms'])
 
         def button(text, tip, slot):
             b = QPushButton(text)

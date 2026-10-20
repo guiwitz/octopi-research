@@ -2225,11 +2225,14 @@ class MultiPointWidget2(QFrame):
         grid_af.addWidget(self.checkbox_merge_multichannel)
         grid_af.addStretch(1) # keep the checkboxes and the summary together at the top
 
-        grid_line3 = QHBoxLayout()
+        # towbinlab: the two channel tables (available / used, in order) get a row of their own (full width); AF options and Start below
+        grid_line3 = QVBoxLayout()
         grid_line3.addWidget(self.list_configurations)
-        # grid_line3.addWidget(self.checkbox_withAutofocus)
-        grid_line3.addLayout(grid_af)
-        grid_line3.addWidget(self.btn_startAcquisition)
+        grid_line3b = QHBoxLayout()
+        grid_line3b.addLayout(grid_af)
+        grid_line3b.addStretch(1)
+        grid_line3b.addWidget(self.btn_startAcquisition, 0, Qt.AlignBottom)
+        grid_line3.addLayout(grid_line3b)
 
         # towbinlab: countdown to the next time point and progress, same view as in the JOBs tab (hidden until an acquisition was started)
         from control.jobs_live import LiveJobView
