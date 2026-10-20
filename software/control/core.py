@@ -3941,6 +3941,8 @@ class ImageArrayDisplayWindow(QMainWindow):
             self.graphics_widget_4.img.setImage(image,autoLevels=False)
 
 class ConfigurationManager(QObject):
+    configurations_changed = Signal()      # channels added / deleted / renamed / values edited in the Illuminations tab: widgets refresh their lists
+
     def __init__(self,filename="channel_configurations.xml"):
         QObject.__init__(self)
         self.config_filename = filename
@@ -3982,7 +3984,7 @@ class ConfigurationManager(QObject):
             )
 
     def update_configuration(self,configuration_id,attribute_name,new_value):
-        conf_list = self.config_xml_tree_root.xpath("//mode[contains(@ID," + "'" + str(configuration_id) + "')]")
+        conf_list = self.config_xml_tree_root.xpath("//mode[@ID='" + str(configuration_id) + "']")   # exact match (contains() also matched ID 1 in ID 11)
         mode_to_update = conf_list[0]
         mode_to_update.set(attribute_name,str(new_value))
         self.save_configurations()
@@ -3996,7 +3998,7 @@ class ConfigurationManager(QObject):
             mode.set('ExposureTime', str(exposure_ms))
 
     def update_configuration_without_writing(self, configuration_id, attribute_name, new_value):
-        conf_list = self.config_xml_tree_root.xpath("//mode[contains(@ID," + "'" + str(configuration_id) + "')]")
+        conf_list = self.config_xml_tree_root.xpath("//mode[@ID='" + str(configuration_id) + "']")   # exact match (contains() also matched ID 1 in ID 11)
         mode_to_update = conf_list[0]
         mode_to_update.set(attribute_name,str(new_value))
 
@@ -4008,6 +4010,116 @@ class ConfigurationManager(QObject):
         self.write_configuration(filename)
         for conf in selected_configurations:
             self.update_configuration_without_writing(conf.id, "Selected", 0)
+
+    # ---- Illuminations tab: edit, duplicate, delete, add from the permanent template list ------------------------------------------
+    def templates_filename(self):
+        return os.path.join(os.path.dirname(os.path.abspath(self.config_filename)), 'channel_templates.xml')
+
+    def read_templates(self):
+        """The permanent list of illuminations to add new ones from: channel_templates.xml next to the channel file. It is a copy of the
+        channel list as it was when the Illuminations tab was first used (the ones available then) and is never changed afterwards by the
+        software (edit the file by hand to change the list). -> list of dicts (xml attributes of each mode)"""
+        fn = self.templates_filename()
+        if not os.path.isfile(fn):
+            try:
+                self.config_xml_tree.write(fn, encoding="utf-8", xml_declaration=True, pretty_print=True)
+            except Exception as e:
+                print('could not write', fn, e)
+                return [dict(m.attrib) for m in self.config_xml_tree_root.iter('mode')]
+        return [dict(m.attrib) for m in ET.parse(fn).getroot().iter('mode')]
+
+    def template_names(self):
+        return [t.get('Name') for t in self.read_templates()]
+
+    def unique_name(self, base):
+        names = {c.name for c in self.configurations}
+        if base not in names:
+            return base
+        n = 2
+        while f'{base} ({n})' in names:
+            n += 1
+        return f'{base} ({n})'
+
+    def _new_id(self):
+        ids = []
+        for c in self.configurations:
+            try:
+                ids.append(int(c.id))
+            except (TypeError, ValueError):
+                pass
+        return str(max(ids + [0]) + 1)
+
+    def _add_mode(self, attribs):
+        mode = ET.SubElement(self.config_xml_tree_root, 'mode')
+        for k, v in attribs.items():
+            mode.set(k, str(v))
+        conf = Configuration(
+            mode_id=mode.get('ID'), name=mode.get('Name'), color=self.get_channel_color(mode.get('Name')),
+            exposure_time=float(mode.get('ExposureTime')), analog_gain=float(mode.get('AnalogGain')),
+            illumination_source=int(mode.get('IlluminationSource')), illumination_intensity=float(mode.get('IlluminationIntensity')),
+            camera_sn=mode.get('CameraSN'), z_offset=float(mode.get('ZOffset')), pixel_format=mode.get('PixelFormat'),
+            _pixel_format_options=mode.get('_PixelFormat_options'), emission_filter_position=int(mode.get('EmissionFilterPosition', 1)))
+        self.configurations.append(conf)
+        self.save_configurations()
+        self.configurations_changed.emit()
+        return conf
+
+    def get_configuration(self, conf_id):
+        return next((c for c in self.configurations if str(c.id) == str(conf_id)), None)
+
+    def duplicate_configuration(self, conf_id, new_name=None):
+        """Copy of a channel (same illumination source, filter, ...), with a new ID and a unique name; a new line in the xml."""
+        mode = self.config_xml_tree_root.xpath("//mode[@ID='" + str(conf_id) + "']")
+        if not mode:
+            raise KeyError('no channel with ID ' + str(conf_id))
+        attribs = dict(mode[0].attrib)
+        attribs['ID'] = self._new_id()
+        attribs['Name'] = self.unique_name(new_name or attribs['Name'])
+        return self._add_mode(attribs)
+
+    def add_from_template(self, template_name):
+        """New channel from the permanent template list (see read_templates)."""
+        t = next((t for t in self.read_templates() if t.get('Name') == template_name), None)
+        if t is None:
+            raise KeyError('no template ' + str(template_name))
+        attribs = dict(t)
+        attribs['ID'] = self._new_id()
+        attribs['Name'] = self.unique_name(attribs['Name'])
+        return self._add_mode(attribs)
+
+    def delete_configuration(self, conf_id):
+        if len(self.configurations) <= 1:
+            raise ValueError('the last channel cannot be deleted')
+        mode = self.config_xml_tree_root.xpath("//mode[@ID='" + str(conf_id) + "']")
+        if not mode:
+            raise KeyError('no channel with ID ' + str(conf_id))
+        self.config_xml_tree_root.remove(mode[0])
+        self.configurations[:] = [c for c in self.configurations if str(c.id) != str(conf_id)]
+        self.save_configurations()
+        self.configurations_changed.emit()
+
+    def set_values(self, conf_id, name=None, exposure=None, gain=None, intensity=None):
+        """Edit a channel (objects stay the same, so widgets that reference them see the change) and write the xml."""
+        conf = self.get_configuration(conf_id)
+        if conf is None:
+            raise KeyError('no channel with ID ' + str(conf_id))
+        if name is not None and name != conf.name:
+            if any(c.name == name for c in self.configurations if c is not conf):
+                raise ValueError('a channel with the name "' + name + '" exists already')
+            conf.name = name
+            conf.color = self.get_channel_color(name)
+            self.update_configuration_without_writing(conf.id, 'Name', name)
+        if exposure is not None:
+            conf.exposure_time = float(exposure)
+            self.update_configuration_without_writing(conf.id, 'ExposureTime', exposure)
+        if gain is not None:
+            conf.analog_gain = float(gain)
+            self.update_configuration_without_writing(conf.id, 'AnalogGain', gain)
+        if intensity is not None:
+            conf.illumination_intensity = float(intensity)
+            self.update_configuration_without_writing(conf.id, 'IlluminationIntensity', intensity)
+        self.save_configurations()
+        self.configurations_changed.emit()
 
     def get_channel_color(self, channel):
         channel_info = CHANNEL_COLORS_MAP.get(self.extract_wavelength(channel), {'hex': 0xFFFFFF, 'name': 'gray'})

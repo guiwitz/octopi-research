@@ -294,6 +294,8 @@ class OctopiGUI(QMainWindow):
         self.jobsWidget = JobsWidget(self.multipointController,self.configurationManager,self.multiPointWidget2) # JOBs: scripted acquisition on the positions of the flexible multipoint tab
         from control.single_measurement_widget import SingleMeasurementWidget
         self.singleMeasurementWidget = SingleMeasurementWidget(self.multipointController,self.configurationManager,self.multiPointWidget2) # quick single capture / fast timelapse at the current position
+        from control.illumination_table_widget import IlluminationTableWidget
+        self.illuminationTableWidget = IlluminationTableWidget(self.configurationManager,self.multipointController,self.camera) # table of the channels: edit, duplicate, delete, add from the permanent list
         self.piezoWidget = widgets.PiezoWidget(self.navigationController)
         self.wellplateFormatWidget = widgets.WellplateFormatWidget()
         self.objectivesWidget = widgets.ObjectivesWidget(self.objectiveStore)
@@ -358,6 +360,7 @@ class OctopiGUI(QMainWindow):
         if USE_ZABER_EMISSION_FILTER_WHEEL or USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
             self.microscopeControlTabWidget.addTab(self.filterControllerWidget,"Emission Filter")
         self.microscopeControlTabWidget.addTab(self.cameraROIWidget,"Camera")
+        self.microscopeControlTabWidget.addTab(self.illuminationTableWidget,"Illuminations")
 
         # Creating the frame widget
         frame = QFrame()

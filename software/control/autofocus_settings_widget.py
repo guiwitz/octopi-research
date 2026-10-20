@@ -26,6 +26,8 @@ class AutofocusSettingsWidget(QFrame):
         self.configurationManager = configurationManager
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self._build_ui()
+        if hasattr(configurationManager, 'configurations_changed'):
+            configurationManager.configurations_changed.connect(lambda *_: self.refresh())
 
         # initial values (same defaults as before; not stored anywhere else)
         self.autofocusController.set_deltaZ(DEFAULT_DELTA_Z_UM)

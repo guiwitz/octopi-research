@@ -808,6 +808,27 @@ class LiveControlWidget(QFrame):
         self.update_microscope_mode_by_name(self.currentConfiguration.name)
 
         self.is_switching_mode = False # flag used to prevent from settings being set by twice - from both mode change slot and value change slot; another way is to use blockSignals(True)
+        if hasattr(self.configurationManager, 'configurations_changed'):
+            self.configurationManager.configurations_changed.connect(self.refresh_modes)
+
+    def refresh_modes(self, *_):
+        """The channel list changed (Illuminations tab): rebuild the dropdown, keep the current channel (or the first one if it was deleted) and show its values"""
+        names = [c.name for c in self.configurationManager.configurations]
+        cur = self.currentConfiguration
+        still = cur is not None and any(c is cur for c in self.configurationManager.configurations)
+        self.dropdown_modeSelection.blockSignals(True)
+        self.dropdown_modeSelection.clear()
+        self.dropdown_modeSelection.addItems(names)
+        self.dropdown_modeSelection.blockSignals(False)
+        if not still:
+            self.dropdown_modeSelection.setCurrentText(names[0])
+            self.update_microscope_mode_by_name(names[0])
+            return
+        self.dropdown_modeSelection.blockSignals(True)
+        self.dropdown_modeSelection.setCurrentText(cur.name)
+        self.dropdown_modeSelection.blockSignals(False)
+        if (self.entry_exposureTime.value(), self.entry_analogGain.value(), self.entry_illuminationIntensity.value()) != (cur.exposure_time, cur.analog_gain, cur.illumination_intensity):
+            self.update_microscope_mode_by_name(cur.name)     # values edited in the table: apply to camera and illumination
 
     def add_components(self,show_trigger_options,show_display_options,show_autolevel,autolevel):
         # line 0: trigger mode
@@ -1835,6 +1856,8 @@ class MultiPointWidget(QFrame):
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         self.multipointController.acquisitionFinished.connect(self.acquisition_is_finished)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
+        if hasattr(self.configurationManager, 'configurations_changed'):
+            self.configurationManager.configurations_changed.connect(self.refresh_channel_list)
 
     def set_deltaX(self,value):
         mm_per_ustep = SCREW_PITCH_X_MM/(self.multipointController.navigationController.x_microstepping*FULLSTEPS_PER_REV_X) # to implement a get_x_microstepping() in multipointController
@@ -1863,6 +1886,18 @@ class MultiPointWidget(QFrame):
 
     def set_well_selected(self, selected):
         self.well_selected = selected
+
+    def refresh_channel_list(self, *_):
+        """The channel list changed (Illuminations tab): rebuild the list, keep the selected channels that still exist"""
+        selected = {item.text() for item in self.list_configurations.selectedItems()}
+        self.list_configurations.blockSignals(True)
+        self.list_configurations.clear()
+        self.list_configurations.addItems([c.name for c in self.configurationManager.configurations])
+        for i in range(self.list_configurations.count()):
+            if self.list_configurations.item(i).text() in selected:
+                self.list_configurations.item(i).setSelected(True)
+        self.list_configurations.blockSignals(False)
+        self.emit_selected_channels()
 
     def emit_selected_channels(self):
         selected_channels = [item.text() for item in self.list_configurations.selectedItems()]
@@ -2231,6 +2266,8 @@ class MultiPointWidget2(QFrame):
         self.multipointController.signal_flex_status.connect(self.live.on_message)
         self.multipointController.signal_update_z.connect(self._update_z)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
+        if hasattr(self.configurationManager, 'configurations_changed'):
+            self.configurationManager.configurations_changed.connect(self.refresh_channel_list)
 
         self.btn_add.clicked.connect(self.add_location)
         self.btn_remove.clicked.connect(self.remove_location)
@@ -2410,6 +2447,18 @@ class MultiPointWidget2(QFrame):
         self.multipointController.set_base_path(save_dir_base)
         self.lineEdit_savingDir.setText(save_dir_base)
         self.base_path_is_set = True
+
+    def refresh_channel_list(self, *_):
+        """The channel list changed (Illuminations tab): rebuild the list, keep the selected channels that still exist"""
+        selected = {item.text() for item in self.list_configurations.selectedItems()}
+        self.list_configurations.blockSignals(True)
+        self.list_configurations.clear()
+        self.list_configurations.addItems([c.name for c in self.configurationManager.configurations])
+        for i in range(self.list_configurations.count()):
+            if self.list_configurations.item(i).text() in selected:
+                self.list_configurations.item(i).setSelected(True)
+        self.list_configurations.blockSignals(False)
+        self.emit_selected_channels()
 
     def emit_selected_channels(self):
         selected_channels = [item.text() for item in self.list_configurations.selectedItems()]

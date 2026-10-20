@@ -59,9 +59,33 @@ class SingleMeasurementWidget(QFrame):
         self._load_cache()
         self._update_info()
         self.mpc.signal_job_message.connect(self._on_job_message)
+        if hasattr(self.configurationManager, 'configurations_changed'):
+            self.configurationManager.configurations_changed.connect(self.refresh_channels)
         self.mpc.acquisitionFinished.connect(self.acquisition_is_finished)
 
     # --- layout
+    def refresh_channels(self, *_):
+        """The channel list changed (Illuminations tab): rebuild the checkable list and the fast-timelapse channel, keeping what was checked/selected"""
+        checked = set(self.selected_channels())
+        fast = self.combo_fast_channel.currentData()
+        self.list_channels.blockSignals(True)
+        self.list_channels.clear()
+        for c in self._channels():
+            it = QListWidgetItem(f'{c.name}   ({c.exposure_time:g} ms)')
+            it.setData(Qt.UserRole, c.name)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked if c.name in checked else Qt.Unchecked)
+            self.list_channels.addItem(it)
+        self.list_channels.blockSignals(False)
+        self.combo_fast_channel.blockSignals(True)
+        self.combo_fast_channel.clear()
+        for c in self._channels():
+            self.combo_fast_channel.addItem(c.name, c.name)
+        i = self.combo_fast_channel.findData(fast)
+        self.combo_fast_channel.setCurrentIndex(max(0, i))
+        self.combo_fast_channel.blockSignals(False)
+        self._update_info()
+
     def _channels(self):
         return [c for c in self.configurationManager.configurations if not any(u in c.name for u in UNSUPPORTED_CHANNELS)]
 
