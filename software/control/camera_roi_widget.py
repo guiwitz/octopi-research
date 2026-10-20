@@ -5,7 +5,11 @@ the nearest multiple of 8. The software crops of the live stream, the multipoint
 and the autofocus are always set to the same size, i.e. there is no additional software
 cropping: autofocus crop = acquisition (saving) crop = display crop = ROI.
 """
-from qtpy.QtWidgets import QFrame, QGridLayout, QLabel, QSpinBox, QComboBox
+import json
+import os
+from qtpy.QtWidgets import QFrame, QGridLayout, QLabel, QSpinBox, QComboBox, QCheckBox
+
+OPTIONS_FILE = os.path.join('cache', 'camera_options.json')
 
 
 class CameraROIWidget(QFrame):
@@ -59,12 +63,38 @@ class CameraROIWidget(QFrame):
         grid.addWidget(QLabel('Camera mode'), 1, 0)
         grid.addWidget(self.dropdown_pixel_format, 1, 1)
         grid.addWidget(info, 2, 0, 1, 4)
+        self.check_empty_frame = None
+        if hasattr(self.camera, 'exposure_lag_fix'):      # FLIR: an exposure takes effect one frame late
+            self.check_empty_frame = QCheckBox('Empty frame in between')
+            self.check_empty_frame.setToolTip(
+                'This camera uses a new exposure time one frame late (each image gets the exposure of the previous channel).\n'
+                'Ticked: after every exposure change an empty dummy frame (exposed with the OLD exposure) is taken and thrown away,\n'
+                'so the next image is correct. Costs about one old exposure + readout per channel change.\n'
+                'Not ticked: an experiment with channels of different exposure times is not started.\n'
+                'Not needed if all channels have the same exposure time.')
+            try:
+                with open(OPTIONS_FILE, encoding='utf-8') as f:
+                    self.check_empty_frame.setChecked(bool(json.load(f).get('exposure_lag_fix', False)))
+            except Exception:
+                pass
+            self.camera.exposure_lag_fix = self.check_empty_frame.isChecked()
+            self.check_empty_frame.toggled.connect(self.set_empty_frame)
+            grid.addWidget(self.check_empty_frame, 3, 0, 1, 4)
         grid.setRowStretch(grid.rowCount(), 1)
         self.setLayout(grid)
 
         self.spin_width.valueChanged.connect(self.update_roi)
         self.spin_height.valueChanged.connect(self.update_roi)
         self.dropdown_pixel_format.currentTextChanged.connect(self.set_pixel_format)
+
+    def set_empty_frame(self, on):
+        self.camera.exposure_lag_fix = bool(on)
+        try:
+            os.makedirs(os.path.dirname(OPTIONS_FILE), exist_ok=True)
+            with open(OPTIONS_FILE, 'w', encoding='utf-8') as f:
+                json.dump({'exposure_lag_fix': bool(on)}, f)
+        except Exception as e:
+            print('could not save', OPTIONS_FILE, e)
 
     # ---- helpers ---------------------------------------------------------------------
     def _sensor_size(self):

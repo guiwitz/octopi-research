@@ -336,6 +336,9 @@ class SingleMeasurementWidget(QFrame):
         except Exception:
             self._say('Internal error while preparing the measurement:\n' + traceback.format_exc())
             return
+        from control.acq_summary import confirm_exposure_lag
+        if not confirm_exposure_lag(self, self.mpc, channel_names):
+            return
         self._save_cache()
         self.mpc.set_base_path(saving_dir)
         self.mpc.set_selected_configurations(channel_names)

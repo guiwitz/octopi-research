@@ -51,6 +51,55 @@ def summary_text(configurations, names, trigger_mode):
     return '\n'.join(lines)
 
 
+def check_exposure_lag(camera, trigger_mode, configurations, names):
+    """Cameras with the one-frame exposure lag (FLIR Blackfly S, attribute `exposure_lag_fix`; see camera_flir._flush_exposure_lag)
+    need an empty (throw-away) frame after every exposure change, otherwise a frame is exposed with the PREVIOUS channel's exposure.
+    -> (None, '')                 nothing to say
+       ('block', text)            the option is off but the channels have different exposures: do NOT start
+       ('warn', text)             the option is on but all channels have the same exposure: it only wastes time. Pure logic, no Qt."""
+    if camera is None or not hasattr(camera, 'exposure_lag_fix'):
+        return None, ''
+    if 'SOFTWARE' not in str(trigger_mode).upper():
+        return None, ''          # the empty frame is only used with software trigger
+    by_name = {c.name: c for c in configurations}
+    exps = {}
+    for n in names:
+        c = by_name.get(n)
+        if c is not None:
+            exps[n] = float(c.exposure_time)
+    if len(exps) < 2:
+        return None, ''
+    same = max(exps.values()) - min(exps.values()) < 1e-6
+    listing = ', '.join('%s %s ms' % (n, _fmt(e)) for n, e in exps.items())
+    if camera.exposure_lag_fix and same:
+        return 'warn', ('"Empty frame in between" is ticked (Camera tab), but all channels have the same exposure (%s ms).\n'
+                        'The empty frame is not needed then; it only makes every exposure change slower.\n\nChannels: %s' % (_fmt(next(iter(exps.values()))), listing))
+    if not camera.exposure_lag_fix and not same:
+        return 'block', ('The channels have different exposure times, but "Empty frame in between" is NOT ticked (Camera tab).\n\n'
+                         'Without it this camera exposes each image with the exposure of the PREVIOUS channel (the exposure takes effect one frame late).\n'
+                         'Tick "Empty frame in between" in the Camera tab, or give all channels the same exposure.\n\nChannels: %s\n\nThe experiment was not started.' % listing)
+    return None, ''
+
+
+def confirm_exposure_lag(parent, controller, names):
+    """True = go on. 'block' always stops (also with SQUID_SKIP_CONFIRM); 'warn' asks (skipped with SQUID_SKIP_CONFIRM)."""
+    try:
+        kind, text = check_exposure_lag(getattr(controller, 'camera', None), controller.liveController.trigger_mode,
+                                        controller.configurationManager.configurations, list(names))
+    except Exception:
+        traceback.print_exc()    # a failure of the check itself never blocks
+        return True
+    if kind is None:
+        return True
+    from qtpy.QtWidgets import QMessageBox
+    if kind == 'block':
+        QMessageBox.critical(parent, 'Exposure times differ', text)
+        return False
+    if os.environ.get('SQUID_SKIP_CONFIRM'):
+        return True
+    return QMessageBox.question(parent, 'Empty frame not needed', text + '\n\nStart anyway?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes
+
+
 def confirm_acquisition(parent, what, configurations, names, trigger_mode, extra=None):
     """Show the window; True = OK, False = Cancel. `what` e.g. 'job'. `extra`: optional additional line of text."""
     if not ENABLED or os.environ.get('SQUID_SKIP_CONFIRM'):
@@ -99,6 +148,11 @@ def confirm_acquisition(parent, what, configurations, names, trigger_mode, extra
 def confirm_start(parent, what, controller, names, extra=None):
     """Convenience for widgets: takes the settings from a MultiPointController. A failure in this window never blocks an
     acquisition (it is printed and the run goes on)."""
+    try:
+        if not confirm_exposure_lag(parent, controller, names):
+            return False
+    except Exception:
+        traceback.print_exc()
     try:
         return confirm_acquisition(parent, what, controller.configurationManager.configurations, list(names),
                                    controller.liveController.trigger_mode, extra)

@@ -469,7 +469,7 @@ class Camera(object):
         # towbinlab: the camera uses the exposure that was written BEFORE THE PREVIOUS trigger (measured on a Blackfly S: hardware_exposure_lag_check.py,
         # every frame carried the exposure of the frame before). Gain is not affected. Fix: after an exposure change, one dark throw-away frame
         # (see _flush_exposure_lag). _written_us = exposure last written, _latched_us = the one the camera will use for the next frame (None = unknown)
-        self.exposure_lag_fix = True
+        self.exposure_lag_fix = False   # optional (tick 'Empty frame in between' in the Camera tab); see acq_summary.check_exposure_lag
         self._written_us = None
         self._latched_us = None
         self._flushing = False
