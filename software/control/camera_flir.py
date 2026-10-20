@@ -473,6 +473,7 @@ class Camera(object):
         self._written_us = None
         self._latched_us = None
         self._flushing = False
+        self.dummy_trigger = None     # hardware trigger mode: function that sends one camera pulse WITHOUT illumination (set by the LiveController)
         self.analog_gain = 0
         self.frame_ID = -1
         self.frame_ID_software = -1
@@ -697,15 +698,22 @@ class Camera(object):
     def _flush_exposure_lag(self):
         """The camera applies a new exposure one trigger late (see __init__). So that the NEXT real image has the exposure that was just set, one throw-away
         frame is triggered now, while the light is off (the acquisition switches it on only for the real image). It is exposed with the OLD exposure; costs
-        its exposure + readout, only after a change. Not done in live view (callback on), not streaming, other trigger modes (hardware trigger: not handled)."""
+        its exposure + readout, only after a change. Not done in live view (callback on), not streaming, other trigger modes; hardware trigger only when `dummy_trigger` is set."""
         if not self.exposure_lag_fix or self._flushing or self._written_us is None or self._latched_us == self._written_us:
             return
-        if self.trigger_mode != TriggerMode.SOFTWARE or not self.is_streaming or self.callback_is_enabled:
+        hardware = self.trigger_mode == TriggerMode.HARDWARE
+        if not self.is_streaming or self.callback_is_enabled:
+            return
+        if self.trigger_mode != TriggerMode.SOFTWARE and not (hardware and self.dummy_trigger is not None):
             return
         old_ms = 12000.0 if self._latched_us is None else self._latched_us / 1000.0
         self._flushing = True
         try:
-            self.send_trigger()
+            if hardware:
+                self.dummy_trigger()          # pulse from the microcontroller, illumination stays off (measured: hardware trigger has the same lag)
+                self._latched_us = self._written_us
+            else:
+                self.send_trigger()
             try:
                 raw = self.camera.GetNextImage(int(2000 + 1.5 * old_ms))
                 raw.Release()

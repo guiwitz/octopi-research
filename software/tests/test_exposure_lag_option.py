@@ -34,8 +34,8 @@ def test_same_exposures_without_tick_ok():
     assert check_exposure_lag(cam(False), SW_MODE, CONF, ['488', 'BF'])[0] is None
 
 
-def test_one_channel_hardware_trigger_and_other_cameras_are_ignored():
+def test_one_channel_and_other_cameras_are_ignored():
     assert check_exposure_lag(cam(True), SW_MODE, CONF, ['488'])[0] is None
-    assert check_exposure_lag(cam(False), HW_MODE, CONF, ['488', '561'])[0] is None
+    assert check_exposure_lag(cam(False), HW_MODE, CONF, ['488', '561'])[0] == 'block'   # hardware trigger has the lag too (measured)
     assert check_exposure_lag(NS(), SW_MODE, CONF, ['488', '561'])[0] is None
     assert check_exposure_lag(None, SW_MODE, CONF, ['488', '561'])[0] is None

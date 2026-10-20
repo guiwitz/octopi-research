@@ -440,6 +440,8 @@ class LiveController(QObject):
         self.illumination_on = False
         self.use_internal_timer_for_hardware_trigger = use_internal_timer_for_hardware_trigger # use QTimer vs timer in the MCU
         self.for_displacement_measurement = for_displacement_measurement
+        if hasattr(camera, 'exposure_lag_fix'):   # FLIR: pulse for the 'Empty frame in between' option in hardware trigger mode (no illumination)
+            camera.dummy_trigger = lambda: self.microcontroller.send_hardware_trigger(control_illumination=False, illumination_on_time_us=0)
 
         self.fps_trigger = 1;
         self.timer_trigger_interval = (1/self.fps_trigger)*1000

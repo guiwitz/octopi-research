@@ -59,8 +59,6 @@ def check_exposure_lag(camera, trigger_mode, configurations, names):
        ('warn', text)             the option is on but all channels have the same exposure: it only wastes time. Pure logic, no Qt."""
     if camera is None or not hasattr(camera, 'exposure_lag_fix'):
         return None, ''
-    if 'SOFTWARE' not in str(trigger_mode).upper():
-        return None, ''          # the empty frame is only used with software trigger
     by_name = {c.name: c for c in configurations}
     exps = {}
     for n in names:

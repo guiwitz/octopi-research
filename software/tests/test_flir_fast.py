@@ -166,3 +166,28 @@ def test_exposure_lag_fix_after_fast_acquire():
     cam.fast_acquire(10, fps=25, bits=8, roi=1024, exposure_ms=8, gain=0)
     cam.set_exposure_time(30)   # same value as before, but the free-running frames used 8 ms
     assert _exp_of_next_frame(cam, fake) == 30
+
+
+def test_exposure_lag_fix_hardware_trigger():
+    cam, fake = new_camera('MONO16', mode='hardware')
+    fake.exposure_lag = True
+    cam.exposure_lag_fix = True
+    cam.dummy_trigger = lambda: fake.hardware_trigger('Line2')
+    got, want = [], []
+    for e in (12, 22, 100, 12):
+        cam.set_exposure_time(e)
+        want.append(fake.n_exposure.value / 1000.0)
+        fake.hardware_trigger('Line2')
+        img = cam.camera.GetNextImage(2000)
+        got.append(img.GetChunkData().GetExposureTime() / 1000.0)
+        img.Release()
+    assert got == want, (got, want)
+
+
+def test_exposure_lag_fix_hardware_trigger_without_pulse_function_does_nothing():
+    cam, fake = new_camera('MONO16', mode='hardware')
+    fake.exposure_lag = True
+    cam.exposure_lag_fix = True
+    n = fake.n_triggers
+    cam.set_exposure_time(12)
+    assert fake.n_triggers == n
