@@ -17,10 +17,29 @@ from control.illumination_table_widget import IlluminationTableWidget, check_nam
 app = QApplication.instance() or QApplication([])
 
 
+EXTRA = 'Fluorescence 638 nm Ex'     # a non-core illumination (the core ones cannot be deleted)
+
+
 def manager(tmp_path):
     fn = str(tmp_path / 'channel_configurations.xml')
     shutil.copy(os.path.join(SW, 'channel_configurations.xml'), fn)
+    from lxml import etree as ET
+    tree = ET.parse(fn)
+    root = tree.getroot()
+    if not any(m.get('Name') == EXTRA for m in root.iter('mode')):
+        first = next(root.iter('mode'))
+        m = ET.SubElement(root, 'mode')
+        for k, v in first.attrib.items():
+            m.set(k, v)
+        m.set('ID', str(max(int(x.get('ID')) for x in root.iter('mode') if x is not m) + 1))
+        m.set('Name', EXTRA)
+        m.set('IlluminationSource', '13')
+        tree.write(fn, encoding='utf-8', xml_declaration=True, pretty_print=True)
     return core.ConfigurationManager(fn)
+
+
+def extra(cm):
+    return next(c for c in cm.configurations if c.name == EXTRA)
 
 
 def reread(cm):
@@ -59,29 +78,39 @@ def test_set_values_written_and_ids_exact(tmp_path):
         pass
 
 
-def test_delete_and_last_one_stays(tmp_path):
+def test_core_illuminations_cannot_be_deleted_others_can(tmp_path):
     cm = manager(tmp_path)
-    ids = [c.id for c in cm.configurations]
-    cm.delete_configuration(ids[0])
-    assert [c.id for c in reread(cm).configurations] == ids[1:]
-    for i in ids[1:-1]:
-        cm.delete_configuration(i)
-    try:
-        cm.delete_configuration(ids[-1])
-        raise AssertionError('last channel must stay')
-    except ValueError:
-        pass
+    for c in list(cm.configurations):
+        if cm.is_core(c):
+            try:
+                cm.delete_configuration(c.id)
+                raise AssertionError('core illumination deleted: ' + c.name)
+            except ValueError as e:
+                assert 'core' in str(e)
+            try:
+                cm.set_values(c.id, name=c.name + ' x')
+                raise AssertionError('core illumination renamed')
+            except ValueError:
+                pass
+    # non-core: the one from the file (from an earlier session) and new ones
+    d = cm.duplicate_configuration(cm.configurations[0].id)
+    e = extra(cm)
+    cm.delete_configuration(d.id)
+    cm.delete_configuration(e.id)
+    names = [c.name for c in reread(cm).configurations]          # also after a restart
+    assert EXTRA not in names and d.name not in names
+    assert all(n in names for n in cm.CORE_NAMES if n in [c.name for c in cm.configurations])
 
 
 def test_templates_are_permanent_and_add_from_template(tmp_path):
     cm = manager(tmp_path)
     names = cm.template_names()
     assert names == [c.name for c in cm.configurations] and os.path.isfile(cm.templates_filename())
-    victim = cm.configurations[1]
+    victim = extra(cm)
     cm.delete_configuration(victim.id)
     assert cm.template_names() == names          # not changed by the deletion
     c = cm.add_from_template(victim.name)
-    assert c.name == victim.name and c.id != victim.id and cm.get_configuration(c.id) is c
+    assert c.name == victim.name and cm.get_configuration(c.id) is c
     c = cm.add_from_template(victim.name)
     assert c.name == victim.name + ' (2)'
 
@@ -155,7 +184,8 @@ def test_live_control_and_multipoint_lists_follow(tmp_path):
     assert lcw.dropdown_modeSelection.findText(d.name) >= 0
     cm.set_values(lcw.currentConfiguration.id, exposure=77)           # edit of the current channel shows in the live control box
     assert lcw.entry_exposureTime.value() == 77
-    cm.delete_configuration(lcw.currentConfiguration.id)              # deleting the current channel selects another one
+    lcw.update_microscope_mode_by_name(d.name)
+    cm.delete_configuration(d.id)                                     # deleting the current channel selects another one
     assert lcw.currentConfiguration in cm.configurations
     from qtpy.QtWidgets import QListWidget, QAbstractItemView
     for cls in (widgets.MultiPointWidget, widgets.MultiPointWidget2):     # the list of the multipoint tabs (their refresh method on a stand-in, the full widgets need a whole controller)
@@ -215,12 +245,13 @@ def test_channel_order_widget(tmp_path):
     w.clearSelection()
     assert w.used_names() == []
     # follows the Illuminations tab: order kept, deleted channels disappear, renamed ones keep their place
-    w.item(2).setSelected(True); w.item(0).setSelected(True)
+    k = names.index(EXTRA)
+    w.item(k).setSelected(True); w.item(0).setSelected(True)
     d = cm.duplicate_configuration(cm.configurations[0].id)
     cm.set_values(d.id, name='dup renamed')
     w.refresh_from_manager()
-    assert w.used_names() == [names[2], names[0]] and w.table_avail.rowCount() == len(cm.configurations) - 2
-    cm.delete_configuration(cm.configurations[2].id)
+    assert w.used_names() == [names[k], names[0]] and w.table_avail.rowCount() == len(cm.configurations) - 2
+    cm.delete_configuration(extra(cm).id)
     w.refresh_from_manager()
     assert w.used_names() == [names[0]]
 
@@ -231,7 +262,7 @@ def test_illumination_sets_save_load_delete_import_export(tmp_path):
     cm = manager(tmp_path)
     orig = [(c.name, c.exposure_time) for c in cm.configurations]
     order = ChannelOrderWidget(cm)
-    order.item(2).setSelected(True); order.item(0).setSelected(True)
+    order.item([c.name for c in cm.configurations].index(EXTRA)).setSelected(True); order.item(0).setSelected(True)
     used_before = order.used_names()
     dlg = IlluminationSetsDialog(cm)
     assert dlg.list_sets.count() == 0
@@ -240,7 +271,7 @@ def test_illumination_sets_save_load_delete_import_export(tmp_path):
     # change the current illuminations, save as a second set
     d = cm.duplicate_configuration(cm.configurations[0].id)
     cm.set_values(d.id, name='extra', exposure=55)
-    cm.delete_configuration(cm.configurations[1].id)
+    cm.delete_configuration(extra(cm).id)
     dlg.save_current('day 2')
     assert cm.list_sets() == ['day 1', 'day 2']
     # load day 1: everything as at the start (also on disk), the used order kept by name
@@ -253,9 +284,9 @@ def test_illumination_sets_save_load_delete_import_export(tmp_path):
     # load day 2
     dlg.list_sets.setCurrentRow(1)
     dlg.load_selected()
-    assert 'extra' in [c.name for c in cm.configurations] and orig[1][0] not in [c.name for c in cm.configurations]
+    assert 'extra' in [c.name for c in cm.configurations] and EXTRA not in [c.name for c in cm.configurations]
     order.refresh_from_manager()
-    assert order.used_names() == [n for n in used_before if n != orig[1][0]]
+    assert order.used_names() == [n for n in used_before if n != EXTRA]
     # export / import / delete
     out = str(tmp_path / 'exported.xml')
     dlg.export_selected(out)
@@ -282,7 +313,24 @@ def test_sets_not_loaded_while_acquisition_runs(tmp_path):
     cm = manager(tmp_path)
     dlg = IlluminationSetsDialog(cm, busy=lambda: True)
     dlg.save_current('s')
-    cm.delete_configuration(cm.configurations[0].id)
+    cm.delete_configuration(extra(cm).id)
     n = len(cm.configurations)
     dlg.load_selected()
     assert len(cm.configurations) == n
+
+
+def test_loading_a_set_without_core_illuminations_keeps_them(tmp_path):
+    cm = manager(tmp_path)
+    from lxml import etree as ET
+    path = str(tmp_path / 'only_extra.xml')
+    root = ET.Element('modes')
+    m = ET.SubElement(root, 'mode')
+    for k, v in next(x for x in cm.config_xml_tree_root.iter('mode') if x.get('Name') == EXTRA).attrib.items():
+        m.set(k, v)
+    m.set('ID', '1')       # same ID as a current core one: it gets a free ID
+    ET.ElementTree(root).write(path, encoding='utf-8', xml_declaration=True)
+    core_before = [c.name for c in cm.configurations if cm.is_core(c)]
+    cm.load_file(path)
+    names = [c.name for c in cm.configurations]
+    assert EXTRA in names and all(n in names for n in core_before)
+    assert len({c.id for c in cm.configurations}) == len(cm.configurations)

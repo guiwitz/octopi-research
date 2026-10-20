@@ -67,8 +67,9 @@ class IlluminationTableWidget(QFrame):
         self.btn_add.setToolTip('New channel from the permanent list of channels (channel_templates.xml next to channel_configurations.xml).')
         self.label_status = QLabel('')
         self.label_status.setWordWrap(True)
-        info = QLabel('Changes are saved at once in channel_configurations.xml. The name of the channels from the permanent list is fixed; '
-                      'duplicates and new channels can be renamed. Not possible while an acquisition is running.')
+        info = QLabel('Changes are saved at once in channel_configurations.xml (kept after a restart). Core illuminations (bold: BF, DF, 405, 488, 561) cannot be deleted; '
+                      'all others can be deleted at any time. Names from the permanent list are fixed; duplicates and new channels can be renamed. '
+                      'Not possible while an acquisition is running.')
         info.setWordWrap(True)
         info.setStyleSheet('font-size: 8pt; color: gray;')
 
@@ -160,9 +161,13 @@ class IlluminationTableWidget(QFrame):
                     flags = it.flags() | Qt.ItemIsEditable
                     if col == 0:
                         it.setData(Qt.UserRole, c.id)
+                        if self.cm.is_core(c):
+                            f = it.font(); f.setBold(True); it.setFont(f)
                         if fixed_name:
                             flags &= ~Qt.ItemIsEditable
                             it.setToolTip('The name of channels from the permanent list is fixed. Duplicate it to get a channel with a name you can change.')
+                        if self.cm.is_core(c):
+                            it.setToolTip('Core illumination (bold): cannot be deleted and keeps its name. Duplicate it to get a copy you can rename and delete.')
                     it.setFlags(flags)
                     self.table.setItem(r, col, it)
             if keep is not None and self._row_of(keep) >= 0:
@@ -241,6 +246,8 @@ class IlluminationTableWidget(QFrame):
             return self._say('Select a line first.')
         if len(self.cm.configurations) <= 1:
             return self._warn('The last channel cannot be deleted.')
+        if self.cm.is_core(c):
+            return self._warn(f'"{c.name}" is a core illumination (405, 488, 561, BF, DF) and cannot be deleted. All other illuminations can be deleted.')
         if not os.environ.get('SQUID_SKIP_CONFIRM'):
             if QMessageBox.question(self, 'Delete channel', f'Delete the channel "{c.name}" from the channel list?\n\n'
                                     'It can be added again from the permanent list if it is in there. Jobs or the autofocus setting that use this name will not find it.',

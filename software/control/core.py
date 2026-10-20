@@ -4065,6 +4065,13 @@ class ConfigurationManager(QObject):
         return conf
 
     # ---- illumination sets (save / load window of the Illuminations tab) ---------------------------------------------------------
+    # core illuminations: cannot be deleted (and keep their name); all others can be deleted at any time
+    CORE_NAMES = ('BF LED matrix full', 'DF LED matrix', 'Fluorescence 405 nm Ex', 'Fluorescence 488 nm Ex', 'Fluorescence 561 nm Ex')
+
+    def is_core(self, conf_or_name):
+        name = conf_or_name if isinstance(conf_or_name, str) else getattr(conf_or_name, 'name', None)
+        return name in self.CORE_NAMES
+
     REQUIRED_MODE_ATTRIBUTES = ('ID', 'Name', 'ExposureTime', 'AnalogGain', 'IlluminationSource', 'IlluminationIntensity')
 
     def sets_dir(self):
@@ -4143,6 +4150,19 @@ class ConfigurationManager(QObject):
         ones as a set first if they are needed again). Widgets follow via configurations_changed."""
         self.read_set_file(path)
         tree = ET.parse(path)
+        # the core illuminations always stay: those that are missing in the set are kept from the current list (with a free ID)
+        root = tree.getroot()
+        names = {m.get('Name') for m in root.iter('mode')}
+        ids = {m.get('ID') for m in root.iter('mode')}
+        for m in list(self.config_xml_tree_root.iter('mode')):
+            if m.get('Name') in self.CORE_NAMES and m.get('Name') not in names:
+                attribs = dict(m.attrib)
+                if attribs['ID'] in ids:
+                    attribs['ID'] = str(max([int(i) for i in ids if str(i).isdigit()] + [0]) + 1)
+                ids.add(attribs['ID'])
+                new_mode = ET.SubElement(root, 'mode')
+                for k, v in attribs.items():
+                    new_mode.set(k, v)
         self.config_xml_tree = tree
         self.config_xml_tree_root = tree.getroot()
         new = []
@@ -4186,6 +4206,9 @@ class ConfigurationManager(QObject):
     def delete_configuration(self, conf_id):
         if len(self.configurations) <= 1:
             raise ValueError('the last channel cannot be deleted')
+        c = self.get_configuration(conf_id)
+        if c is not None and self.is_core(c):
+            raise ValueError(f'"{c.name}" is a core illumination and cannot be deleted')
         mode = self.config_xml_tree_root.xpath("//mode[@ID='" + str(conf_id) + "']")
         if not mode:
             raise KeyError('no channel with ID ' + str(conf_id))
@@ -4200,6 +4223,8 @@ class ConfigurationManager(QObject):
         if conf is None:
             raise KeyError('no channel with ID ' + str(conf_id))
         if name is not None and name != conf.name:
+            if self.is_core(conf):
+                raise ValueError(f'"{conf.name}" is a core illumination; its name cannot be changed')
             if any(c.name == name for c in self.configurations if c is not conf):
                 raise ValueError('a channel with the name "' + name + '" exists already')
             conf.name = name

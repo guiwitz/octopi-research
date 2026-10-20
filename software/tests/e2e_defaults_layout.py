@@ -1,7 +1,7 @@
 """Startup defaults and control-panel layout (simulation, offscreen).
 
   SQUID_E2E_OFFSCREEN=1 python tests/e2e_defaults_layout.py
-Checks: objective 10x, 12-well format, all channels 10 ms, AF 10 planes / 2.5 um; JOBs / Single measurement text fields
+Checks: objective 10x, 12-well format, exposures as stored in the channel file, AF 10 planes / 2.5 um; JOBs / Single measurement text fields
 wide enough; the control panel can be switched to two columns and back (widgets keep their parent, width changes).
 """
 import os, sys, time, tempfile
@@ -35,13 +35,14 @@ try:
     check('objective 10x', win.objectiveStore.current_objective == '10x' and win.objectivesWidget.dropdown.currentText() == '10x', win.objectiveStore.current_objective)
     check('well plate format 12', win.wellplateFormatWidget.comboBox.currentData() == 12 and gui.WELLPLATE_FORMAT == 12, win.wellplateFormatWidget.comboBox.currentData())
     exps = {c.name: c.exposure_time for c in win.configurationManager.configurations}
-    check('all channels 10 ms (objects)', all(v == 10 for v in exps.values()), exps)
-    check('all channels 10 ms (xml tree)', all(float(m.get('ExposureTime')) == 10 for m in win.configurationManager.config_xml_tree_root.iter('mode')))
+    from lxml import etree as _ET
+    stored = {m.get('Name'): float(m.get('ExposureTime')) for m in _ET.parse(win.configurationManager.config_filename).getroot().iter('mode')}
+    check('exposures as stored in the channel file (no startup default)', exps == stored, (exps, stored))
     afc = win.autofocusController
     check('AF 10 planes', afc.N == 10 and win.autofocusWidget.entry_N.value() == 10, afc.N)
     check('AF 2.5 um', abs(afc.deltaZ * 1000 - 2.5) < 0.05 and abs(win.autofocusWidget.entry_delta.value() - 2.5) < 0.05, afc.deltaZ * 1000)
     live = win.liveControlWidget
-    check('live control shows 10 ms', abs(live.entry_exposureTime.value() - 10) < 1e-6 if hasattr(live, 'entry_exposureTime') else True)
+    check('live control shows the exposure of its channel', abs(live.entry_exposureTime.value() - live.currentConfiguration.exposure_time) < 1e-6 if hasattr(live, 'entry_exposureTime') else True)
 
     print('text fields')
     for name, w in (('JOBs', win.jobsWidget), ('Single measurement', win.singleMeasurementWidget)):
