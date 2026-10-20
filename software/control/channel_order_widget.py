@@ -44,6 +44,8 @@ class ChannelOrderWidget(QWidget):
         super().__init__(parent)
         self.cm = configurationManager
         self._used = []                      # ids of the used illuminations, in acquisition order
+        self._names = {}                     # id -> name at the last rendering
+        self._reloads = getattr(configurationManager, 'reload_count', 0)
         self._enabled_buttons = []
 
         def make_table():
@@ -104,7 +106,12 @@ class ChannelOrderWidget(QWidget):
 
     def _render(self, select_used=()):
         confs = {str(c.id): c for c in self.cm.configurations}
+        if getattr(self.cm, 'reload_count', 0) != self._reloads:       # a saved set was loaded: IDs mean other channels now, keep the used ones by NAME
+            self._reloads = getattr(self.cm, 'reload_count', 0)
+            by_name = {c.name: c.id for c in self.cm.configurations}
+            self._used = [by_name[self._names[i]] for i in self._used if self._names.get(i) in by_name]
         self._used = [i for i in self._used if str(i) in confs]
+        self._names = {c.id: c.name for c in self.cm.configurations}
         used = set(map(str, self._used))
         for table, ids in ((self.table_avail, [c.id for c in self.cm.configurations if str(c.id) not in used]), (self.table_used, list(self._used))):
             table.blockSignals(True)

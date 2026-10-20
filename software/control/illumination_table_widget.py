@@ -76,6 +76,10 @@ class IlluminationTableWidget(QFrame):
         row.addWidget(self.btn_duplicate)
         row.addWidget(self.btn_delete)
         row.addStretch()
+        self.btn_sets = QPushButton('Save / load sets...')
+        self.btn_sets.setToolTip('Save the current illuminations as a named set, or load a saved set (replaces the current illuminations)')
+        self.btn_sets.clicked.connect(self.open_sets_dialog)
+        row.addWidget(self.btn_sets)
         row2 = QHBoxLayout()
         row2.addWidget(QLabel('New from the list:'))
         row2.addWidget(self.combo_template, 1)
@@ -245,6 +249,12 @@ class IlluminationTableWidget(QFrame):
         name = c.name
         self.cm.delete_configuration(cid)
         self._say(f'Deleted "{name}".')
+
+    def open_sets_dialog(self):
+        from control.illumination_sets_dialog import IlluminationSetsDialog
+        dlg = IlluminationSetsDialog(self.cm, self, busy=self._busy)
+        dlg.exec_()
+        return dlg
 
     def _select_new(self, conf):
         r = self._row_of(conf.id)

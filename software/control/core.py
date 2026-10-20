@@ -4064,6 +4064,102 @@ class ConfigurationManager(QObject):
         self.configurations_changed.emit()
         return conf
 
+    # ---- illumination sets (save / load window of the Illuminations tab) ---------------------------------------------------------
+    REQUIRED_MODE_ATTRIBUTES = ('ID', 'Name', 'ExposureTime', 'AnalogGain', 'IlluminationSource', 'IlluminationIntensity')
+
+    def sets_dir(self):
+        """saved illumination sets: one xml file per set (same format as channel_configurations.xml), next to the channel file"""
+        return os.path.join(os.path.dirname(os.path.abspath(self.config_filename)), 'illumination_sets')
+
+    @staticmethod
+    def safe_set_name(name):
+        name = str(name).strip()
+        bad = '/\\:*?"<>|'
+        if not name or any(ch in name for ch in bad) or name.startswith('.'):
+            raise ValueError('a set name must not be empty and must not contain any of  / \\ : * ? " < > |')
+        return name
+
+    def list_sets(self):
+        d = self.sets_dir()
+        if not os.path.isdir(d):
+            return []
+        return sorted(f[:-4] for f in os.listdir(d) if f.lower().endswith('.xml'))
+
+    def set_path(self, name):
+        return os.path.join(self.sets_dir(), self.safe_set_name(name) + '.xml')
+
+    def save_set(self, name, overwrite=False):
+        path = self.set_path(name)
+        if os.path.exists(path) and not overwrite:
+            raise FileExistsError(path)
+        os.makedirs(self.sets_dir(), exist_ok=True)
+        self.config_xml_tree.write(path, encoding="utf-8", xml_declaration=True, pretty_print=True)
+        return path
+
+    def export_file(self, path):
+        self.config_xml_tree.write(path, encoding="utf-8", xml_declaration=True, pretty_print=True)
+
+    def import_file_to_set(self, path, name, overwrite=False):
+        modes = self.read_set_file(path)      # checks the file
+        target = self.set_path(name)
+        if os.path.exists(target) and not overwrite:
+            raise FileExistsError(target)
+        os.makedirs(self.sets_dir(), exist_ok=True)
+        ET.parse(path).write(target, encoding="utf-8", xml_declaration=True, pretty_print=True)
+        return modes
+
+    def delete_set(self, name):
+        os.remove(self.set_path(name))
+
+    @classmethod
+    def read_set_file(cls, path):
+        """-> list of dicts (attributes of each mode); ValueError if the file is not a usable channel list"""
+        try:
+            root = ET.parse(path).getroot()
+        except Exception as e:
+            raise ValueError('not a readable xml file: ' + str(e))
+        modes = [dict(m.attrib) for m in root.iter('mode')]
+        if not modes:
+            raise ValueError('the file contains no illuminations (<mode> lines)')
+        ids, names = set(), set()
+        for m in modes:
+            missing = [a for a in cls.REQUIRED_MODE_ATTRIBUTES if a not in m]
+            if missing:
+                raise ValueError(f'illumination "{m.get("Name", "?")}" lacks ' + ', '.join(missing))
+            try:
+                float(m['ExposureTime']); float(m['AnalogGain']); int(m['IlluminationSource']); float(m['IlluminationIntensity'])
+            except ValueError:
+                raise ValueError(f'illumination "{m["Name"]}" has a value that is not a number')
+            if m['ID'] in ids or m['Name'] in names:
+                raise ValueError(f'ID or name used twice: "{m["Name"]}" (ID {m["ID"]})')
+            ids.add(m['ID']); names.add(m['Name'])
+        return modes
+
+    def load_set(self, name):
+        return self.load_file(self.set_path(name))
+
+    def load_file(self, path):
+        """Replace ALL current illuminations by those of the file; channel_configurations.xml is overwritten (save the current
+        ones as a set first if they are needed again). Widgets follow via configurations_changed."""
+        self.read_set_file(path)
+        tree = ET.parse(path)
+        self.config_xml_tree = tree
+        self.config_xml_tree_root = tree.getroot()
+        new = []
+        for mode in self.config_xml_tree_root.iter('mode'):
+            new.append(Configuration(
+                mode_id=mode.get('ID'), name=mode.get('Name'), color=self.get_channel_color(mode.get('Name')),
+                exposure_time=float(mode.get('ExposureTime')), analog_gain=float(mode.get('AnalogGain')),
+                illumination_source=int(mode.get('IlluminationSource')), illumination_intensity=float(mode.get('IlluminationIntensity')),
+                camera_sn=mode.get('CameraSN'), z_offset=float(mode.get('ZOffset', 0.0)), pixel_format=mode.get('PixelFormat'),
+                _pixel_format_options=mode.get('_PixelFormat_options'), emission_filter_position=int(mode.get('EmissionFilterPosition', 1))))
+        self.configurations[:] = new          # same list object (other code keeps a reference to it)
+        self.reload_count = getattr(self, 'reload_count', 0) + 1   # widgets that keep channel IDs map them again by name
+        self.num_configurations = len(new)
+        self.save_configurations()
+        self.configurations_changed.emit()
+        return new
+
     def get_configuration(self, conf_id):
         return next((c for c in self.configurations if str(c.id) == str(conf_id)), None)
 

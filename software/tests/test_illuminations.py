@@ -223,3 +223,66 @@ def test_channel_order_widget(tmp_path):
     cm.delete_configuration(cm.configurations[2].id)
     w.refresh_from_manager()
     assert w.used_names() == [names[0]]
+
+
+def test_illumination_sets_save_load_delete_import_export(tmp_path):
+    from control.illumination_sets_dialog import IlluminationSetsDialog
+    from control.channel_order_widget import ChannelOrderWidget
+    cm = manager(tmp_path)
+    orig = [(c.name, c.exposure_time) for c in cm.configurations]
+    order = ChannelOrderWidget(cm)
+    order.item(2).setSelected(True); order.item(0).setSelected(True)
+    used_before = order.used_names()
+    dlg = IlluminationSetsDialog(cm)
+    assert dlg.list_sets.count() == 0
+    dlg.save_current('day 1')
+    assert cm.list_sets() == ['day 1'] and dlg.preview.rowCount() == len(orig)
+    # change the current illuminations, save as a second set
+    d = cm.duplicate_configuration(cm.configurations[0].id)
+    cm.set_values(d.id, name='extra', exposure=55)
+    cm.delete_configuration(cm.configurations[1].id)
+    dlg.save_current('day 2')
+    assert cm.list_sets() == ['day 1', 'day 2']
+    # load day 1: everything as at the start (also on disk), the used order kept by name
+    dlg.list_sets.setCurrentRow(0)
+    dlg.load_selected()
+    assert [(c.name, c.exposure_time) for c in cm.configurations] == orig
+    assert [(c.name, c.exposure_time) for c in reread(cm).configurations] == orig
+    order.refresh_from_manager()
+    assert order.used_names() == used_before
+    # load day 2
+    dlg.list_sets.setCurrentRow(1)
+    dlg.load_selected()
+    assert 'extra' in [c.name for c in cm.configurations] and orig[1][0] not in [c.name for c in cm.configurations]
+    order.refresh_from_manager()
+    assert order.used_names() == [n for n in used_before if n != orig[1][0]]
+    # export / import / delete
+    out = str(tmp_path / 'exported.xml')
+    dlg.export_selected(out)
+    dlg.import_file(out, 'imported')
+    assert 'imported' in cm.list_sets()
+    dlg.list_sets.setCurrentRow(0)
+    dlg.delete_selected()
+    assert 'day 1' not in cm.list_sets()
+    # broken file is refused, nothing changes
+    bad = tmp_path / 'bad.xml'
+    bad.write_text('<modes><mode Name="x"/></modes>')
+    n = len(cm.list_sets())
+    dlg.import_file(str(bad), 'bad')
+    assert len(cm.list_sets()) == n and 'lacks' in dlg.label_status.text()
+    try:
+        cm.safe_set_name('a/b')
+        raise AssertionError('bad name accepted')
+    except ValueError:
+        pass
+
+
+def test_sets_not_loaded_while_acquisition_runs(tmp_path):
+    from control.illumination_sets_dialog import IlluminationSetsDialog
+    cm = manager(tmp_path)
+    dlg = IlluminationSetsDialog(cm, busy=lambda: True)
+    dlg.save_current('s')
+    cm.delete_configuration(cm.configurations[0].id)
+    n = len(cm.configurations)
+    dlg.load_selected()
+    assert len(cm.configurations) == n

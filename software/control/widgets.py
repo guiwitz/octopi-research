@@ -821,8 +821,9 @@ class LiveControlWidget(QFrame):
         self.dropdown_modeSelection.addItems(names)
         self.dropdown_modeSelection.blockSignals(False)
         if not still:
-            self.dropdown_modeSelection.setCurrentText(names[0])
-            self.update_microscope_mode_by_name(names[0])
+            name = cur.name if cur is not None and cur.name in names else names[0]     # e.g. after loading a saved set: same name, new object
+            self.dropdown_modeSelection.setCurrentText(name)
+            self.update_microscope_mode_by_name(name)
             return
         self.dropdown_modeSelection.blockSignals(True)
         self.dropdown_modeSelection.setCurrentText(cur.name)
