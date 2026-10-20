@@ -2,6 +2,7 @@
 import os 
 import sys
 import time
+import json
 os.environ["QT_API"] = "pyqt5"
 import qtpy
 
@@ -148,6 +149,8 @@ class OctopiGUI(QMainWindow):
 
         print('load channel_configurations.xml')
         self.configurationManager = core.ConfigurationManager(filename='./channel_configurations.xml')
+        if STARTUP_DEFAULT_EXPOSURE_MS is not None: # startup default: the same exposure for all illuminations (see _def.py)
+            self.configurationManager.set_all_exposures_without_writing(STARTUP_DEFAULT_EXPOSURE_MS)
         self.objectiveStore = core.ObjectiveStore() # todo: add widget to select/save objective save
         self.streamHandler = core.StreamHandler(display_resolution_scaling=DEFAULT_DISPLAY_CROP/100)
         self.liveController = core.LiveController(self.camera,self.microcontroller,self.configurationManager,parent=self)
@@ -363,24 +366,33 @@ class OctopiGUI(QMainWindow):
         top_row_layout = QHBoxLayout()
         top_row_layout.addWidget(self.objectivesWidget)
         top_row_layout.addWidget(self.wellplateFormatWidget)
-        frame.setLayout(top_row_layout)  # Set the layout on the frame
-        layout = QVBoxLayout() #layout = QStackedLayout()
-        layout.addWidget(frame)
-        layout.addWidget(self.liveControlWidget)
-        layout.addWidget(self.microscopeControlTabWidget)
+        # the control panel can be shown in one column (default) or two columns (image display gets the rest of the window)
+        self.checkbox_two_columns = QCheckBox('2 columns')
+        self.checkbox_two_columns.setToolTip('Show the menus on the right in two columns (the image display gets the remaining width). The choice is remembered.')
+        frame_layout = QVBoxLayout()
+        frame_layout.addLayout(top_row_layout)
+        frame_layout.addWidget(self.checkbox_two_columns)   # second row: does not make the panel wider
+        frame.setLayout(frame_layout)  # Set the layout on the frame
+        # column 1: objective/plate, live control, stages/AF/camera tabs; column 2: acquisition tabs and the navigation viewer
+        self._panel_col1_widgets = [frame, self.liveControlWidget, self.microscopeControlTabWidget]
         if SHOW_DAC_CONTROL:
-            layout.addWidget(self.dacControlWidget)
-        layout.addWidget(self.recordTabWidget)
-        layout.addWidget(self.navigationViewer)
-        layout.addStretch()
+            self._panel_col1_widgets.append(self.dacControlWidget)
+        self._panel_col2_widgets = [self.recordTabWidget, self.navigationViewer]
 
         # transfer the layout to the central widget
         self.centralWidget = QWidget()
-        self.centralWidget.setLayout(layout)
-        # self.centralWidget.setFixedSize(self.centralWidget.minimumSize())
-        # self.centralWidget.setFixedWidth(self.centralWidget.minimumWidth())
-        # self.centralWidget.setMaximumWidth(self.centralWidget.minimumWidth())
-        self.centralWidget.setFixedWidth(self.centralWidget.minimumSizeHint().width())
+        self._panel_col1 = QVBoxLayout()
+        self._panel_col2 = QVBoxLayout()
+        self._panel_root = QHBoxLayout()
+        self._panel_root.addLayout(self._panel_col1)
+        self._panel_root.addLayout(self._panel_col2)   # stays empty in one-column mode
+        self._panel_col1.addStretch()
+        self._panel_col2.addStretch()
+        self.centralWidget.setLayout(self._panel_root)
+        self._panel_two_columns = False
+        self._arrange_control_panel(self._load_two_column_preference())
+        self.checkbox_two_columns.setChecked(self._panel_two_columns)
+        self.checkbox_two_columns.toggled.connect(self.set_two_column_panel)
 
         if SINGLE_WINDOW:
             dock_display = dock.Dock('Image Display', autoOrientation = False)
@@ -758,6 +770,62 @@ class OctopiGUI(QMainWindow):
         box.setModal(False)
         box.show()
         self._acquisition_error_box = box
+
+    LAYOUT_PREFERENCE_FILE = os.path.join('cache', 'gui_layout.json')
+
+    def _load_two_column_preference(self):
+        try:
+            with open(self.LAYOUT_PREFERENCE_FILE, 'r') as f:
+                return bool(json.load(f).get('two_columns', False))
+        except Exception:
+            return False
+
+    def _save_two_column_preference(self, two_columns):
+        try:
+            with open(self.LAYOUT_PREFERENCE_FILE, 'w') as f:
+                json.dump({'two_columns': bool(two_columns)}, f)
+        except Exception:
+            pass # a missing cache folder only means the choice is not remembered
+
+    def _arrange_control_panel(self, two_columns):
+        """Put the control panel widgets into one or two columns and give the panel the width of its content."""
+        col1, col2, root = self._panel_col1, self._panel_col2, self._panel_root
+        # inserting a widget into a layout moves it out of the layout it was in; the stretch stays the last item of each column
+        for i, w in enumerate(self._panel_col1_widgets):
+            col1.insertWidget(i, w)
+        for i, w in enumerate(self._panel_col2_widgets):
+            if two_columns:
+                col2.insertWidget(i, w)
+            else:
+                col1.insertWidget(len(self._panel_col1_widgets) + i, w)
+        root.setSpacing(10 if two_columns else 0)
+        self._panel_two_columns = bool(two_columns)
+        cw = self.centralWidget
+        cw.setMinimumWidth(0)
+        cw.setMaximumWidth(16777215)       # QWIDGETSIZE_MAX: undo the earlier fixed width
+        root.invalidate()
+        root.activate()
+        cw.setFixedWidth(cw.minimumSizeHint().width())
+
+    def set_two_column_panel(self, two_columns):
+        """Switch the menus on the right between one and two columns; the image display takes the remaining width."""
+        two_columns = bool(two_columns)
+        if two_columns == self._panel_two_columns:
+            return
+        self._arrange_control_panel(two_columns)
+        self._save_two_column_preference(two_columns)
+        if hasattr(self, 'controlPanel'):
+            self.controlPanel.updateGeometry()
+            QTimer.singleShot(0, self._fit_control_panel_width)
+
+    def _fit_control_panel_width(self):
+        try:
+            width = self.controlPanel.sizeHint().width()
+            total = sum(self.main_dockArea.topContainer.sizes())
+            self.init_control_panel_width(min(width, int(0.75 * total)) if total > 0 else width)   # the image keeps at least a quarter of the window
+        except Exception:
+            import traceback
+            traceback.print_exc()
 
     def init_control_panel_width(self, width=None):
         """Initial split between image display and controls: the controls get their natural width (the divider can then be dragged)."""

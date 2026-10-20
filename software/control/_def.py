@@ -664,6 +664,18 @@ else:
 ##### end of loading machine specific configurations #####
 ##########################################################
 
+# startup defaults (apply on every start; they override the machine-specific .ini and the channel xml)
+# Set an entry to None to use the value of the .ini / channel xml again.
+STARTUP_DEFAULT_OBJECTIVE = '10x'      # objective selected at startup (a key of OBJECTIVES)
+STARTUP_DEFAULT_WELLPLATE_FORMAT = 12  # 0 (glass slide), 6, 12, 24, 96, 384, 1536
+STARTUP_DEFAULT_EXPOSURE_MS = 10       # exposure time of ALL channels (illuminations) at startup
+STARTUP_DEFAULT_AF_N_PLANES = 10       # contrast autofocus: number of planes
+STARTUP_DEFAULT_AF_DELTA_Z_UM = 2.5    # contrast autofocus: step between planes (um)
+if STARTUP_DEFAULT_OBJECTIVE is not None and STARTUP_DEFAULT_OBJECTIVE in OBJECTIVES:
+    DEFAULT_OBJECTIVE = STARTUP_DEFAULT_OBJECTIVE
+if STARTUP_DEFAULT_WELLPLATE_FORMAT is not None:
+    WELLPLATE_FORMAT = STARTUP_DEFAULT_WELLPLATE_FORMAT
+
 # objective piezo
 if ENABLE_OBJECTIVE_PIEZO == False:
     MULTIPOINT_USE_PIEZO_FOR_ZSTACKS = False

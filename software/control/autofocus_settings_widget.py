@@ -10,11 +10,12 @@ from qtpy.QtWidgets import (QCheckBox, QFrame, QGridLayout, QLabel, QPushButton,
                             QComboBox, QFileDialog, QMessageBox)
 
 import control.autofocus_settings as autofocus_settings
-from control._def import SCREW_PITCH_Z_MM, FULLSTEPS_PER_REV_Z
+from control.resizable_panel import make_combo_compact
+from control._def import SCREW_PITCH_Z_MM, FULLSTEPS_PER_REV_Z, STARTUP_DEFAULT_AF_N_PLANES, STARTUP_DEFAULT_AF_DELTA_Z_UM
 
 REGISTRY = autofocus_settings.REGISTRY
-DEFAULT_DELTA_Z_UM = 1.524
-DEFAULT_N_PLANES = 10
+DEFAULT_DELTA_Z_UM = STARTUP_DEFAULT_AF_DELTA_Z_UM if STARTUP_DEFAULT_AF_DELTA_Z_UM is not None else 1.524
+DEFAULT_N_PLANES = STARTUP_DEFAULT_AF_N_PLANES if STARTUP_DEFAULT_AF_N_PLANES is not None else 10
 
 
 class AutofocusSettingsWidget(QFrame):
@@ -67,6 +68,9 @@ class AutofocusSettingsWidget(QFrame):
         self.dropdown_schedule.addItem('Every time point', 'every_timepoint')
         self.dropdown_schedule.addItem('Every n time points', 'every_n')
         self.dropdown_schedule.addItem('Every n time points, staggered over positions', 'staggered')
+        make_combo_compact(self.dropdown_schedule, 18, 330)   # so that two columns of the control panel fit next to a usable image display
+        make_combo_compact(self.dropdown_channel, 18, 250)
+        make_combo_compact(self.dropdown_measure, 12, 250)
         self.entry_schedule_n = QSpinBox()
         self.entry_schedule_n.setRange(1, 100000)
         self.entry_schedule_n.setKeyboardTracking(False)

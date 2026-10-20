@@ -16,6 +16,7 @@ from qtpy.QtCore import Qt
 
 from control.jobs import make_points, dry_run, describe
 from control.jobs.api import MAX_BUFFER_BYTES
+from control.resizable_panel import make_combo_compact
 
 CACHE_FILE = os.path.join('cache', 'single_measurement_settings.json')
 JOB_FILE = os.path.join('cache', 'single_measurement_job.py')
@@ -117,10 +118,17 @@ class SingleMeasurementWidget(QFrame):
         self.btn_abort = QPushButton('Abort')
         self.btn_abort.setEnabled(False)
         self.label_status = QLabel('')
+        self.label_status.setWordWrap(True)
         self.log = QPlainTextEdit(); self.log.setReadOnly(True); self.log.setMaximumBlockCount(3000)
 
+        self.lineEdit_savingDir.setMinimumWidth(250)
+        self.lineEdit_savingDir.setToolTip('Saving directory (full path)')
+        self.lineEdit_savingDir.textChanged.connect(lambda t, w=self.lineEdit_savingDir: w.setToolTip(t or 'Saving directory (full path)'))
+        self.lineEdit_experimentID.setMinimumWidth(160)
+        make_combo_compact(self.combo_save_as, 12, 420)   # long item texts must not widen the control panel
         row1 = QHBoxLayout(); row1.addWidget(QLabel('Saving dir')); row1.addWidget(self.lineEdit_savingDir, 1); row1.addWidget(self.btn_savingDir)
-        row1.addWidget(QLabel('Experiment ID')); row1.addWidget(self.lineEdit_experimentID); row1.addWidget(QLabel('Save as')); row1.addWidget(self.combo_save_as)
+        row1b = QHBoxLayout(); row1b.addWidget(QLabel('Experiment ID')); row1b.addWidget(self.lineEdit_experimentID, 1)
+        row1b.addSpacing(10); row1b.addWidget(QLabel('Save as')); row1b.addWidget(self.combo_save_as, 1)
 
         box1 = QGroupBox('Single time capture (current position)')
         v1 = QVBoxLayout(box1)
@@ -139,7 +147,7 @@ class SingleMeasurementWidget(QFrame):
         g.addWidget(self.btn_fast, 6, 0, 1, 4)
 
         layout = QVBoxLayout()
-        layout.addLayout(row1); layout.addWidget(box1); layout.addWidget(box2)
+        layout.addLayout(row1); layout.addLayout(row1b); layout.addWidget(box1); layout.addWidget(box2)
         r = QHBoxLayout(); r.addWidget(self.label_status, 1); r.addWidget(self.btn_abort); layout.addLayout(r)
         layout.addWidget(self.log, 1)
         self.setLayout(layout)

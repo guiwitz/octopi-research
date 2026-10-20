@@ -16,6 +16,7 @@ from qtpy.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
 
 from control.jobs import make_points, dry_run, describe, job_documentation, JobError
 from control.jobs_live import LiveJobView
+from control.resizable_panel import make_combo_compact
 
 
 class PlanDialog(QDialog):
@@ -99,6 +100,7 @@ class JobsWidget(QFrame):
         self.btn_savingDir = QPushButton('Saving dir...')
         self.lineEdit_experimentID = QLineEdit('job')
         self.label_points = QLabel('')
+        self.label_points.setWordWrap(True)   # long text must not widen the control panel
         self.btn_designer = QPushButton('Job designer...')
         self.btn_designer.setToolTip('Opens the Job designer: an editor to write a job, test it (simulated, nothing moves), see a graphic of what it does, '
                                      'and get help on all functions. Does not influence a running job.')
@@ -124,6 +126,7 @@ class JobsWidget(QFrame):
                                       'single files: one TIFF per image in a folder per time point, <ID>_0_0_<z>_<channel>.tiff (as the Flexible Multipoint tab).\n'
                                       'A job can override this per call with save_as="multipage" / "merge" / "single".')
         self.label_status = QLabel('')
+        self.label_status.setWordWrap(True)
         self.live = LiveJobView()
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -131,11 +134,17 @@ class JobsWidget(QFrame):
 
         row1 = QHBoxLayout(); row1.addWidget(QLabel('Job file')); row1.addWidget(self.lineEdit_job, 1)
         row1.addWidget(self.btn_select_job); row1.addWidget(self.btn_example); row1.addWidget(self.btn_designer)
+        self.lineEdit_savingDir.setMinimumWidth(250)
+        self.lineEdit_savingDir.setToolTip('Saving directory (full path)')
+        self.lineEdit_savingDir.textChanged.connect(lambda t, w=self.lineEdit_savingDir: w.setToolTip(t or 'Saving directory (full path)'))
+        self.lineEdit_experimentID.setMinimumWidth(160)
+        make_combo_compact(self.combo_save_as, 12, 420)   # long item texts must not widen the control panel
         row2 = QHBoxLayout(); row2.addWidget(QLabel('Saving dir')); row2.addWidget(self.lineEdit_savingDir, 1); row2.addWidget(self.btn_savingDir)
-        row2.addWidget(QLabel('Experiment ID')); row2.addWidget(self.lineEdit_experimentID); row2.addWidget(QLabel('Save as')); row2.addWidget(self.combo_save_as)
+        row2b = QHBoxLayout(); row2b.addWidget(QLabel('Experiment ID')); row2b.addWidget(self.lineEdit_experimentID, 1)
+        row2b.addSpacing(10); row2b.addWidget(QLabel('Save as')); row2b.addWidget(self.combo_save_as, 1)
         row3 = QHBoxLayout(); row3.addWidget(self.btn_check); row3.addWidget(self.btn_plan); row3.addWidget(self.btn_start); row3.addWidget(self.btn_pause)
         layout = QVBoxLayout()
-        layout.addLayout(row1); layout.addLayout(row2); layout.addWidget(self.label_points)
+        layout.addLayout(row1); layout.addLayout(row2); layout.addLayout(row2b); layout.addWidget(self.label_points)
         layout.addLayout(row3); layout.addWidget(self.label_status); layout.addWidget(self.live); layout.addWidget(self.log, 1)
         self.setLayout(layout)
 

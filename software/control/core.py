@@ -3985,6 +3985,14 @@ class ConfigurationManager(QObject):
         mode_to_update.set(attribute_name,str(new_value))
         self.save_configurations()
 
+    def set_all_exposures_without_writing(self, exposure_ms):
+        """Startup default: the same exposure time (ms) for all channels. Changes the channel objects and the xml tree in memory
+        only; the file is written the next time a channel setting is changed in the GUI."""
+        for conf in self.configurations:
+            conf.exposure_time = float(exposure_ms)
+        for mode in self.config_xml_tree_root.iter('mode'):
+            mode.set('ExposureTime', str(exposure_ms))
+
     def update_configuration_without_writing(self, configuration_id, attribute_name, new_value):
         conf_list = self.config_xml_tree_root.xpath("//mode[contains(@ID," + "'" + str(configuration_id) + "')]")
         mode_to_update = conf_list[0]
