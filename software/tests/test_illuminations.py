@@ -174,3 +174,52 @@ def test_live_control_and_multipoint_lists_follow(tmp_path):
         cls.refresh_channel_list(h)
         assert h.list_configurations.count() == len(cm.configurations)
         assert [i.text() for i in h.list_configurations.selectedItems()] == [keep] and h.emitted[-1] == [keep]
+
+
+def test_channel_order_widget(tmp_path):
+    from control.channel_order_widget import ChannelOrderWidget
+    cm = manager(tmp_path)
+    w = ChannelOrderWidget(cm)
+    names = [c.name for c in cm.configurations]
+    got = []
+    w.itemSelectionChanged.connect(lambda: got.append(w.used_names()))
+    assert w.selectedItems() == [] and w.table_avail.rowCount() == len(names) and w.table_used.rowCount() == 0
+    # push over in a chosen order: 3rd, then 1st
+    w.table_avail.selectRow(2)
+    w.add_selected()
+    w.table_avail.selectRow(0)
+    w.add_selected()
+    assert w.used_names() == [names[2], names[0]] and w.table_avail.rowCount() == len(names) - 2
+    # move the first used one down, then up again
+    w.table_used.selectRow(0)
+    w.move(1)
+    assert w.used_names() == [names[0], names[2]]
+    w.table_used.selectRow(1)
+    w.move(1)                                           # already last: nothing
+    assert w.used_names() == [names[0], names[2]]
+    w.move(-1)
+    assert w.used_names() == [names[2], names[0]]
+    # back
+    w.table_used.selectRow(0)
+    w.remove_selected()
+    assert w.used_names() == [names[0]] and w.table_avail.rowCount() == len(names) - 1
+    w.add_all()
+    assert w.used_names() == [names[0]] + [n for n in names if n != names[0]]
+    w.remove_all()
+    assert w.used_names() == [] and got
+    # list interface used by the acquisition code and the tests
+    for it in w.findItems(names[1]):
+        it.setSelected(True)
+    w.item(0).setSelected(True)
+    assert w.used_names() == [names[1], names[0]] and w.count() == len(names)
+    w.clearSelection()
+    assert w.used_names() == []
+    # follows the Illuminations tab: order kept, deleted channels disappear, renamed ones keep their place
+    w.item(2).setSelected(True); w.item(0).setSelected(True)
+    d = cm.duplicate_configuration(cm.configurations[0].id)
+    cm.set_values(d.id, name='dup renamed')
+    w.refresh_from_manager()
+    assert w.used_names() == [names[2], names[0]] and w.table_avail.rowCount() == len(cm.configurations) - 2
+    cm.delete_configuration(cm.configurations[2].id)
+    w.refresh_from_manager()
+    assert w.used_names() == [names[0]]

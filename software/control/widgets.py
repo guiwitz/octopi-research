@@ -1889,6 +1889,9 @@ class MultiPointWidget(QFrame):
 
     def refresh_channel_list(self, *_):
         """The channel list changed (Illuminations tab): rebuild the list, keep the selected channels that still exist"""
+        if hasattr(self.list_configurations, 'refresh_from_manager'):     # two tables with the acquisition order (Flexible Multipoint)
+            self.list_configurations.refresh_from_manager()
+            return
         selected = {item.text() for item in self.list_configurations.selectedItems()}
         self.list_configurations.blockSignals(True)
         self.list_configurations.clear()
@@ -2144,10 +2147,9 @@ class MultiPointWidget2(QFrame):
         self.entry_Nt.setValue(1)
         self.entry_Nt.setKeyboardTracking(False)
 
-        self.list_configurations = QListWidget()
-        for microscope_configuration in self.configurationManager.configurations:
-            self.list_configurations.addItems([microscope_configuration.name])
-        self.list_configurations.setSelectionMode(QAbstractItemView.MultiSelection) # ref: https://doc.qt.io/qt-5/qabstractitemview.html#SelectionMode-enum
+        # two tables: available illuminations -> illuminations used, in acquisition order (offers the QListWidget interface used below)
+        from control.channel_order_widget import ChannelOrderWidget
+        self.list_configurations = ChannelOrderWidget(self.configurationManager)
 
         self.checkbox_withAutofocus = QCheckBox('Contrast AF')
         self.checkbox_withAutofocus.setChecked(MULTIPOINT_AUTOFOCUS_ENABLE_BY_DEFAULT)
@@ -2450,6 +2452,9 @@ class MultiPointWidget2(QFrame):
 
     def refresh_channel_list(self, *_):
         """The channel list changed (Illuminations tab): rebuild the list, keep the selected channels that still exist"""
+        if hasattr(self.list_configurations, 'refresh_from_manager'):     # two tables with the acquisition order (Flexible Multipoint)
+            self.list_configurations.refresh_from_manager()
+            return
         selected = {item.text() for item in self.list_configurations.selectedItems()}
         self.list_configurations.blockSignals(True)
         self.list_configurations.clear()
